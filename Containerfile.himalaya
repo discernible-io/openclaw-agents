@@ -1,0 +1,47 @@
+# Build: podman build -f Containerfile.himalaya -t openclaw-himalaya:local .
+# Args: --build-arg OPENCLAW_BASE_IMAGE=... --build-arg HIMALAYA_ARCH=x86_64-linux
+
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim
+ARG HIMALAYA_VERSION=v1.2.0
+ARG HIMALAYA_ARCH=x86_64-linux
+# Space-separated npm specs installed into the image (seeded into agent homes at start).
+ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord"
+
+FROM ${OPENCLAW_BASE_IMAGE}
+
+# ARGs before FROM are not visible in RUN — re-declare after FROM.
+ARG HIMALAYA_VERSION
+ARG HIMALAYA_ARCH
+ARG OPENCLAW_BUNDLED_PLUGINS
+
+USER root
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates curl sudo chromium \
+ && curl -fsSL -o /tmp/himalaya.tgz \
+      "https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/himalaya.${HIMALAYA_ARCH}.tgz" \
+ && tar -xzf /tmp/himalaya.tgz -C /usr/local/bin \
+ && chmod 755 /usr/local/bin/himalaya \
+ && himalaya --version \
+ && chromium --version \
+ && rm -f /tmp/himalaya.tgz \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -sf /app/openclaw.mjs /openclaw.mjs \
+ && ln -sf /usr/bin/chromium /usr/bin/chromium-browser \
+ && echo "node ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/node \
+ && chmod 440 /etc/sudoers.d/node
+
+# Pre-install downloadable plugins (e.g. Discord) at a path outside the bind-mounted home.
+RUN mkdir -p /opt/identyclaw/plugin-seed \
+ && for spec in ${OPENCLAW_BUNDLED_PLUGINS}; do \
+      OPENCLAW_STATE_DIR=/opt/identyclaw/plugin-seed \
+        node /app/openclaw.mjs plugins install "$spec" --pin; \
+    done \
+ && chown -R node:node /opt/identyclaw
+
+COPY scripts/container-entrypoint.sh /opt/identyclaw/entrypoint.sh
+RUN chmod 755 /opt/identyclaw/entrypoint.sh
+
+USER node
+ENTRYPOINT ["/opt/identyclaw/entrypoint.sh"]
+CMD ["node", "dist/index.js", "gateway", "--bind", "lan", "--port", "18789"]
