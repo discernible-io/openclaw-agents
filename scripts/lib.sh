@@ -39,6 +39,10 @@ load_env() {
   AGENT_A_BRIDGE_PORT="${AGENT_A_BRIDGE_PORT:-18790}"
   AGENT_B_GATEWAY_PORT="${AGENT_B_GATEWAY_PORT:-18791}"
   AGENT_B_BRIDGE_PORT="${AGENT_B_BRIDGE_PORT:-18792}"
+  AGENT_C_EMAIL="${AGENT_C_EMAIL:-agent-c@identyclaw.com}"
+  AGENT_C_DISPLAY_NAME="${AGENT_C_DISPLAY_NAME:-Identyclaw Agent C}"
+  AGENT_C_GATEWAY_PORT="${AGENT_C_GATEWAY_PORT:-18793}"
+  AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
 }
@@ -62,6 +66,16 @@ agent_home() {
 
 agent_container() {
   echo "openclaw-${1}"
+}
+
+agent_display_name() {
+  load_env
+  case "$1" in
+    agent-a) echo "$AGENT_A_DISPLAY_NAME" ;;
+    agent-b) echo "$AGENT_B_DISPLAY_NAME" ;;
+    agent-c) echo "$AGENT_C_DISPLAY_NAME" ;;
+    *) echo "$1" ;;
+  esac
 }
 
 generate_token() {
@@ -132,6 +146,214 @@ EOF
   chmod 600 "$config_dir/.config/himalaya/config.toml"
 }
 
+write_himalaya_send_script() {
+  local email="$1"
+  local display_name="$2"
+  local config_dir="$3"
+  mkdir -p "$config_dir/workspace/scripts"
+  cat >"$config_dir/workspace/scripts/himalaya-send.sh" <<EOF
+#!/bin/sh
+# Headless outbound mail via Himalaya (no \$EDITOR). Containers have no editor binary.
+# Usage: sh scripts/himalaya-send.sh TO SUBJECT [BODY]
+set -eu
+TO="\${1:?usage: himalaya-send.sh TO SUBJECT [BODY]}"
+SUBJECT="\${2:?usage: himalaya-send.sh TO SUBJECT [BODY]}"
+BODY="\${3:-}"
+
+himalaya message send <<MAIL
+From: ${display_name} <${email}>
+To: \${TO}
+Subject: \${SUBJECT}
+
+\${BODY}
+MAIL
+EOF
+  chmod 755 "$config_dir/workspace/scripts/himalaya-send.sh"
+}
+
+write_agent_email_doc() {
+  local email="$1"
+  local display_name="$2"
+  local config_dir="$3"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/EMAIL.md" <<EOF
+# Email (Himalaya / Migadu)
+
+- **Account:** \`${email}\` (${display_name})
+- **Config:** \`/home/node/.config/himalaya/config.toml\`
+- **IMAP/SMTP:** Migadu (\`imap.migadu.com:993\`, \`smtp.migadu.com:587\`)
+
+## Read inbox
+
+\`\`\`bash
+himalaya envelope list --page-size 10
+himalaya message read <ID>
+\`\`\`
+
+## Send (headless — required in this container)
+
+There is **no \`\$EDITOR\`** in the gateway container, so \`himalaya message write\` always fails.
+Use the helper or raw send:
+
+\`\`\`bash
+sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
+\`\`\`
+
+Or:
+
+\`\`\`bash
+himalaya message send <<MAIL
+From: ${display_name} <${email}>
+To: recipient@example.com
+Subject: Your subject
+
+Your body
+MAIL
+\`\`\`
+
+**Critical:** \`From:\` must be \`${email}\`. Migadu rejects other senders (553 *Sender address rejected*).
+EOF
+  chmod 644 "$config_dir/workspace/EMAIL.md"
+}
+
+agent_mailbox() {
+  local id="$1"
+  load_env
+  case "$id" in
+    agent-a) echo "${AGENT_A_EMAIL}|${AGENT_A_DISPLAY_NAME}" ;;
+    agent-b) echo "${AGENT_B_EMAIL}|${AGENT_B_DISPLAY_NAME}" ;;
+    agent-c) echo "${AGENT_C_EMAIL}|${AGENT_C_DISPLAY_NAME}" ;;
+    *) echo "unknown agent: $id" >&2; return 1 ;;
+  esac
+}
+
+ensure_mail_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local password=""
+  load_env
+  case "$id" in
+    agent-a) password="${AGENT_A_PASSWORD:-}" ;;
+    agent-b) password="${AGENT_B_PASSWORD:-}" ;;
+    agent-c) password="${AGENT_C_PASSWORD:-}" ;;
+  esac
+  if [[ -n "$password" ]] && [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
+    write_secret_helpers "$config_dir" "$password"
+    echo "    (${id}: Migadu password loaded from env.local → secrets/)" >&2
+  fi
+}
+
+ensure_agent_email_tooling() {
+  local id="$1"
+  local config_dir="$2"
+  local mailbox email display_name
+  mailbox="$(agent_mailbox "$id")"
+  email="${mailbox%%|*}"
+  display_name="${mailbox#*|}"
+  write_himalaya_send_script "$email" "$display_name" "$config_dir"
+  write_agent_email_doc "$email" "$display_name" "$config_dir"
+}
+
+ensure_discord_guild_channels() {
+  local config_dir="$1"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.get("channels", {}).get("discord")
+if not isinstance(discord, dict):
+    raise SystemExit(0)
+
+guild_id = "1509561171961708554"
+channel_id = "1509561172725334058"
+owner_id = "1438122032968634408"
+changed = False
+
+guilds = discord.setdefault("guilds", {})
+guild = guilds.setdefault(guild_id, {})
+if guild.get("requireMention") is not False:
+    guild["requireMention"] = False
+    changed = True
+if guild.get("ignoreOtherMentions") is not True:
+    guild["ignoreOtherMentions"] = True
+    changed = True
+users = guild.setdefault("users", [])
+if owner_id not in users:
+    users.append(owner_id)
+    changed = True
+channels = guild.setdefault("channels", {})
+ch = channels.setdefault(channel_id, {})
+if ch.get("enabled") is not True:
+    ch["enabled"] = True
+    changed = True
+if ch.get("requireMention") is not False:
+    ch["requireMention"] = False
+    changed = True
+if ch.get("ignoreOtherMentions") is not True:
+    ch["ignoreOtherMentions"] = True
+    changed = True
+
+allow_from = discord.setdefault("allowFrom", [])
+if owner_id not in allow_from:
+    allow_from.append(owner_id)
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+ensure_discord_ready() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  local token_file="$config_dir/secrets/DISCORD_BOT_TOKEN"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" "$token_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, token_file = Path(sys.argv[1]), Path(sys.argv[2])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.get("channels", {}).get("discord")
+if not isinstance(discord, dict):
+    raise SystemExit(0)
+
+has_token = token_file.is_file() and token_file.read_text(encoding="utf-8").strip()
+enabled = discord.get("enabled", False)
+changed = False
+
+if enabled and not has_token:
+    discord["enabled"] = False
+    changed = True
+    print(f"WARNING: {path.parent.name}: Discord enabled but no token — disabled until ./identyclaw.sh set-discord-token {path.parent.name.replace('.openclaw-', '')}", file=sys.stderr)
+elif not enabled and has_token:
+    discord["enabled"] = True
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+ensure_agent_bootstrap() {
+  local id="$1"
+  local config_dir="$2"
+  ensure_mail_secrets_from_env "$id" "$config_dir"
+  ensure_agent_email_tooling "$id" "$config_dir"
+  ensure_discord_guild_channels "$config_dir"
+  ensure_discord_ready "$id" "$config_dir"
+  if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
+    echo "Note: ${id} has no Migadu password yet — run: ./identyclaw.sh set-password ${id}" >&2
+  fi
+}
+
 write_secret_helpers() {
   local config_dir="$1"
   local password="$2"
@@ -156,6 +378,18 @@ write_discord_token() {
   printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN"
   chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
   sync_discord_env "$config_dir"
+  python3 - "$config_dir/openclaw.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.setdefault("channels", {}).setdefault("discord", {})
+if not discord.get("enabled"):
+    discord["enabled"] = True
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
 }
 
 # Gateway reads DISCORD_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
@@ -178,6 +412,43 @@ lines.append(f"DISCORD_BOT_TOKEN={token}\n")
 with open(path, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(path, 0o600)
+PY
+}
+
+# Let @Juanelo / @Archimedes reach the other gateway when a bot message @mentions them.
+# Keep rootless agents running after logout (linger) and across reboot (podman-restart).
+ensure_agent_persistence() {
+  local user linger
+  user="$(whoami)"
+  linger="$(loginctl show-user "$user" -p Linger --value 2>/dev/null || true)"
+  if [[ "$linger" != "yes" ]]; then
+    echo "Note: agents may stop when you log out. Run once: ./identyclaw.sh enable-boot (enables linger; needs sudo)" >&2
+    return 0
+  fi
+  if ! systemctl --user is-enabled podman-restart.service &>/dev/null; then
+    echo "Enabling podman-restart.service (starts --restart always containers after reboot)..."
+    systemctl --user enable --now podman-restart.service
+  fi
+}
+
+ensure_discord_allow_bots_mentions() {
+  local config_dir="$1"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.get("channels", {}).get("discord")
+if not isinstance(discord, dict) or not discord.get("enabled"):
+    raise SystemExit(0)
+if discord.get("allowBots") == "mentions":
+    raise SystemExit(0)
+data.setdefault("channels", {}).setdefault("discord", {})["allowBots"] = "mentions"
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
 PY
 }
 
@@ -265,18 +536,10 @@ write_openclaw_json() {
     "defaults": {
       "workspace": "/home/node/.openclaw/workspace",
       "models": {
-        "openrouter/x-ai/grok-4.3": {},
-        "openrouter/qwen/qwen3.6-max-preview": {},
-        "openrouter/z-ai/glm-5.1": {},
-        "openrouter/moonshotai/kimi-k2.6": {}
+        "openrouter/x-ai/grok-4.3": {}
       },
       "model": {
-        "primary": "openrouter/x-ai/grok-4.3",
-        "fallbacks": [
-          "openrouter/qwen/qwen3.6-max-preview",
-          "openrouter/z-ai/glm-5.1",
-          "openrouter/moonshotai/kimi-k2.6"
-        ]
+        "primary": "openrouter/x-ai/grok-4.3"
       }
     }
   },
@@ -412,6 +675,10 @@ if primary.startswith("anthropic/"):
     defaults["model"] = model
     agents["defaults"] = defaults
     data["agents"] = agents
+
+discord = data.get("channels", {}).get("discord")
+if isinstance(discord, dict) and discord.get("enabled"):
+    discord["allowBots"] = "mentions"
 
 Path(dst_path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 Path(dst_path).chmod(0o600)

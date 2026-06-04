@@ -1,6 +1,6 @@
 # Identyclaw OpenClaw (Podman)
 
-Two isolated OpenClaw gateways with Himalaya + Migadu (`identyclaw.com`).
+Three isolated OpenClaw gateways with Himalaya + Migadu (`identyclaw.com`).
 
 ## Prerequisites
 
@@ -337,7 +337,7 @@ Onboarded 2026-05-23. Customer-support oriented setup with email + OpenRouter + 
 | Publish bind | `127.0.0.1` (`PUBLISH_HOST` in `env.local`) |
 | Gateway bind | loopback (localhost only) |
 | Gateway auth | token |
-| Model | `openrouter/anthropic/claude-opus-4-7` (OpenRouter API key) |
+| Model | `openrouter/x-ai/grok-4.3` (OpenRouter API key, no fallbacks) |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
 | Memory | `qmd` |
@@ -357,7 +357,7 @@ Key `openclaw.json` excerpts (secrets redacted):
   },
   "agents": {
     "defaults": {
-      "model": { "primary": "openrouter/anthropic/claude-opus-4-7" }
+      "model": { "primary": "openrouter/x-ai/grok-4.3" }
     }
   },
   "tools": {
@@ -425,6 +425,32 @@ cd ~/identyclaw-openclaw
 ```
 
 **CLI chat:** `./identyclaw.sh chat agent-b`
+
+### Agent C
+
+Mirrors agent A’s setup on ports **18793/18794**.
+
+| Setting | Value |
+|---------|--------|
+| State dir | `~/.openclaw-agent-c` |
+| Container | `openclaw-agent-c` |
+| Mailbox | `agent-c@identyclaw.com` (Migadu — edit `env.local`) |
+| Gateway ports (host) | **18793** (UI/API), **18794** (bridge) |
+| Control UI | http://127.0.0.1:18793/ |
+| Token | `./identyclaw.sh token agent-c` |
+
+**Fast setup (copy from agent A):**
+
+```bash
+cd ~/identyclaw-openclaw
+./identyclaw.sh init                    # creates agent-c dir if missing
+./identyclaw.sh mirror agent-c agent-a
+./identyclaw.sh restart agent-c
+./identyclaw.sh set-password agent-c    # when Migadu password is ready
+./identyclaw.sh test-mail agent-c
+```
+
+**CLI chat:** `./identyclaw.sh chat agent-c`
 
 **Interactive onboard instead** (if you prefer the wizard over `mirror`):
 
@@ -540,7 +566,7 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Use a **separate `hooks.token
 | Command | Description |
 |---------|-------------|
 | `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.5.27+ + Himalaya + Discord plugin layer |
-| `./identyclaw.sh init` | Create `~/.openclaw-agent-a` and `~/.openclaw-agent-b` |
+| `./identyclaw.sh init` | Create `~/.openclaw-agent-a`, `~/.openclaw-agent-b`, and `~/.openclaw-agent-c` |
 | `./identyclaw.sh set-password agent-a` | Store Migadu password locally |
 | `./identyclaw.sh set-discord-token agent-a` | Store Discord bot token in `secrets/` (synced to `.env` on start) |
 | `./identyclaw.sh set-api-key agent-a` | Store OpenRouter API key (`sk-or-...`) with validation |
@@ -569,6 +595,8 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Use a **separate `hooks.token
   secrets/imap.sh         # auth helper for Himalaya
 
 ~/.openclaw-agent-b/      # same structure
+
+~/.openclaw-agent-c/      # same structure
 ```
 
 ## Host CLI (optional)

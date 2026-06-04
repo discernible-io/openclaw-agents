@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Identyclaw: two isolated OpenClaw gateways (Podman) + Himalaya (Migadu).
+# Identyclaw: three isolated OpenClaw gateways (Podman) + Himalaya (Migadu).
 #
 # Rootless (recommended): ./identyclaw.sh <cmd>
 # Rootful (optional):      sudo IDENTITYCLAW_ROOTLESS=0 ./identyclaw.sh <cmd>
 #
 # Commands:
 #   build-image          Pull base + build openclaw-himalaya:local
-#   init                 Create agent-a / agent-b dirs + Migadu Himalaya config
-#   set-password <id>    Set Migadu mailbox password (agent-a | agent-b)
+#   init                 Create agent-a / agent-b / agent-c dirs + Migadu Himalaya config
+#   set-password <id>    Set Migadu mailbox password (agent-a | agent-b | agent-c)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
 #   start [id|all]       Start one or both containers
 #   stop [id|all]        Stop containers
@@ -79,6 +79,8 @@ init_one_agent() {
   chmod 700 "$dir" "$dir/workspace"
 
   write_himalaya_config "$email" "$display_name" "$dir"
+  write_himalaya_send_script "$email" "$display_name" "$dir"
+  write_agent_email_doc "$email" "$display_name" "$dir"
   write_openclaw_json "$dir" "$gateway_port"
   ensure_agent_env "$dir"
 
@@ -96,17 +98,19 @@ cmd_init() {
   load_env
   init_one_agent agent-a "$AGENT_A_EMAIL" "$AGENT_A_DISPLAY_NAME" "${AGENT_A_PASSWORD:-}" "$AGENT_A_GATEWAY_PORT"
   init_one_agent agent-b "$AGENT_B_EMAIL" "$AGENT_B_DISPLAY_NAME" "${AGENT_B_PASSWORD:-}" "$AGENT_B_GATEWAY_PORT"
+  init_one_agent agent-c "$AGENT_C_EMAIL" "$AGENT_C_DISPLAY_NAME" "${AGENT_C_PASSWORD:-}" "$AGENT_C_GATEWAY_PORT"
   echo ""
   echo "Next:"
   echo "  1. Edit ${ROOT}/env.local if needed (cp env.example env.local)"
   echo "  2. $0 set-password agent-a   # if passwords not in env.local"
   echo "  3. $0 build-image"
   echo "  4. $0 start all"
-  echo "  5. $0 onboard agent-a   # repeat for agent-b"
+  echo "  5. $0 enable-boot       # once: survive logout + reboot (sudo for linger)"
+  echo "  6. $0 onboard agent-a   # repeat for agent-b, agent-c"
 }
 
 cmd_set_password() {
-  local id="${1:?Usage: $0 set-password agent-a|agent-b}"
+  local id="${1:?Usage: $0 set-password agent-a|agent-b|agent-c}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -119,7 +123,7 @@ cmd_set_password() {
 }
 
 cmd_set_discord_token() {
-  local id="${1:?Usage: $0 set-discord-token agent-a|agent-b}"
+  local id="${1:?Usage: $0 set-discord-token agent-a|agent-b|agent-c}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -136,6 +140,7 @@ agent_ports() {
   case "$id" in
     agent-a) echo "$AGENT_A_GATEWAY_PORT $AGENT_A_BRIDGE_PORT" ;;
     agent-b) echo "$AGENT_B_GATEWAY_PORT $AGENT_B_BRIDGE_PORT" ;;
+    agent-c) echo "$AGENT_C_GATEWAY_PORT $AGENT_C_BRIDGE_PORT" ;;
     *) echo "unknown agent: $id" >&2; exit 1 ;;
   esac
 }
@@ -153,7 +158,9 @@ start_one() {
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run $0 init" >&2; exit 1; }
   [[ -f "$dir/openclaw.json" ]] || { echo "Missing config — run $0 init" >&2; exit 1; }
   ensure_internal_gateway_port "$dir" "$gw"
+  ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
+  ensure_discord_allow_bots_mentions "$dir"
 
   podman rm -f "$container" 2>/dev/null || true
 
@@ -181,14 +188,16 @@ start_one() {
 cmd_start() {
   require_podman
   require_rootless_user
+  ensure_agent_persistence
   local target="${1:-all}"
   case "$target" in
-    agent-a|agent-b) start_one "$target" ;;
+    agent-a|agent-b|agent-c) start_one "$target" ;;
     all)
       start_one agent-a
       start_one agent-b
+      start_one agent-c
       ;;
-    *) echo "Usage: $0 start [agent-a|agent-b|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 start [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -202,12 +211,13 @@ cmd_stop() {
   require_podman
   local target="${1:-all}"
   case "$target" in
-    agent-a|agent-b) stop_one "$target" ;;
+    agent-a|agent-b|agent-c) stop_one "$target" ;;
     all)
       stop_one agent-a
       stop_one agent-b
+      stop_one agent-c
       ;;
-    *) echo "Usage: $0 stop [agent-a|agent-b|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 stop [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -241,12 +251,12 @@ cmd_enable_boot() {
   echo "Verify:"
   loginctl show-user "$user" | grep Linger || true
   systemctl --user is-enabled podman-restart.service || true
-  podman inspect openclaw-agent-a openclaw-agent-b \
+  podman inspect openclaw-agent-a openclaw-agent-b openclaw-agent-c \
     --format '{{.Name}}  policy={{.HostConfig.RestartPolicy.Name}}  state={{.State.Status}}' 2>/dev/null || true
   echo ""
   ./identyclaw.sh status
   echo ""
-  echo "After a reboot, both agents should be Up without running start manually."
+  echo "After a reboot, all agents should be Up without running start manually."
   echo "To stop until next reboot: ./identyclaw.sh stop all"
 }
 
@@ -258,22 +268,23 @@ cmd_status() {
   echo "Control UI (use token from: $0 token <id>):"
   echo "  agent-a: http://${PUBLISH_HOST}:${AGENT_A_GATEWAY_PORT}/"
   echo "  agent-b: http://${PUBLISH_HOST}:${AGENT_B_GATEWAY_PORT}/"
+  echo "  agent-c: http://${PUBLISH_HOST}:${AGENT_C_GATEWAY_PORT}/"
 }
 
 cmd_logs() {
-  local id="${1:?Usage: $0 logs agent-a|agent-b}"
+  local id="${1:?Usage: $0 logs agent-a|agent-b|agent-c}"
   podman logs -f "$(agent_container "$id")"
 }
 
 cmd_test_mail() {
-  local id="${1:?Usage: $0 test-mail agent-a|agent-b}"
+  local id="${1:?Usage: $0 test-mail agent-a|agent-b|agent-c}"
   podman exec "$(agent_container "$id")" himalaya --version
   podman exec "$(agent_container "$id")" himalaya folder list
   podman exec "$(agent_container "$id")" himalaya envelope list --folder INBOX
 }
 
 cmd_token() {
-  local id="${1:?Usage: $0 token agent-a|agent-b}"
+  local id="${1:?Usage: $0 token agent-a|agent-b|agent-c}"
   local env_file
   env_file="$(agent_home "$id")/.env"
   grep '^OPENCLAW_GATEWAY_TOKEN=' "$env_file" | cut -d= -f2-
@@ -291,16 +302,23 @@ require_agent_running() {
 }
 
 cmd_chat() {
-  local id="${1:?Usage: $0 chat agent-a|agent-b}"
+  local id="${1:?Usage: $0 chat agent-a|agent-b|agent-c}"
   shift
   require_podman
   require_agent_running "$id"
+  load_env
+  local display gw
+  display="$(agent_display_name "$id")"
+  read -r gw _ < <(agent_ports "$id")
+  printf '\033]0;%s (%s) — identyclaw chat\007' "$display" "$id"
+  echo "=== ${display} · ${id} · http://${PUBLISH_HOST}:${gw}/ · session main ==="
+  echo ""
   podman exec -it "$(agent_container "$id")" node dist/index.js chat "$@"
 }
 
 cmd_ask() {
-  local id="${1:?Usage: $0 ask agent-a|agent-b \"message\"}"
-  local message="${2:?Usage: $0 ask agent-a|agent-b \"message\"}"
+  local id="${1:?Usage: $0 ask agent-a|agent-b|agent-c \"message\"}"
+  local message="${2:?Usage: $0 ask agent-a|agent-b|agent-c \"message\"}"
   require_podman
   require_agent_running "$id"
   podman exec "$(agent_container "$id")" node dist/index.js agent \
@@ -308,7 +326,7 @@ cmd_ask() {
 }
 
 cmd_set_api_key() {
-  local id="${1:?Usage: $0 set-api-key agent-a|agent-b}"
+  local id="${1:?Usage: $0 set-api-key agent-a|agent-b|agent-c}"
   local dir key
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -330,7 +348,7 @@ cmd_mirror() {
 }
 
 cmd_configure() {
-  local id="${1:?Usage: $0 configure agent-a|agent-b [openclaw configure flags...]}"
+  local id="${1:?Usage: $0 configure agent-a|agent-b|agent-c [openclaw configure flags...]}"
   shift
   require_podman
   local container
@@ -344,7 +362,7 @@ cmd_configure() {
 }
 
 cmd_onboard() {
-  local id="${1:?Usage: $0 onboard agent-a|agent-b}"
+  local id="${1:?Usage: $0 onboard agent-a|agent-b|agent-c}"
   shift
   require_podman
   require_rootless_user
