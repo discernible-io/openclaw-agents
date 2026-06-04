@@ -1,0 +1,8 @@
+# Local env (see env.example)
+env.local
+.env
+.env.*
+!.env.example
+
+# Agent runtime state (created by identyclaw.sh on the host)
+.openclaw-agent-*/

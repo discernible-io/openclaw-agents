@@ -4,14 +4,16 @@
   "license": "UNLICENSED",
   "type": "module",
   "description": "OpenClaw plugin exposing identyclaw API tools",
-  "main": "./index.ts",
+  "main": "./dist/index.js",
   "files": [
-    "index.ts",
+    "dist",
     "openclaw.plugin.json",
     "scripts"
   ],
   "scripts": {
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external",
     "prepare:publish": "node ./scripts/prepare-publish.mjs",
+    "prepublishOnly": "npm run build && npm run prepare:publish",
     "smoke:test": "node ./scripts/smoke-test.mjs"
   },
   "dependencies": {
@@ -28,11 +30,15 @@
     }
   },
   "devDependencies": {
+    "esbuild": "^0.25.5",
     "openclaw": "2026.5.27"
   },
   "openclaw": {
     "extensions": [
       "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.5.27",

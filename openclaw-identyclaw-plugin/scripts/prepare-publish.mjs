@@ -4,7 +4,7 @@
  * Does not mutate files; exits non-zero on validation errors.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,6 +51,22 @@ if (!openclawMeta?.build?.openclawVersion) {
 }
 if (!openclawMeta?.extensions?.length) {
   fail("openclaw.extensions must list at least one entrypoint");
+}
+
+const runtimeExtensions = openclawMeta?.runtimeExtensions ?? [];
+if (runtimeExtensions.length !== openclawMeta.extensions.length) {
+  fail(
+    "openclaw.runtimeExtensions length must match openclaw.extensions " +
+      `(got ${runtimeExtensions.length} runtime, ${openclawMeta.extensions.length} source)`
+  );
+}
+for (const entry of runtimeExtensions) {
+  const absolute = join(root, entry);
+  if (!existsSync(absolute)) {
+    fail(
+      `missing built runtime entry ${entry} — run "npm run build" before install/publish`
+    );
+  }
 }
 
 const manifestTools = new Set(manifest.contracts?.tools ?? []);

@@ -50,10 +50,9 @@ podman run --rm -v "$(pwd):/plugin:Z" -w /plugin ghcr.io/openclaw/openclaw:2026.
 
 ```bash
 cd openclaw-identyclaw-plugin
-npm install          # needs npm; skip if only running prepare:publish via node/podman
+npm install
+npm run build          # emits dist/index.js (required for install/publish)
 npm run prepare:publish
-# equivalent without npm:
-# node ./scripts/prepare-publish.mjs
 npm run smoke:test
 # Optional protected API checks:
 IDENTYCLAW_JWT="<jwt>" npm run smoke:test
@@ -64,11 +63,14 @@ IDENTYCLAW_JWT="<jwt>" npm run smoke:test
 On the gateway host:
 
 ```bash
-cd /path/to/identyclaw-openclaw/openclaw-identyclaw-plugin
+cd /path/to/identyclaw-agents/openclaw-identyclaw-plugin
+npm install
+npm run build
 npm run prepare:publish
-
 openclaw plugins install "$(pwd)"
 ```
+
+For a bind-mounted dev tree inside the gateway container, use `openclaw plugins install --link "$(pwd)"` instead (allows the mounted source path without copying into `extensions/`).
 
 Install copies the package under `~/.openclaw/extensions/`. Plugins declare `openclaw` as a **peerDependency** (not bundled). Newer OpenClaw builds symlink the host `openclaw` into the extension after install; older builds may only print a peer link warning.
 
@@ -132,6 +134,7 @@ Publisher must own the `@identyclaw` scope (package name `@identyclaw/openclaw-i
 
 ```bash
 clawhub login
+npm run build
 npm run prepare:publish
 clawhub package publish . --family code-plugin --dry-run
 clawhub package publish . --family code-plugin

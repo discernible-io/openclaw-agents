@@ -39,6 +39,7 @@ From `openclaw-identyclaw-plugin/`:
 
 ```bash
 npm install
+npm run build
 npm run smoke:test
 ```
 
@@ -63,6 +64,7 @@ On a host with OpenClaw gateway + Node 22:
 ```bash
 cd openclaw-identyclaw-plugin
 npm install
+npm run build
 npm run prepare:publish
 openclaw plugins install "$(pwd)"
 openclaw doctor --fix   # if peer openclaw link warning under ~/.openclaw/extensions
@@ -123,6 +125,7 @@ Execute each tool once with known-good inputs:
 ### 6.2 Publish flow (ClawHub)
 
 ```bash
+npm run build
 npm run prepare:publish
 clawhub package publish . --family code-plugin --dry-run
 clawhub package publish . --family code-plugin
