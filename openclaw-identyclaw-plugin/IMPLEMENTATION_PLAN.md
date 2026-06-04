@@ -58,7 +58,17 @@ IDENTYCLAW_JWT = "<jwt>" npm run smoke:test;
 
 ### 4.1 Install plugin locally
 
-Install the plugin into the local OpenClaw environment (from local package path or local publish workflow).
+On a host with OpenClaw gateway + Node 22:
+
+```bash
+cd openclaw-identyclaw-plugin
+npm install
+npm run prepare:publish
+openclaw plugins install "$(pwd)"
+openclaw doctor --fix   # if peer openclaw link warning under ~/.openclaw/extensions
+```
+
+Merge `docs/openclaw.sample.json` into gateway config, restart, then run tool checks in §4.2.
 
 ### 4.2 Tool-by-tool validation
 
@@ -112,10 +122,12 @@ Execute each tool once with known-good inputs:
 
 ### 6.2 Publish flow (ClawHub)
 
-```json
-clawhub package publish your-org/your-plugin --dry-run,
-clawhub package publish your-org/your-plugin,
+```bash
+npm run prepare:publish
+clawhub package publish . --family code-plugin --dry-run
+clawhub package publish . --family code-plugin
 openclaw plugins install clawhub:@identyclaw/openclaw-identyclaw-plugin
+openclaw doctor --fix
 ```
 
 ### 6.3 Post-publish verification

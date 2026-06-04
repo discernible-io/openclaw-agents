@@ -5,26 +5,42 @@
   "type": "module",
   "description": "OpenClaw plugin exposing identyclaw API tools",
   "main": "./index.ts",
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "scripts"
+  ],
   "scripts": {
+    "prepare:publish": "node ./scripts/prepare-publish.mjs",
     "smoke:test": "node ./scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.41",
     "bs58": "^6.0.0",
-    "openclaw": "^2026.3.24-beta.2",
     "tweetnacl": "^1.0.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.27"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "openclaw": "2026.5.27"
   },
   "openclaw": {
     "extensions": [
       "./index.ts"
     ],
     "compat": {
-      "pluginApi": ">=2026.3.24-beta.2",
-      "minGatewayVersion": "2026.3.24-beta.2"
+      "pluginApi": ">=2026.5.27",
+      "minGatewayVersion": "2026.5.27"
     },
     "build": {
-      "openclawVersion": "2026.3.24-beta.2",
-      "pluginSdkVersion": "2026.3.24-beta.2"
+      "openclawVersion": "2026.5.27",
+      "pluginSdkVersion": "2026.5.27"
     }
   }
 }
