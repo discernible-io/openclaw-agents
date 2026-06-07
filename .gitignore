@@ -1,8 +1,55 @@
-# Local env (see env.example)
+# Identyclaw repo — keep secrets, runtime state, and build trees out of git.
+# Copy env.example → env.local (never commit env.local).
+
+# --- Secrets / local env ---
 env.local
 .env
 .env.*
 !.env.example
+**/secrets/
+**/*.pass
+**/DISCORD_BOT_TOKEN
+**/jwt.txt
 
-# Agent runtime state (created by identyclaw.sh on the host)
+# --- OpenClaw agent state (default: ~/.openclaw-agent-* on host) ---
 .openclaw-agent-*/
+.openclaw-agent-*
+
+# --- Node / TypeScript ---
+node_modules/
+**/node_modules/
+# Sources are built locally; only the plugin bundle under dist/ is committed.
+*.ts
+*.tsbuildinfo
+.npm/
+.eslintcache
+# Other dist/ trees stay ignored; plugin publish artifact is whitelisted below.
+**/dist/
+!openclaw-identyclaw-plugin/dist/
+!openclaw-identyclaw-plugin/dist/**
+
+# --- Migration / backup archives ---
+*.tgz
+*.tar.gz
+*.tar
+*.zip
+identyclaw-migrate.*
+
+# --- Logs & scratch ---
+*.log
+logs/
+tmp/
+.temp/
+.cache/
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.cursor/
+.vscode/
+*.swp
+*~
+
+# --- Container / local image tags (optional local only) ---
+*.img
+*.tar

@@ -1,61 +1,34 @@
+// index.ts
 import { Type } from "@sinclair/typebox";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-
-type LoginCache = {
-  token: string;
-  expiresAtMs: number;
-};
-
-type RuntimeConfig = {
-  baseUrl: string;
-  accountid?: string;
-  // Backward compatibility for older configs/env naming.
-  roditid?: string;
-  nearPrivateKey?: string;
-};
-
-const ONE_MINUTE_MS = 60_000;
-let loginCache: LoginCache | null = null;
-
-function base64UrlEncode(bytes: Uint8Array): string {
+var ONE_MINUTE_MS = 6e4;
+var loginCache = null;
+function base64UrlEncode(bytes) {
   return Buffer.from(bytes).toString("base64url");
 }
-
-function toJsonText(value: unknown): string {
+function toJsonText(value) {
   return JSON.stringify(value, null, 2);
 }
-
-function readConfig(api: unknown): RuntimeConfig {
+function readConfig(api) {
   const envBase = process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
   const envAccountId = process.env.IDENTYCLAW_ACCOUNT_ID;
   const envRodit = process.env.IDENTYCLAW_RODIT_ID;
   const envKey = process.env.IDENTYCLAW_NEAR_PRIVATE_KEY;
-
-  const maybeApi = api as {
-    config?: Record<string, unknown>;
-    getConfig?: () => Record<string, unknown> | undefined;
-  };
-
+  const maybeApi = api;
   const fromGetConfig = maybeApi.getConfig?.() || {};
   const fromConfig = maybeApi.config || {};
   const merged = { ...fromConfig, ...fromGetConfig };
-
   return {
     baseUrl: String(merged.baseUrl || envBase),
-    accountid: merged.accountid
-      ? String(merged.accountid)
-      : merged.roditid
-        ? String(merged.roditid)
-        : envAccountId || envRodit,
+    accountid: merged.accountid ? String(merged.accountid) : merged.roditid ? String(merged.roditid) : envAccountId || envRodit,
     // Preserve legacy field as a fallback source only.
     roditid: merged.roditid ? String(merged.roditid) : envRodit,
     nearPrivateKey: merged.nearPrivateKey ? String(merged.nearPrivateKey) : envKey
   };
 }
-
-function getSecretKey32(nearPrivateKey: string): Uint8Array {
+function getSecretKey32(nearPrivateKey) {
   const keyBody = nearPrivateKey.replace(/^ed25519:/, "").trim();
   const decoded = bs58.decode(keyBody);
   if (decoded.length < 32) {
@@ -63,30 +36,25 @@ function getSecretKey32(nearPrivateKey: string): Uint8Array {
   }
   return decoded.slice(0, 32);
 }
-
-async function getJwt(cfg: RuntimeConfig): Promise<string> {
+async function getJwt(cfg) {
   if (loginCache && loginCache.expiresAtMs - ONE_MINUTE_MS > Date.now()) {
     return loginCache.token;
   }
-
   if (!cfg.accountid || !cfg.nearPrivateKey) {
     throw new Error("Missing config: protected tools require accountid and nearPrivateKey");
   }
-
   const tsResp = await fetch(`${cfg.baseUrl}/api/login/timestamp`);
   if (!tsResp.ok) {
     throw new Error(`Failed to get login timestamp: HTTP ${tsResp.status}`);
   }
-  const tsData = (await tsResp.json()) as { timestamp: number; timestamp_iso: string };
+  const tsData = await tsResp.json();
   if (!Number.isFinite(tsData.timestamp) || !tsData.timestamp_iso) {
     throw new Error("Timestamp endpoint returned invalid payload");
   }
-
   const message = `${cfg.accountid}${tsData.timestamp_iso}`;
   const secretKey = getSecretKey32(cfg.nearPrivateKey);
   const signature = nacl.sign.detached(new TextEncoder().encode(message), secretKey);
   const base64urlSignature = base64UrlEncode(signature);
-
   const loginResp = await fetch(`${cfg.baseUrl}/api/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -99,22 +67,19 @@ async function getJwt(cfg: RuntimeConfig): Promise<string> {
   if (!loginResp.ok) {
     throw new Error(`Login failed: HTTP ${loginResp.status}`);
   }
-  const loginData = (await loginResp.json()) as { token: string; expiresIn?: number };
+  const loginData = await loginResp.json();
   if (!loginData.token) {
     throw new Error("Login response did not include token");
   }
-
   const expiresIn = Number.isFinite(loginData.expiresIn) ? Number(loginData.expiresIn) : 3600;
   loginCache = {
     token: loginData.token,
-    expiresAtMs: Date.now() + expiresIn * 1000
+    expiresAtMs: Date.now() + expiresIn * 1e3
   };
-
   return loginData.token;
 }
-
-async function apiGet(path: string, cfg: RuntimeConfig, auth = false): Promise<unknown> {
-  const headers: Record<string, string> = {};
+async function apiGet(path, cfg, auth = false) {
+  const headers = {};
   if (auth) {
     headers.authorization = `Bearer ${await getJwt(cfg)}`;
   }
@@ -124,9 +89,8 @@ async function apiGet(path: string, cfg: RuntimeConfig, auth = false): Promise<u
   }
   return resp.json();
 }
-
-async function apiPost(path: string, body: unknown, cfg: RuntimeConfig, auth = false): Promise<unknown> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
+async function apiPost(path, body, cfg, auth = false) {
+  const headers = { "content-type": "application/json" };
   if (auth) {
     headers.authorization = `Bearer ${await getJwt(cfg)}`;
   }
@@ -140,8 +104,7 @@ async function apiPost(path: string, body: unknown, cfg: RuntimeConfig, auth = f
   }
   return resp.json();
 }
-
-export default definePluginEntry({
+var index_default = definePluginEntry({
   id: "identyclaw-tools",
   name: "identyclaw Tools",
   description: "OpenClaw tools for identyclaw API",
@@ -156,14 +119,13 @@ export default definePluginEntry({
       async execute(_id, params) {
         const cfg = readConfig(api);
         const query = new URLSearchParams();
-        if (params.limit !== undefined) query.set("limit", String(params.limit));
+        if (params.limit !== void 0) query.set("limit", String(params.limit));
         if (params.cursor) query.set("cursor", params.cursor);
         const suffix = query.size > 0 ? `?${query.toString()}` : "";
         const data = await apiGet(`/api/agents${suffix}`, cfg, false);
         return { content: [{ type: "text", text: toJsonText(data) }] };
       }
     });
-
     api.registerTool({
       name: "identyclaw_get_my_identity",
       description: "Get caller identity from identyclaw",
@@ -174,11 +136,9 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: toJsonText(data) }] };
       }
     });
-
     api.registerTool({
       name: "identyclaw_get_nonce",
-      description:
-        "GET /api/holanonce16ts — returns JSON { noncetsHex, timestamp, length, algorithm, requestId }. Use noncetsHex and timestamp in the HOLA line (not timestamp_iso from login).",
+      description: "GET /api/holanonce16ts \u2014 returns JSON { noncetsHex, timestamp, length, algorithm, requestId }. Use noncetsHex and timestamp in the HOLA line (not timestamp_iso from login).",
       parameters: Type.Object({}),
       async execute() {
         const cfg = readConfig(api);
@@ -186,7 +146,6 @@ export default definePluginEntry({
         return { content: [{ type: "text", text: toJsonText(data) }] };
       }
     });
-
     api.registerTool({
       name: "identyclaw_verify_hola",
       description: "Verify a HOLA message using identyclaw",
@@ -198,13 +157,12 @@ export default definePluginEntry({
         const cfg = readConfig(api);
         const body = {
           hello: params.hello,
-          constraints: params.maxAgeMs ? { maxAgeMs: params.maxAgeMs } : undefined
+          constraints: params.maxAgeMs ? { maxAgeMs: params.maxAgeMs } : void 0
         };
         const data = await apiPost("/api/identity/verify", body, cfg, true);
         return { content: [{ type: "text", text: toJsonText(data) }] };
       }
     });
-
     api.registerTool({
       name: "identyclaw_list_resources",
       description: "List identyclaw MCP-style resources",
@@ -215,14 +173,13 @@ export default definePluginEntry({
       async execute(_id, params) {
         const cfg = readConfig(api);
         const query = new URLSearchParams();
-        if (params.limit !== undefined) query.set("limit", String(params.limit));
+        if (params.limit !== void 0) query.set("limit", String(params.limit));
         if (params.cursor) query.set("cursor", params.cursor);
         const suffix = query.size > 0 ? `?${query.toString()}` : "";
         const data = await apiGet(`/api/mcp/resources${suffix}`, cfg, false);
         return { content: [{ type: "text", text: toJsonText(data) }] };
       }
     });
-
     api.registerTool({
       name: "identyclaw_get_resource",
       description: "Fetch one identyclaw MCP-style resource by URI",
@@ -238,3 +195,6 @@ export default definePluginEntry({
     });
   }
 });
+export {
+  index_default as default
+};
