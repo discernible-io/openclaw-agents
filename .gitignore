@@ -3,6 +3,7 @@
 
 # --- Secrets / local env ---
 env.local
+env.local.fragment*
 .env
 .env.*
 !.env.example
