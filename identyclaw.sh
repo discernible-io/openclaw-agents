@@ -20,6 +20,8 @@
 #   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
+#   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
+#   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
@@ -148,16 +150,6 @@ cmd_set_instagram() {
   write_instagram_secrets "$dir" "$username" "$password"
   echo "Instagram credentials stored in ${dir}/secrets/instagram.* (mode 600)"
   echo "Restart to apply: $0 restart ${id}"
-}
-
-agent_ports() {
-  local id="$1"
-  case "$id" in
-    agent-a) echo "$AGENT_A_GATEWAY_PORT $AGENT_A_BRIDGE_PORT" ;;
-    agent-b) echo "$AGENT_B_GATEWAY_PORT $AGENT_B_BRIDGE_PORT" ;;
-    agent-c) echo "$AGENT_C_GATEWAY_PORT $AGENT_C_BRIDGE_PORT" ;;
-    *) echo "unknown agent: $id" >&2; exit 1 ;;
-  esac
 }
 
 start_one() {
@@ -417,6 +409,39 @@ cmd_mirror() {
   echo "Restart to apply: $0 restart ${to_id}"
 }
 
+cmd_export_agent() {
+  local id="${1:?Usage: $0 export-agent agent-a|agent-b|agent-c [archive.tar.gz] [--with-browser] [--no-stop]}"
+  shift || true
+  require_rootless_user
+  load_env
+  local output="" with_browser=0 stop_first=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --with-browser) with_browser=1 ;;
+      --no-stop) stop_first=0 ;;
+      -*) echo "Unknown option: $1" >&2; exit 1 ;;
+      *)
+        if [[ -z "$output" ]]; then
+          output="$1"
+        else
+          echo "Unexpected argument: $1" >&2
+          exit 1
+        fi
+        ;;
+    esac
+    shift
+  done
+  export_agent_bundle "$id" "$output" "$with_browser" "$stop_first"
+}
+
+cmd_import_agent() {
+  local id="${1:?Usage: $0 import-agent agent-a|agent-b|agent-c archive.tar.gz}"
+  local archive="${2:?Usage: $0 import-agent agent-a|agent-b|agent-c archive.tar.gz}"
+  require_rootless_user
+  load_env
+  import_agent_bundle "$id" "$archive"
+}
+
 cmd_configure() {
   local id="${1:?Usage: $0 configure agent-a|agent-b|agent-c [openclaw configure flags...]}"
   shift
@@ -491,6 +516,8 @@ main() {
     set-instagram) cmd_set_instagram "$@" ;;
     set-api-key) cmd_set_api_key "$@" ;;
     mirror) cmd_mirror "$@" ;;
+    export-agent) cmd_export_agent "$@" ;;
+    import-agent) cmd_import_agent "$@" ;;
     configure) cmd_configure "$@" ;;
     start) cmd_start "$@" ;;
     stop) cmd_stop "$@" ;;

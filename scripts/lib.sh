@@ -125,6 +125,17 @@ agent_display_name() {
   esac
 }
 
+agent_ports() {
+  local id="$1"
+  load_env
+  case "$id" in
+    agent-a) echo "$AGENT_A_GATEWAY_PORT $AGENT_A_BRIDGE_PORT" ;;
+    agent-b) echo "$AGENT_B_GATEWAY_PORT $AGENT_B_BRIDGE_PORT" ;;
+    agent-c) echo "$AGENT_C_GATEWAY_PORT $AGENT_C_BRIDGE_PORT" ;;
+    *) echo "unknown agent: $id" >&2; exit 1 ;;
+  esac
+}
+
 generate_token() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
@@ -1173,4 +1184,289 @@ Path(dst_path).chmod(0o600)
 PY
 
   echo "Mirrored ${from_id} → ${to_id} (gateway port ${gw}, auth + openclaw.json)"
+}
+
+# Paths bundled for migration (secrets + durable config). Ephemeral/runtime dirs excluded.
+agent_export_paths() {
+  cat <<'EOF'
+openclaw.json
+.env
+.config
+secrets
+agents
+workspace
+identity
+extensions
+cron
+canvas
+devices
+credentials
+exec-approvals.json
+plugin-skills
+flows
+memory
+media
+discord
+EOF
+}
+
+agent_export_excludes() {
+  cat <<'EOF'
+openclaw.json.bak
+openclaw.json.bak.*
+openclaw.json.last-good
+.reset-backup
+.a2a-plugin-build
+cache
+logs
+npm
+delivery-queue
+tasks
+tui
+plugins
+update-check.json
+workspace/node_modules
+workspace/.git
+EOF
+}
+
+sync_agent_secrets_for_export() {
+  local id="$1"
+  local config_dir="$2"
+  sync_discord_env "$config_dir"
+  sync_identyclaw_env "$config_dir"
+  sync_instagram_env "$config_dir"
+  sync_quiet_plugin_env "$config_dir"
+}
+
+write_agent_export_manifest() {
+  local id="$1"
+  local config_dir="$2"
+  local manifest_path="$3"
+  local with_browser="$4"
+  load_env
+  local gw br email display_name repo_rev=""
+  read -r gw br < <(agent_ports "$id")
+  local mailbox
+  mailbox="$(agent_mailbox "$id")"
+  email="${mailbox%%|*}"
+  display_name="${mailbox#*|}"
+  if command -v git >/dev/null 2>&1 && [[ -d "$IDENTYCLAW_ROOT/.git" ]]; then
+    repo_rev="$(git -C "$IDENTYCLAW_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+  fi
+  python3 - "$manifest_path" "$id" "$config_dir" "$gw" "$br" "$email" "$display_name" \
+    "$with_browser" "$(hostname -f 2>/dev/null || hostname)" "$repo_rev" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path, agent_id, config_dir, gw, br, email, display_name, with_browser, source_host, repo_rev = sys.argv[1:11]
+manifest = {
+    "format": "identyclaw-agent-export",
+    "version": 1,
+    "agentId": agent_id,
+    "exportedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "sourceHost": source_host,
+    "identyclawRepoRev": repo_rev or None,
+    "gatewayPort": int(gw),
+    "bridgePort": int(br),
+    "email": email,
+    "displayName": display_name,
+    "includesBrowser": with_browser == "1",
+    "stateDirBasename": Path(config_dir).name,
+    "importSteps": [
+        "Copy identyclaw-agents repo to target host",
+        "cp env.example env.local && merge env.local.fragment",
+        "./identyclaw.sh build-image",
+        f"./identyclaw.sh import-agent {agent_id} <this-archive>",
+        f"./identyclaw.sh start {agent_id}",
+        f"./identyclaw.sh test-mail {agent_id}",
+    ],
+}
+Path(path).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+Path(path).chmod(0o600)
+PY
+}
+
+write_agent_export_env_fragment() {
+  local id="$1"
+  local fragment_path="$2"
+  load_env
+  local gw br email display_name password="" prefix a2a_url=""
+  read -r gw br < <(agent_ports "$id")
+  local mailbox
+  mailbox="$(agent_mailbox "$id")"
+  email="${mailbox%%|*}"
+  display_name="${mailbox#*|}"
+  case "$id" in
+    agent-a)
+      prefix="AGENT_A"
+      password="${AGENT_A_PASSWORD:-}"
+      a2a_url="${AGENT_A_A2A_PUBLIC_BASE_URL:-}"
+      ;;
+    agent-b)
+      prefix="AGENT_B"
+      password="${AGENT_B_PASSWORD:-}"
+      a2a_url="${AGENT_B_A2A_PUBLIC_BASE_URL:-}"
+      ;;
+    agent-c)
+      prefix="AGENT_C"
+      password="${AGENT_C_PASSWORD:-}"
+      a2a_url="${AGENT_C_A2A_PUBLIC_BASE_URL:-}"
+      ;;
+    *)
+      echo "unknown agent: $id" >&2
+      return 1
+      ;;
+  esac
+  cat >"$fragment_path" <<EOF
+# Merge into env.local on the target host (chmod 600 env.local).
+# Secrets are inside the archive under secrets/ — passwords here are optional duplicates.
+
+${prefix}_EMAIL=${email}
+${prefix}_DISPLAY_NAME="${display_name}"
+${prefix}_GATEWAY_PORT=${gw}
+${prefix}_BRIDGE_PORT=${br}
+EOF
+  if [[ -n "$password" ]]; then
+    printf '%s_PASSWORD=%s\n' "$prefix" "$password" >>"$fragment_path"
+  fi
+  if [[ -n "$a2a_url" ]]; then
+    printf '%s_A2A_PUBLIC_BASE_URL=%s\n' "$prefix" "$a2a_url" >>"$fragment_path"
+  fi
+  chmod 600 "$fragment_path"
+}
+
+fix_agent_export_permissions() {
+  local config_dir="$1"
+  chmod 700 "$config_dir" "$config_dir/secrets" 2>/dev/null || true
+  find "$config_dir/secrets" -type f -exec chmod 600 {} + 2>/dev/null || true
+  find "$config_dir/secrets" -type f -name '*.sh' -exec chmod 700 {} + 2>/dev/null || true
+  chmod 600 "$config_dir/.env" "$config_dir/openclaw.json" 2>/dev/null || true
+  find "$config_dir/agents" -type f -exec chmod 600 {} + 2>/dev/null || true
+  find "$config_dir/identity" -type f -exec chmod 600 {} + 2>/dev/null || true
+}
+
+export_agent_bundle() {
+  local id="$1"
+  local output="${2:-}"
+  local with_browser="${3:-0}"
+  local stop_first="${4:-1}"
+  local config_dir staging manifest fragment
+  config_dir="$(agent_home "$id")"
+  [[ -d "$config_dir" ]] || { echo "Missing agent dir: $config_dir (run init first)" >&2; exit 1; }
+  [[ -f "$config_dir/openclaw.json" ]] || { echo "Missing openclaw.json in $config_dir" >&2; exit 1; }
+
+  if [[ "$stop_first" == "1" ]] && command -v podman >/dev/null 2>&1; then
+    local container
+    container="$(agent_container "$id")"
+    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      echo "==> Stopping ${container} for consistent export"
+      podman stop "$container" >/dev/null
+    fi
+  fi
+
+  echo "==> Syncing secrets into .env before export"
+  sync_agent_secrets_for_export "$id" "$config_dir"
+
+  if [[ -z "$output" ]]; then
+    output="${IDENTYCLAW_ROOT}/identyclaw-migrate-${id}-$(date +%Y%m%d-%H%M%S).tar.gz"
+  fi
+  output="$(readlink -f "$output")"
+
+  staging="$(mktemp -d)"
+  local _export_staging="$staging"
+  trap 'rm -rf "${_export_staging:-}"' RETURN
+
+  write_agent_export_manifest "$id" "$config_dir" "$staging/MANIFEST.json" "$with_browser"
+  write_agent_export_env_fragment "$id" "$staging/env.local.fragment"
+
+  local path
+  while IFS= read -r path; do
+    [[ -n "$path" && -e "$config_dir/$path" ]] || continue
+    mkdir -p "$staging/$(dirname "$path")"
+    cp -a "$config_dir/$path" "$staging/$path"
+  done < <(agent_export_paths)
+  if [[ "$with_browser" == "1" && -d "$config_dir/browser" ]]; then
+    cp -a "$config_dir/browser" "$staging/browser"
+  fi
+
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    rm -rf "$staging/$path" 2>/dev/null || true
+  done < <(agent_export_excludes)
+
+  echo "==> Packing ${id} → ${output}"
+  tar --create --gzip --file "$output" -C "$staging" .
+
+  chmod 600 "$output"
+  local size
+  size="$(du -h "$output" | awk '{print $1}')"
+  echo ""
+  echo "Export ready: ${output} (${size})"
+  echo "Contains secrets — store encrypted, transfer over a trusted channel, delete when imported."
+  echo "On target: ./identyclaw.sh import-agent ${id} ${output}"
+}
+
+import_agent_bundle() {
+  local id="$1"
+  local archive="${2:?archive required}"
+  [[ -f "$archive" ]] || { echo "Archive not found: $archive" >&2; exit 1; }
+
+  local extract staging manifest_id
+  staging="$(mktemp -d)"
+  local _import_staging="$staging"
+  trap 'rm -rf "${_import_staging:-}"' RETURN
+  tar -xzf "$archive" -C "$staging"
+
+  [[ -f "$staging/MANIFEST.json" ]] || { echo "Invalid archive: missing MANIFEST.json" >&2; exit 1; }
+  manifest_id="$(python3 - "$staging/MANIFEST.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("agentId", ""))
+PY
+)"
+  [[ "$manifest_id" == "$id" ]] || {
+    echo "Archive is for ${manifest_id:-unknown}, not ${id}" >&2
+    exit 1
+  }
+
+  if command -v podman >/dev/null 2>&1; then
+    local container
+    container="$(agent_container "$id")"
+    podman stop "$container" 2>/dev/null || true
+    podman rm -f "$container" 2>/dev/null || true
+  fi
+
+  local config_dir backup
+  config_dir="$(agent_home "$id")"
+  if [[ -d "$config_dir" ]]; then
+    backup="${config_dir}.pre-import-$(date +%Y%m%d-%H%M%S)"
+    echo "==> Backing up existing ${config_dir} → ${backup}"
+    mv "$config_dir" "$backup"
+  fi
+  mkdir -p "$config_dir"
+
+  echo "==> Restoring agent state into ${config_dir}"
+  shopt -s dotglob
+  for item in "$staging"/*; do
+    base="$(basename "$item")"
+    [[ "$base" == "MANIFEST.json" || "$base" == "env.local.fragment" ]] && continue
+    cp -a "$item" "$config_dir/"
+  done
+  shopt -u dotglob
+
+  fix_agent_export_permissions "$config_dir"
+  load_env
+  read -r gw _ < <(agent_ports "$id")
+  ensure_internal_gateway_port "$config_dir" "$gw"
+  ensure_agent_bootstrap "$id" "$config_dir"
+
+  echo ""
+  echo "Imported ${id} into ${config_dir}"
+  if [[ -f "$staging/env.local.fragment" ]]; then
+    echo "Merge ${staging}/env.local.fragment into ${IDENTYCLAW_ROOT}/env.local on this host."
+    cp "$staging/env.local.fragment" "${IDENTYCLAW_ROOT}/env.local.fragment.${id}"
+    echo "Saved fragment: ${IDENTYCLAW_ROOT}/env.local.fragment.${id}"
+  fi
+  echo "Next: ./identyclaw.sh build-image && ./identyclaw.sh start ${id}"
 }
