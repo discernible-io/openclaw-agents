@@ -106,6 +106,23 @@ agent_has_near_credentials() {
   [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]
 }
 
+# Legacy layouts used secrets/near/*.json — bootstrap expects secrets/near-credentials/.
+ensure_near_credentials_layout() {
+  local config_dir="$1"
+  local cred_dir="$config_dir/secrets/near-credentials"
+  local legacy_dir="$config_dir/secrets/near"
+  agent_has_near_credentials "$config_dir" && return 0
+  [[ -d "$legacy_dir" ]] || return 0
+  local legacy_json
+  legacy_json="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$legacy_json" ]] || return 0
+  mkdir -p "$cred_dir"
+  cp -a "$legacy_dir"/*.json "$cred_dir/" 2>/dev/null || cp "$legacy_json" "$cred_dir/"
+  chmod 700 "$cred_dir"
+  find "$cred_dir" -maxdepth 1 -name '*.json' -type f -exec chmod 600 {} +
+  echo "    ($(basename "$config_dir" | sed 's/^\.openclaw-//'): migrated secrets/near → secrets/near-credentials/)" >&2
+}
+
 ensure_identyclaw_network() {
   command -v podman >/dev/null 2>&1 || return 0
   load_env
@@ -698,7 +715,7 @@ install_a2a_idc_plugin() {
   git clone --depth 1 "$A2A_PLUGIN_REPO" "$build_dir" >&2 || return 1
   (
     cd "$build_dir"
-    npm install --omit=dev >&2
+    npm install >&2
     npm run build >&2
   ) || true
   [[ -f "$build_dir/dist/index.js" ]] || {
@@ -719,12 +736,12 @@ ensure_a2a_packages() {
   load_env
   container="$(agent_container "$id")"
   config_dir="$(agent_home "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
   agent_has_near_credentials "$config_dir" || return 0
-  ensure_openclaw_cli_link "$container"
   if ! install_a2a_idc_plugin "$config_dir"; then
     return 0
   fi
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  ensure_openclaw_cli_link "$container"
   podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
 }
 
@@ -841,6 +858,7 @@ ensure_agent_bootstrap() {
   ensure_mail_secrets_from_env "$id" "$config_dir"
   ensure_agent_email_tooling "$id" "$config_dir"
   ensure_instagram_secrets_from_env "$id" "$config_dir"
+  ensure_near_credentials_layout "$config_dir"
   ensure_discord_guild_channels "$config_dir"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir"
