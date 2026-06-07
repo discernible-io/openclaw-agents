@@ -9,6 +9,7 @@
 #   init                 Create agent-a / agent-b / agent-c dirs + Migadu Himalaya config
 #   set-password <id>    Set Migadu mailbox password (agent-a | agent-b | agent-c)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
+#   set-instagram <id>      Store Instagram username/password in secrets/ (survives rebuilds)
 #   start [id|all]       Start one or both containers
 #   stop [id|all]        Stop containers
 #   restart [id|all]     Restart
@@ -16,6 +17,7 @@
 #   status               Show podman + health URLs
 #   logs <id>            Follow logs
 #   test-mail <id>       himalaya envelope list inside container
+#   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
@@ -135,6 +137,19 @@ cmd_set_discord_token() {
   echo "Restart to apply: $0 restart ${id}"
 }
 
+cmd_set_instagram() {
+  local id="${1:?Usage: $0 set-instagram agent-a|agent-b|agent-c}"
+  local dir username password
+  dir="$(agent_home "$id")"
+  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  read -r -p "Instagram username for ${id}: " username
+  read -r -s -p "Instagram password for ${id}: " password
+  echo
+  write_instagram_secrets "$dir" "$username" "$password"
+  echo "Instagram credentials stored in ${dir}/secrets/instagram.* (mode 600)"
+  echo "Restart to apply: $0 restart ${id}"
+}
+
 agent_ports() {
   local id="$1"
   case "$id" in
@@ -158,17 +173,24 @@ start_one() {
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run $0 init" >&2; exit 1; }
   [[ -f "$dir/openclaw.json" ]] || { echo "Missing config — run $0 init" >&2; exit 1; }
   ensure_internal_gateway_port "$dir" "$gw"
+  ensure_identyclaw_network
   ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
 
   podman rm -f "$container" 2>/dev/null || true
 
+  local network_args=()
+  if podman network exists "$IDENTYCLAW_NETWORK" 2>/dev/null; then
+    network_args=(--network "$IDENTYCLAW_NETWORK")
+  fi
+
   # shellcheck disable=SC2086
   podman run -d --replace \
     --name "$container" \
     --init \
     --restart always \
+    "${network_args[@]}" \
     $rt \
     -e HOME=/home/node \
     -e OPENCLAW_NO_RESPAWN=1 \
@@ -283,6 +305,45 @@ cmd_test_mail() {
   podman exec "$(agent_container "$id")" himalaya envelope list --folder INBOX
 }
 
+cmd_test_a2a() {
+  local from_id="${1:?Usage: $0 test-a2a agent-a agent-b}"
+  local to_id="${2:?Usage: $0 test-a2a agent-a agent-b}"
+  require_podman
+  load_env
+  require_agent_running "$from_id"
+  require_agent_running "$to_id"
+
+  local from_container to_container to_url gw
+  from_container="$(agent_container "$from_id")"
+  to_container="$(agent_container "$to_id")"
+  to_url="$(agent_agent_card_url "$to_id")"
+  read -r gw _ < <(agent_ports "$to_id")
+
+  echo "==> Discovery: ${from_id} → ${to_id}"
+  podman exec "$from_container" curl -sf "$to_url"
+  echo ""
+
+  echo "==> Discovery: ${to_id} → ${from_id}"
+  podman exec "$to_container" curl -sf "$(agent_agent_card_url "$from_id")"
+  echo ""
+
+  echo "==> Inbound auth (expect HTTP 401 without Bearer token)"
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://${PUBLISH_HOST}:${gw}/a2a" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{"id":"smoke"}}')"
+  if [[ "$code" != "401" ]]; then
+    echo "FAIL: POST /a2a without auth returned HTTP ${code}, expected 401" >&2
+    exit 1
+  fi
+  echo "OK: unauthenticated POST /a2a rejected (HTTP 401)"
+
+  echo ""
+  echo "A2A smoke passed (discovery + inbound auth gate)."
+  echo "For end-to-end RODiT messaging, run:"
+  echo "  $0 ask ${from_id} 'Use a2a_send_message to ping ${to_id} and report the task id'"
+}
+
 cmd_token() {
   local id="${1:?Usage: $0 token agent-a|agent-b|agent-c}"
   local env_file
@@ -313,7 +374,12 @@ cmd_chat() {
   printf '\033]0;%s (%s) — identyclaw chat\007' "$display" "$id"
   echo "=== ${display} · ${id} · http://${PUBLISH_HOST}:${gw}/ · session main ==="
   echo ""
-  podman exec -it "$(agent_container "$id")" node dist/index.js chat "$@"
+  # Suppress @rodit/rodit-auth-be JSON logs when chat loads the A2A plugin.
+  podman exec -it \
+    -e LOG_LEVEL=error \
+    -e SUPPRESS_NO_CONFIG_WARNING=true \
+    -e SUPPRESS_STRICTNESS_CHECK=true \
+    "$(agent_container "$id")" node dist/index.js chat "$@"
 }
 
 cmd_ask() {
@@ -321,7 +387,11 @@ cmd_ask() {
   local message="${2:?Usage: $0 ask agent-a|agent-b|agent-c \"message\"}"
   require_podman
   require_agent_running "$id"
-  podman exec "$(agent_container "$id")" node dist/index.js agent \
+  podman exec \
+    -e LOG_LEVEL=error \
+    -e SUPPRESS_NO_CONFIG_WARNING=true \
+    -e SUPPRESS_STRICTNESS_CHECK=true \
+    "$(agent_container "$id")" node dist/index.js agent \
     --agent main -m "$message"
 }
 
@@ -418,6 +488,7 @@ main() {
     init) cmd_init "$@" ;;
     set-password) cmd_set_password "$@" ;;
     set-discord-token) cmd_set_discord_token "$@" ;;
+    set-instagram) cmd_set_instagram "$@" ;;
     set-api-key) cmd_set_api_key "$@" ;;
     mirror) cmd_mirror "$@" ;;
     configure) cmd_configure "$@" ;;
@@ -428,6 +499,7 @@ main() {
     status) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
+    test-a2a) cmd_test_a2a "$@" ;;
     token) cmd_token "$@" ;;
     chat) cmd_chat "$@" ;;
     ask) cmd_ask "$@" ;;

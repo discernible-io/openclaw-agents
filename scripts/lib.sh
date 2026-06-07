@@ -22,7 +22,7 @@ load_env() {
         value="${value:1:${#value}-2}"
       fi
       case "$key" in
-        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*) printf -v "$key" '%s' "$value" ;;
+        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*) printf -v "$key" '%s' "$value" ;;
       esac
     done <"$f"
   fi
@@ -45,6 +45,10 @@ load_env() {
   AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
+  A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-agent-a agent-b}"
+  A2A_PLUGIN_REPO="${A2A_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-a2a-idc-plugin.git}"
+  IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
+  IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
 }
 
 detect_himalaya_arch() {
@@ -66,6 +70,49 @@ agent_home() {
 
 agent_container() {
   echo "openclaw-${1}"
+}
+
+agent_a2a_public_base_url() {
+  load_env
+  case "$1" in
+    agent-a) echo "${AGENT_A_A2A_PUBLIC_BASE_URL:-}" ;;
+    agent-b) echo "${AGENT_B_A2A_PUBLIC_BASE_URL:-}" ;;
+    agent-c) echo "${AGENT_C_A2A_PUBLIC_BASE_URL:-}" ;;
+    *) echo "" ;;
+  esac
+}
+
+agent_a2a_audience() {
+  local id="$1"
+  local public_url
+  public_url="$(agent_a2a_public_base_url "$id")"
+  if [[ -n "$public_url" ]]; then
+    echo "$public_url"
+  else
+    load_env
+    echo "http://$(agent_container "$id"):${OPENCLAW_CONTAINER_GATEWAY_PORT}"
+  fi
+}
+
+agent_agent_card_url() {
+  local id="$1"
+  load_env
+  echo "http://$(agent_container "$id"):${OPENCLAW_CONTAINER_GATEWAY_PORT}/.well-known/agent-card.json"
+}
+
+agent_has_near_credentials() {
+  local config_dir="$1"
+  local cred_dir="$config_dir/secrets/near-credentials"
+  [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]
+}
+
+ensure_identyclaw_network() {
+  command -v podman >/dev/null 2>&1 || return 0
+  load_env
+  if ! podman network exists "$IDENTYCLAW_NETWORK" 2>/dev/null; then
+    echo "    (creating Podman network ${IDENTYCLAW_NETWORK})" >&2
+    podman network create "$IDENTYCLAW_NETWORK" >/dev/null
+  fi
 }
 
 agent_display_name() {
@@ -342,13 +389,454 @@ if changed:
 PY
 }
 
+sync_identyclaw_env() {
+  local config_dir="$1"
+  local cred_dir="$config_dir/secrets/near-credentials"
+  local env_file="$config_dir/.env"
+  local cred_file=""
+  [[ -d "$cred_dir" ]] || return 0
+  cred_file="$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$cred_file" && -f "$cred_file" ]] || return 0
+  python3 - "$cred_file" "$env_file" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+cred_file, env_file = Path(sys.argv[1]), Path(sys.argv[2])
+creds = json.loads(cred_file.read_text(encoding="utf-8"))
+account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
+private_key = creds.get("private_key", "")
+if not account_id or not private_key:
+    raise SystemExit(0)
+
+lines = []
+if env_file.is_file():
+    with open(env_file, encoding="utf-8") as f:
+        lines = [
+            ln for ln in f
+            if not ln.startswith(
+                ("IDENTYCLAW_ACCOUNT_ID=", "IDENTYCLAW_NEAR_PRIVATE_KEY=", "IDENTYCLAW_BASE_URL=")
+            )
+        ]
+lines.append("IDENTYCLAW_BASE_URL=https://api.identyclaw.com\n")
+lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
+lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+}
+
+sync_quiet_plugin_env() {
+  local config_dir="$1"
+  local env_file="$config_dir/.env"
+  python3 - "$env_file" <<'PY'
+import os, sys
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+desired = {
+    "LOG_LEVEL": "error",
+    "SUPPRESS_NO_CONFIG_WARNING": "true",
+    "SUPPRESS_STRICTNESS_CHECK": "true",
+}
+lines = []
+if env_file.is_file():
+    with open(env_file, encoding="utf-8") as f:
+        lines = [ln for ln in f if ln.split("=", 1)[0] not in desired]
+for key, value in desired.items():
+    lines.append(f"{key}={value}\n")
+env_file.parent.mkdir(parents=True, exist_ok=True)
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+}
+
+ensure_identyclaw_config() {
+  local config_dir="$1"
+  local config="$config_dir/openclaw.json"
+  local cred_dir="$config_dir/secrets/near-credentials"
+  local has_creds=0
+  [[ -f "$config" ]] || return 0
+  if [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]; then
+    has_creds=1
+    sync_identyclaw_env "$config_dir"
+  fi
+  python3 - "$config" "$has_creds" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+has_creds = sys.argv[2] == "1"
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+if skills.get("identyclaw", {}).get("enabled") is not True:
+    skills["identyclaw"] = {"enabled": True}
+    changed = True
+
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+entry = plugins.setdefault("identyclaw-tools", {})
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed = True
+cfg = entry.setdefault("config", {})
+if cfg.get("baseUrl") != "https://api.identyclaw.com":
+    cfg["baseUrl"] = "https://api.identyclaw.com"
+    changed = True
+
+identyclaw_tools = [
+    "identyclaw_list_agents",
+    "identyclaw_list_resources",
+    "identyclaw_get_resource",
+]
+if has_creds:
+    identyclaw_tools.extend([
+        "identyclaw_get_my_identity",
+        "identyclaw_get_nonce",
+        "identyclaw_verify_hola",
+    ])
+allow = data.setdefault("tools", {}).setdefault("allow", [])
+for tool in identyclaw_tools:
+    if tool not in allow:
+        allow.append(tool)
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+ensure_identyclaw_packages() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  ensure_openclaw_cli_link "$container"
+  if ! podman exec "$container" test -f /home/node/.openclaw/extensions/identyclaw-tools/openclaw.plugin.json 2>/dev/null; then
+    echo "    (${id}: installing ClawHub identyclaw plugin…)" >&2
+    podman exec "$container" node /app/openclaw.mjs plugins install clawhub:@identyclaw/openclaw-identyclaw-plugin --pin >&2 || true
+  fi
+  if ! podman exec "$container" test -f /home/node/.openclaw/workspace/skills/identyclaw/SKILL.md 2>/dev/null; then
+    echo "    (${id}: installing ClawHub identyclaw skill…)" >&2
+    podman exec "$container" node /app/openclaw.mjs skills install identyclaw >&2 || true
+  fi
+}
+
+build_a2a_peer_map() {
+  local self_id="$1"
+  load_env
+  local peer_id peers_json="{"
+  local first=1
+  for peer_id in $A2A_PEER_AGENTS; do
+    [[ "$peer_id" == "$self_id" ]] && continue
+    local peer_dir
+    peer_dir="$(agent_home "$peer_id")"
+    agent_has_near_credentials "$peer_dir" || continue
+    if [[ "$first" -eq 1 ]]; then
+      first=0
+    else
+      peers_json+=","
+    fi
+    peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\"}"
+  done
+  peers_json+="}"
+  echo "$peers_json"
+}
+
+ensure_a2a_config() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  agent_has_near_credentials "$config_dir" || return 0
+
+  load_env
+  sync_identyclaw_env "$config_dir"
+
+  local audience display_name public_base_url peers_json
+  audience="$(agent_a2a_audience "$id")"
+  display_name="$(agent_display_name "$id")"
+  public_base_url="$(agent_a2a_public_base_url "$id")"
+  peers_json="$(build_a2a_peer_map "$id")"
+
+  python3 - "$config" "$audience" "$display_name" "$public_base_url" "$peers_json" "$IDENTYCLAW_API_BASE_URL" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+audience = sys.argv[2]
+display_name = sys.argv[3]
+public_base_url = sys.argv[4]
+peers = json.loads(sys.argv[5])
+issuer = sys.argv[6]
+
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+entry = plugins.setdefault("a2a", {})
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed = True
+
+cfg = entry.setdefault("config", {})
+inbound = cfg.setdefault("inbound", {})
+outbound = cfg.setdefault("outbound", {})
+
+if inbound.get("allowUnauthenticated") is not False:
+    inbound["allowUnauthenticated"] = False
+    changed = True
+
+auth = inbound.setdefault("auth", {})
+desired_auth = {
+    "provider": "rodit",
+    "issuer": issuer,
+    "audience": audience,
+    "identityClaim": "token_id",
+}
+for key, value in desired_auth.items():
+    if auth.get(key) != value:
+        auth[key] = value
+        changed = True
+
+card = inbound.setdefault("agentCard", {})
+if card.get("name") != display_name:
+    card["name"] = display_name
+    changed = True
+if card.get("description") != f"{display_name} (IdentyClaw A2A)":
+    card["description"] = f"{display_name} (IdentyClaw A2A)"
+    changed = True
+
+if public_base_url:
+    if inbound.get("publicBaseUrl") != public_base_url:
+        inbound["publicBaseUrl"] = public_base_url
+        changed = True
+elif "publicBaseUrl" in inbound:
+    del inbound["publicBaseUrl"]
+    changed = True
+
+out_auth = outbound.setdefault("auth", {})
+desired_out_auth = {
+    "provider": "rodit",
+    "credentialsEnv": {
+        "accountId": "IDENTYCLAW_ACCOUNT_ID",
+        "privateKey": "IDENTYCLAW_NEAR_PRIVATE_KEY",
+        "baseUrl": "IDENTYCLAW_BASE_URL",
+    },
+    "jwtCacheTtlSeconds": 300,
+}
+for key, value in desired_out_auth.items():
+    if out_auth.get(key) != value:
+        out_auth[key] = value
+        changed = True
+
+if peers:
+    existing_agents = outbound.get("agents", {})
+    if existing_agents != peers:
+        outbound["agents"] = peers
+        changed = True
+elif "agents" in outbound:
+    del outbound["agents"]
+    changed = True
+
+a2a_tools = [
+    "a2a_get_agents",
+    "a2a_get_agent",
+    "a2a_send_message",
+    "a2a_get_task",
+    "a2a_view_text_artifact",
+    "a2a_view_data_artifact",
+    "a2a_update_agent_card",
+]
+allow = data.setdefault("tools", {}).setdefault("allow", [])
+for tool in a2a_tools:
+    if tool not in allow:
+        allow.append(tool)
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+install_a2a_idc_plugin() {
+  local config_dir="$1"
+  local ext_dir="$config_dir/extensions/a2a"
+  local build_dir="$config_dir/.a2a-plugin-build"
+  load_env
+
+  if [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
+    return 0
+  fi
+
+  command -v git >/dev/null 2>&1 || {
+    echo "    (A2A plugin: git required to clone ${A2A_PLUGIN_REPO})" >&2
+    return 1
+  }
+  command -v npm >/dev/null 2>&1 || {
+    echo "    (A2A plugin: npm required to build ${A2A_PLUGIN_REPO})" >&2
+    return 1
+  }
+
+  echo "    (building A2A plugin from ${A2A_PLUGIN_REPO}…)" >&2
+  rm -rf "$build_dir"
+  git clone --depth 1 "$A2A_PLUGIN_REPO" "$build_dir" >&2 || return 1
+  (
+    cd "$build_dir"
+    npm install --omit=dev >&2
+    npm run build >&2
+  ) || true
+  [[ -f "$build_dir/dist/index.js" ]] || {
+    echo "    (A2A plugin build failed — dist/index.js missing)" >&2
+    return 1
+  }
+
+  rm -rf "$ext_dir"
+  mkdir -p "$ext_dir"
+  cp -a "$build_dir"/{dist,openclaw.plugin.json,package.json,node_modules} "$ext_dir/"
+  rm -rf "$ext_dir/node_modules/openclaw"
+  ln -sf /app "$ext_dir/node_modules/openclaw"
+}
+
+ensure_a2a_packages() {
+  local id="$1"
+  local container config_dir
+  load_env
+  container="$(agent_container "$id")"
+  config_dir="$(agent_home "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  agent_has_near_credentials "$config_dir" || return 0
+  ensure_openclaw_cli_link "$container"
+  if ! install_a2a_idc_plugin "$config_dir"; then
+    return 0
+  fi
+  podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
+}
+
+write_instagram_secrets() {
+  local config_dir="$1"
+  local username="$2"
+  local password="$3"
+  [[ -n "$username" && -n "$password" ]] || { echo "empty Instagram credentials" >&2; return 1; }
+  mkdir -p "$config_dir/secrets"
+  printf '%s' "$username" >"$config_dir/secrets/instagram.username"
+  printf '%s' "$password" >"$config_dir/secrets/instagram.password"
+  chmod 700 "$config_dir/secrets"
+  chmod 600 "$config_dir/secrets/instagram.username" "$config_dir/secrets/instagram.password"
+  sync_instagram_env "$config_dir"
+  write_agent_instagram_doc "$config_dir" "$username"
+}
+
+sync_instagram_env() {
+  local config_dir="$1"
+  local user_file="$config_dir/secrets/instagram.username"
+  local pass_file="$config_dir/secrets/instagram.password"
+  local env_file="$config_dir/.env"
+  [[ -f "$user_file" && -f "$pass_file" ]] || return 0
+  local username password
+  username="$(<"$user_file")"
+  password="$(<"$pass_file")"
+  [[ -n "$username" && -n "$password" ]] || return 0
+  python3 - "$env_file" "$username" "$password" <<'PY'
+import os, sys
+path, username, password = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [
+            ln for ln in f
+            if not ln.startswith(("INSTAGRAM_USERNAME=", "INSTAGRAM_PASSWORD="))
+        ]
+lines.append(f"INSTAGRAM_USERNAME={username}\n")
+lines.append(f"INSTAGRAM_PASSWORD={password}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+write_agent_instagram_doc() {
+  local config_dir="$1"
+  local username="$2"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/INSTAGRAM.md" <<EOF
+# Instagram (Mundo En Blanco)
+
+**Credentials are configured.** Do not ask for manual login handoff or user-browser attach until you have tried browser login below and hit captcha / 2FA / suspicious-login.
+
+- **Profile:** https://www.instagram.com/${username}/
+- **Username:** \`${username}\` (\`INSTAGRAM_USERNAME\` in env)
+- **Password:** \`INSTAGRAM_PASSWORD\` in env (also \`secrets/instagram.*\`)
+
+## First step on any Instagram task
+
+1. Read this file.
+2. Log in via the managed \`browser\` tool (browser-automation skill) using env credentials.
+3. Open the profile and snapshot posts before suggesting alternatives.
+
+Save learned caption/reel style to \`workspace/instagram/STYLE.md\`.
+
+## Browser login
+
+1. \`action="open"\` → \`https://www.instagram.com/accounts/login/\` with \`label="instagram"\`
+2. \`action="snapshot"\` on \`targetId="instagram"\`
+3. Fill username/password from env, submit, snapshot again
+4. Reuse the \`instagram\` tab for posting, drafts, and reels
+
+Automated container login often hits reCAPTCHA — stop and point Mariia to \`workspace/instagram/Mariia-SETUP.md\` (user Chrome \`profile="user"\` or cookie import).
+
+## Session persistence
+
+Cookies live under \`browser/openclaw/user-data/\`. After a successful login, keep using the same browser profile; do not clear user data unless asked.
+EOF
+  chmod 644 "$config_dir/workspace/INSTAGRAM.md"
+}
+
+ensure_instagram_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local username="" password=""
+  load_env
+  case "$id" in
+    agent-a)
+      username="${AGENT_A_INSTAGRAM_USERNAME:-}"
+      password="${AGENT_A_INSTAGRAM_PASSWORD:-}"
+      ;;
+    agent-b)
+      username="${AGENT_B_INSTAGRAM_USERNAME:-}"
+      password="${AGENT_B_INSTAGRAM_PASSWORD:-}"
+      ;;
+    agent-c)
+      username="${AGENT_C_INSTAGRAM_USERNAME:-}"
+      password="${AGENT_C_INSTAGRAM_PASSWORD:-}"
+      ;;
+  esac
+  if [[ -n "$username" && -n "$password" ]] && [[ ! -f "$config_dir/secrets/instagram.username" ]]; then
+    write_instagram_secrets "$config_dir" "$username" "$password"
+    echo "    (${id}: Instagram credentials loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/instagram.username" ]]; then
+    sync_instagram_env "$config_dir"
+    write_agent_instagram_doc "$config_dir" "$(<"$config_dir/secrets/instagram.username")"
+  fi
+}
+
 ensure_agent_bootstrap() {
   local id="$1"
   local config_dir="$2"
   ensure_mail_secrets_from_env "$id" "$config_dir"
   ensure_agent_email_tooling "$id" "$config_dir"
+  ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_discord_guild_channels "$config_dir"
   ensure_discord_ready "$id" "$config_dir"
+  ensure_identyclaw_config "$config_dir"
+  ensure_a2a_config "$id" "$config_dir"
+  sync_quiet_plugin_env "$config_dir"
+  ensure_identyclaw_packages "$id"
+  ensure_a2a_packages "$id"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     echo "Note: ${id} has no Migadu password yet — run: ./identyclaw.sh set-password ${id}" >&2
   fi

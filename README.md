@@ -486,6 +486,17 @@ podman images localhost/openclaw-himalaya
 
 Fix: `./identyclaw.sh set-password agent-a` then `./identyclaw.sh restart all`.
 
+### SMTP send: `535` or `cannot connect to smtp server using tls`
+
+Migadu’s web UI lists **SMTP port 465 + TLS**. Himalaya in the OpenClaw image must use **`smtp.migadu.com:587`** with **`start-tls`** (see `scripts/lib.sh` → `write_himalaya_config`). Port 465 often hangs or fails auth even when IMAP on 993 works.
+
+Also ensure:
+
+- `message.send.backend.login` and `From:` match the mailbox (e.g. `juanelo@agenthood.me`)
+- Password is in `~/.openclaw-agent-a/secrets/` via `./identyclaw.sh set-password agent-a` (do not paste passwords into `config.toml`)
+
+Quick check: `./identyclaw.sh test-mail agent-a` (IMAP) then send with `sh scripts/himalaya-send.sh …` inside the container.
+
 ### `onboard`: Address already in use (port 18789 / 18791)
 
 The running gateway already binds that agent’s port. Onboarding is a **CLI-only** wizard and does not need its own port mapping (fixed in current `identyclaw.sh`). Pull the latest script, or stop the agent first:
