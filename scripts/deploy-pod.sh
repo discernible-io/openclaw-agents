@@ -44,6 +44,8 @@ case "$DEPLOY_TIER" in
     ;;
 esac
 APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
+POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
+POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
 
 ensure_app_layout
 load_env
@@ -179,7 +181,7 @@ podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || tru
 
 prepare_pod_deploy_host_paths
 
-podman pod create --name "$POD_NAME" -p "${APP_PORT}:${APP_PORT}"
+podman pod create --name "$POD_NAME" -p "${POD_HOST_PORT}:${POD_LISTEN_PORT}"
 
 for id in $AGENT_IDS; do
   ensure_agent_runtime "$id"
@@ -206,4 +208,8 @@ podman run -d \
   "$NGINX_IMAGE"
 
 podman ps -a --filter "pod=${POD_NAME}"
-echo "==> Deploy complete — pod ${POD_NAME} on port ${APP_PORT}"
+if [[ "$POD_HOST_PORT" == "$POD_LISTEN_PORT" ]]; then
+  echo "==> Deploy complete — pod ${POD_NAME} on port ${POD_HOST_PORT}"
+else
+  echo "==> Deploy complete — pod ${POD_NAME} on host port ${POD_HOST_PORT} (container ${POD_LISTEN_PORT})"
+fi

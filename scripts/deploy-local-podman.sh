@@ -59,6 +59,8 @@ case "$DEPLOY_TIER" in
 esac
 
 APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
+POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
+POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
 DOMAIN="$(deploy_tier_health_domain "$DEPLOY_TIER")"
 NGINX_BUILD_ENV="$(deploy_tier_nginx_build_env "$DEPLOY_TIER")"
 
@@ -109,17 +111,19 @@ APP_DIR="$APP_DIR" \
 OPENCLAW_IMAGE="$OPENCLAW_IMAGE" \
 NGINX_IMAGE="$NGINX_IMAGE" \
 APP_PORT="$APP_PORT" \
+POD_LISTEN_PORT="$POD_LISTEN_PORT" \
+POD_HOST_PORT="$POD_HOST_PORT" \
 DEPLOY_TIER="$DEPLOY_TIER" \
 REPO_ROOT="$REPO_ROOT" \
 SKIP_PULL=1 \
 bash "$REPO_ROOT/scripts/deploy-pod.sh"
 
-HEALTH_URL="https://${DOMAIN}:${APP_PORT}/health"
+HEALTH_URL="https://${DOMAIN}:${POD_HOST_PORT}/health"
 echo "==> Health check: ${HEALTH_URL} (tier=${DEPLOY_TIER}, tag=${IMAGE_TAG})"
 attempt=0
 while [[ $attempt -lt $HEALTH_CHECK_MAX_ATTEMPTS ]]; do
   if [[ "$USE_LOCAL_RESOLVE" == 1 ]]; then
-    if curl -sk --resolve "${DOMAIN}:${APP_PORT}:127.0.0.1" "$HEALTH_URL" | grep -q healthy; then
+    if curl -sk --resolve "${DOMAIN}:${POD_HOST_PORT}:127.0.0.1" "$HEALTH_URL" | grep -q healthy; then
       echo "healthy"
       exit 0
     fi
