@@ -50,23 +50,27 @@ resolve_deploy_tier() {
 }
 
 deploy_tier_app_port() {
-  # Development tier uses main settings until dev-specific hosts/ports are provisioned.
   case "$1" in
-    development|main) printf '9443' ;;
+    development) printf '4443' ;;
+    main) printf '9443' ;;
     *) return 1 ;;
   esac
 }
 
 deploy_tier_health_domain() {
   case "$1" in
-    development|main) printf 'agent-a.identyclaw.com' ;;
+    development) printf 'agent-a.dihola.io' ;;
+    main) printf 'agent-a.identyclaw.com' ;;
     *) return 1 ;;
   esac
 }
 
 deploy_tier_nginx_build_env() {
-  # Development images use main nginx config for now (same listen port and server_name).
-  printf 'main'
+  case "${1:-development}" in
+    development) printf 'development' ;;
+    main) printf 'main' ;;
+    *) return 1 ;;
+  esac
 }
 
 ensure_app_layout() {

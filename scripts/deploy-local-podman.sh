@@ -89,9 +89,10 @@ build_images() {
     --build-arg "OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim" \
     --build-arg "HIMALAYA_VERSION=v1.2.0" \
     --build-arg "HIMALAYA_ARCH=${arch}"
-  echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV})"
+  echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV}, INGRESS_PORT=${APP_PORT})"
   podman build -f "$REPO_ROOT/nginx.Dockerfile" -t "$NGINX_IMAGE" "$REPO_ROOT" \
-    --build-arg "NODE_ENV=${NGINX_BUILD_ENV}"
+    --build-arg "NODE_ENV=${NGINX_BUILD_ENV}" \
+    --build-arg "INGRESS_PORT=${APP_PORT}"
 }
 
 if [[ "$PULL_FROM_GHCR" == 1 ]]; then
