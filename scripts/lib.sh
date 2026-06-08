@@ -490,14 +490,19 @@ ensure_agent_state_for_container_exec() {
 }
 
 # Restore ownership so the deploy user can read/write agent state on the host.
+# Skip agents whose gateway is running — restore races with pod container uid (1000).
 restore_pod_agent_state_for_host() {
   load_env
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
   [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
-  local id dir
+  local id dir container
   for id in agent-a agent-b agent-c; do
     dir="$(agent_home "$id")"
     [[ -d "$dir" ]] || continue
+    container="$(agent_container "$id")"
+    if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      continue
+    fi
     podman unshare chown -R 0:0 "$dir" 2>/dev/null || true
   done
 }
