@@ -5,9 +5,9 @@ Planned and recommended hardening for the identyclaw multi-agent stack (OpenClaw
 | Section | Status |
 |---------|--------|
 | [Runtime layout](#runtime-layout-repository-vs-app-directory) | **Implemented** — config and secrets live only under `~/identyclaw-agents-app` |
-| [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) | **In repo** — not yet live on a host |
-| [Cross-machine A2A (Option A)](#cross-machine-a2a-option-a--implementation-plan) | **In progress** — ports **9443** (main) / **4443** (dev) in repo; host deploy pending certs/DNS |
-| [A2A agent-to-agent](#a2a-agent-to-agent-communication-agent-a--agent-b) | Partially automated; RODiT plugin on bootstrap |
+| [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) | **Live on dedalo43** (local pod deploy); CI/CD path not wired yet |
+| [Cross-machine A2A (Option A)](#cross-machine-a2a-option-a--implementation-plan) | **In progress** — pod + A2A inbound on dedalo43; DNS, firewall, outbound peer pending |
+| [A2A agent-to-agent](#a2a-agent-to-agent-communication-agent-a--agent-b) | **agent-a live** on dedalo43; agent-b/c not provisioned on this host |
 
 ---
 
@@ -121,7 +121,7 @@ If upgrading from an earlier checkout-centric or `~/.openclaw-agent-*` layout:
 3. **Verify** — `./identyclaw.sh status` and `./identyclaw.sh token agent-a` should resolve paths without extra `export`.
 4. **Cleanup** — remove stale `~/identyclaw-agents/env.local` and `~/.openclaw-agent-*` after confirming the app dir works.
 
-**dedalo43 (Juanelo):** state migrated to `~/identyclaw-agents-app/agents/agent-a`; pod deploy uses `~/identyclaw-agents-app/env.local` with `IDENTYCLAW_DEPLOY_MODE=pod`.
+**dedalo43 (Juanelo):** state migrated to `~/identyclaw-agents-app/agents/agent-a`; pod deploy uses `~/identyclaw-agents-app/env.local` with `IDENTYCLAW_DEPLOY_MODE=pod`. Only **agent-a** is provisioned on this host (`A2A_PEER_AGENTS=agent-a`). Mailbox: `juanelo@agenthood.me` (operator override; not the README default `agent-a@identyclaw.com`).
 
 ### Operator quick reference
 
@@ -177,7 +177,22 @@ The nginx sidecar **complements** the OpenClaw gateway — it terminates TLS and
 | Gitleaks config | Done | [`.gitleaks.toml`](.gitleaks.toml) |
 | Operator docs | Done | [README — Production ingress](README.md#production-ingress-cicd--nginx-tls) |
 
-**Not live yet:** no host has been bootstrapped, no TLS material installed, no GitHub deploy secrets configured, and no successful CI deploy has run.
+### Live deploy status (dedalo43 — 2026-06-08)
+
+| Item | Status |
+|------|--------|
+| Pod `identyclaw-agents-pod` | Running — `identyclaw-nginx` + `openclaw-agent-a` on **9443** |
+| Deploy trigger | Local: `AGENT_IDS=agent-a TARGET=main ./scripts/deploy-local-podman.sh` (not CI) |
+| TLS | Self-signed bootstrap PEMs in `~/identyclaw-agents-app/certs/` |
+| A2A inbound (`audience`, `publicBaseUrl`) | `https://agent-a.identyclaw.com:9443` |
+| A2A outbound peers | None configured |
+| Webhooks (`hooks.enabled`) | Not enabled — external POST blocked |
+| Local ingress verify | Health **200**, Agent Card OK, unauthenticated `POST /a2a` → **401** |
+| Public DNS | `agent-a.identyclaw.com` — **no A record yet** (hostname does not resolve externally) |
+| Firewall **9443** | Not confirmed open |
+| CI/CD | GitHub deploy secrets not configured; no successful workflow deploy |
+
+**Still not live globally:** multi-agent pod (agent-b/c), CA-issued TLS, GitHub Actions deploy, and internet-reachable hostname for Juanelo.
 
 ### Deployment modes
 
@@ -294,7 +309,8 @@ Ordered checklist to go from **in-repo** to **live production**:
 
 #### 1. DNS
 
-- [ ] Create **A records** for all three agent hostnames on each environment’s deploy host.
+- [ ] **dedalo43:** A record `agent-a.identyclaw.com` → dedalo43 public IP (blocks cross-machine A2A until done).
+- [ ] Create **A records** for agent-b/c hostnames when those agents are deployed on a host.
 - [ ] Align names with nginx `server_name` and certificate SAN (change all three together if renaming).
 
 #### 2. TLS certificates
@@ -310,7 +326,10 @@ Ordered checklist to go from **in-repo** to **live production**:
 
 See [Runtime layout](#runtime-layout-repository-vs-app-directory) for the full tree. Minimum on the deploy host:
 
-- [ ] `./identyclaw.sh init` from the git clone (creates `~/identyclaw-agents-app/` and seeds `env.local`), **or** manually:
+- [x] **dedalo43:** app layout under `~/identyclaw-agents-app/` (`env.local`, `certs/`, `agents/agent-a`).
+- [x] **dedalo43:** `IDENTYCLAW_DEPLOY_MODE=pod`, `IDENTYCLAW_INGRESS_PORT=9443`, `AGENT_A_PUBLIC_HOST=agent-a.identyclaw.com`, `AGENT_A_A2A_PUBLIC_BASE_URL=https://agent-a.identyclaw.com:9443`.
+- [x] **dedalo43:** agent-a state migrated from `~/.openclaw-agent-a`; OpenRouter + NEAR credentials present.
+- [ ] **Other hosts / agent-b,c:** `./identyclaw.sh init` from the git clone (creates `~/identyclaw-agents-app/` and seeds `env.local`), **or** manually:
   ```bash
   mkdir -p ~/identyclaw-agents-app/{certs,logs/nginx,secrets,agents,exports}
   cp ~/identyclaw-agents/env.example ~/identyclaw-agents-app/env.local
@@ -333,16 +352,19 @@ See [Runtime layout](#runtime-layout-repository-vs-app-directory) for the full t
 
 #### 5. Host firewall and infra
 
-- [ ] Allow TCP **9443** (main) and/or **4443** (dev) on the deploy host (alongside existing service ports in [`infra/docs/production-hosts.md`](../../infra/docs/production-hosts.md)). No A2A-specific iptables rules — open the ingress port only.
+- [ ] **dedalo43:** allow inbound TCP **9443** (not confirmed open as of 2026-06-08).
+- [ ] Allow TCP **9443** (main) and/or **4443** (dev) on other deploy hosts (alongside existing service ports in [`infra/docs/production-hosts.md`](../../infra/docs/production-hosts.md)). No A2A-specific iptables rules — open the ingress port only.
 - [ ] Enable logind **linger** for the deploy user (workflow runs `ensure-podman-linger.sh`; verify `Linger=yes`).
 
 #### 6. First deploy and verification
 
-- [ ] Push to target branch (or run `./scripts/deploy-local-podman.sh` on the host).
-- [ ] Confirm pod: `podman ps --filter pod=identyclaw-agents-pod`
-- [ ] Health: `curl -sk https://agent-a.<host>:9443/health` (or `:4443` on dev) → `healthy`
-- [ ] Webhooks: `./identyclaw.sh test-webhook agent-a` → HTTP 401 without `hooks.token` (enable `hooks` in `openclaw.json` first)
-- [ ] A2A: `./identyclaw.sh test-a2a agent-a agent-b` with public URLs set (see [A2A verify](#4-verify))
+- [x] **dedalo43:** local pod deploy — `AGENT_IDS=agent-a TARGET=main ./scripts/deploy-local-podman.sh`.
+- [x] **dedalo43:** pod running — `identyclaw-agents-pod` with `identyclaw-nginx` + `openclaw-agent-a`.
+- [x] **dedalo43 (localhost):** health **200**, Agent Card, `POST /a2a` without JWT → **401** (via `curl -sk -H 'Host: agent-a.identyclaw.com' https://127.0.0.1:9443/...`).
+- [ ] **Public:** health and Agent Card via `https://agent-a.identyclaw.com:9443/...` (requires DNS + firewall).
+- [ ] Push to target branch for CI deploy (or repeat local deploy on other hosts).
+- [ ] Webhooks: enable `hooks.enabled` + `hooks.token` in `openclaw.json`, then `./identyclaw.sh test-webhook agent-a` → HTTP 401 without token.
+- [ ] A2A same-host: `./identyclaw.sh test-a2a agent-a agent-b` (requires agent-b on host); cross-machine: wire outbound peer (see [Phase 5](#phase-5--wire-outbound-peer-both-sides)).
 - [ ] Control UI (optional): `https://agent-a.<host>:9443/#token=<token>` from `./identyclaw.sh token agent-a`
 
 #### 7. Hardening (follow-up, not blocking first deploy)
@@ -350,7 +372,8 @@ See [Runtime layout](#runtime-layout-repository-vs-app-directory) for the full t
 - [x] Add nginx **rate limiting** on public paths (pattern: [`signsanctum-idc` nginx configs](../../signsanctum-idc/nginx/)).
 - [x] Pin nginx base image by **digest** in `nginx.Dockerfile` (supply-chain parity with hardened services).
 - [x] Document webhook URLs per agent subdomain for external integrators.
-- [ ] Decide whether to keep **standalone** `identyclaw.sh start` on the same host or production-only pod (avoid duplicate gateways on the same ports).
+- [x] **dedalo43:** standalone container stopped; production pod only (no port conflict on 9443).
+- [ ] Decide whether to allow **standalone** `identyclaw.sh start` on hosts that also run the pod (avoid duplicate gateways on the same ports).
 
 ### Related files
 
@@ -368,9 +391,9 @@ See [Runtime layout](#runtime-layout-repository-vs-app-directory) for the full t
 
 ## Cross-machine A2A (Option A) — implementation plan
 
-**Goal:** Agent **Juanelo** on host **dedalo43** (standalone today) communicates via A2A with an agent on a **different machine**, using production ingress (nginx TLS sidecar) — not Tailscale Funnel or SSH tunnels.
+**Goal:** Agent **Juanelo** on host **dedalo43** communicates via A2A with an agent on a **different machine**, using production ingress (nginx TLS sidecar) — not Tailscale Funnel or SSH tunnels.
 
-**Status:** Repo port migration complete (**9443** / **4443**). Host deploy (DNS, TLS, firewall, pod) proceeds per checklist below.
+**Status:** Pod deploy live on dedalo43 (single agent-a). A2A inbound URLs configured. Remaining blockers: **public DNS**, **firewall 9443**, **outbound peer wiring**, and external verification.
 
 ### Why Option A
 
@@ -395,14 +418,18 @@ Single-agent hosts (e.g. dedalo43 with only **agent-a**) use the same pattern: o
 
 ### Current gap on dedalo43 (Juanelo)
 
-| Item | Today | Target |
-|------|-------|--------|
-| Deploy mode | Standalone (`PUBLISH_HOST=127.0.0.1`) | `IDENTYCLAW_DEPLOY_MODE=pod` |
-| Ingress | Loopback only | nginx TLS on **9443** or **4443** |
-| `inbound.auth.audience` | `http://openclaw-agent-a:18789` | `https://<public-host>:<port>` |
-| `inbound.publicBaseUrl` | unset | same as audience base |
+| Item | Today (2026-06-08) | Target |
+|------|-------------------|--------|
+| Deploy mode | `IDENTYCLAW_DEPLOY_MODE=pod` | — (done) |
+| Ingress | nginx TLS on **9443** (`identyclaw-agents-pod`) | — (done locally) |
+| `inbound.auth.audience` | `https://agent-a.identyclaw.com:9443` | — (done) |
+| `inbound.publicBaseUrl` | `https://agent-a.identyclaw.com:9443` | — (done) |
+| TLS PEMs | Self-signed in `~/identyclaw-agents-app/certs/` | Optional CA-issued multi-SAN |
 | Outbound peers | none | remote Agent Card URL in `outbound.agents` |
-| DNS / TLS / firewall | not configured | see checklist below |
+| Public DNS | `agent-a.identyclaw.com` does not resolve | A record → dedalo43 public IP |
+| Firewall | **9443** not confirmed open | Inbound TCP 9443 |
+| External reachability | Localhost verify only | Peers resolve hostname from internet |
+| Webhooks | `hooks.enabled` not set | Enable before integrator POST |
 
 ### End-to-end flow (two machines)
 
@@ -433,7 +460,7 @@ Each side publishes exactly these values to the other (no secrets in Agent Card)
 | Field | Local (Juanelo / dedalo43) | Remote (peer) |
 |-------|---------------------------|---------------|
 | **Agent display name** | Juanelo | _(peer fills in)_ |
-| **Public base URL** | `https://agent-a.<host>:9443` | `https://<peer-host>:<peer-port>` |
+| **Public base URL** | `https://agent-a.identyclaw.com:9443` | `https://<peer-host>:<peer-port>` |
 | **Agent Card URL** | `{base}/.well-known/agent-card.json` | `{peer-base}/.well-known/agent-card.json` |
 | **A2A endpoint** | `{base}/a2a` | `{peer-base}/a2a` |
 | **Passport `token_id`** | 12-letter ID (for impersonation guard) | peer’s `token_id` |
@@ -464,11 +491,11 @@ Each side publishes exactly these values to the other (no secrets in Agent Card)
 
 - [x] Bootstrap: `./identyclaw.sh generate-certs` (or rely on `deploy-pod.sh` auto-generation).
 - [ ] **Optional:** CA-issued cert(s) with SAN covering all agent hostnames.
-- [ ] Install on dedalo43 (self-signed or CA):
+- [x] Install on dedalo43 (self-signed bootstrap):
   - `~/identyclaw-agents-app/certs/fullchain.pem`
   - `~/identyclaw-agents-app/certs/privkey.pem`
+- [x] Permissions on dedalo43: `podman unshare chown 101:101` on PEMs; key mode `600` (applied by deploy script).
 - [ ] Remote operator installs certs on their ingress path (same layout or equivalent reverse proxy).
-- [ ] Permissions: `podman unshare chown 101:101` on PEMs; key mode `600`.
 
 #### Phase 3 — Host firewall
 
@@ -500,6 +527,8 @@ Each side publishes exactly these values to the other (no secrets in Agent Card)
 
 #### Phase 5 — Wire outbound peer (both sides)
 
+- [ ] **dedalo43:** add remote peer to `outbound.agents` (not configured yet).
+
 On **dedalo43**, add remote peer to `~/identyclaw-agents-app/agents/agent-a/openclaw.json`:
 
 ```json
@@ -526,7 +555,8 @@ Enable tools (if missing): `a2a_send_message`, `a2a_get_agents`, `a2a_get_task`,
 
 #### Phase 6 — Verify
 
-**From any external network:**
+- [x] **dedalo43 (localhost, Host header):** health **200**, Agent Card returns Juanelo, unauthenticated `POST /a2a` → **401**.
+- [ ] **From external network** (requires DNS + firewall):
 
 ```bash
 # Discovery (public)
@@ -538,11 +568,17 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
   -H 'Content-Type: application/json' -d '{}'
 ```
 
-**On dedalo43:**
+**On dedalo43 (local until DNS is live):**
 
 ```bash
 ./identyclaw.sh status
-curl -sk https://agent-a.identyclaw.com:9443/health
+curl -sk https://127.0.0.1:9443/health -H 'Host: agent-a.identyclaw.com'
+curl -sk https://127.0.0.1:9443/.well-known/agent-card.json -H 'Host: agent-a.identyclaw.com'
+```
+
+**After outbound peer is wired:**
+
+```bash
 ./identyclaw.sh ask agent-a 'Use a2a_send_message to ping remote-peer and report the task id'
 ```
 
@@ -561,10 +597,11 @@ Copy/paste for coordination:
 **IdentyClaw A2A peer onboarding — Juanelo (dedalo43)**
 
 1. **Protocol:** [A2A](https://a2a-protocol.org/) via [`openclaw-a2a-idc-plugin`](https://github.com/discernible-io/openclaw-a2a-idc-plugin) (RODiT / Passport JWT).
-2. **Our public URLs (after deploy):**
+2. **Our public URLs (pod deployed; DNS pending):**
    - Agent Card: `https://agent-a.identyclaw.com:9443/.well-known/agent-card.json`
    - A2A: `POST https://agent-a.identyclaw.com:9443/a2a`
    - Issuer: `https://api.identyclaw.com`
+   - Display name: **Juanelo**
 3. **We need from you:**
    - Your public Agent Card URL (`https://…/.well-known/agent-card.json`)
    - Your public base URL (for our `outbound.agents` config)
@@ -576,10 +613,10 @@ Copy/paste for coordination:
 
 ---
 
-### Related files (will change on implement)
+### Related files (port migration — done)
 
-| File | Change |
-|------|--------|
+| File | Role |
+|------|------|
 | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) | `APP_PORT` 9443 / 4443 per branch |
 | [`nginx/nginx.main.conf`](nginx/nginx.main.conf) | `listen 9443 ssl` |
 | [`nginx/nginx.development.conf`](nginx/nginx.development.conf) | `listen 4443 ssl` |
@@ -597,19 +634,30 @@ Replace ad-hoc cross-agent coordination (Discord @mentions, email) with the [Age
 
 Each agent exposes a small, purpose-built HTTP surface for peer messaging instead of sharing a Discord channel or mailbox. That improves **authentication**, **auditability**, and **least privilege** compared to today’s channels.
 
+### Configured agents (dedalo43 — 2026-06-08)
+
+| Agent | Display name | Deployed | A2A inbound | Outbound peers | Notes |
+|-------|--------------|----------|-------------|----------------|-------|
+| **agent-a** | Juanelo | Yes (pod) | `https://agent-a.identyclaw.com:9443` | none | OpenRouter, NEAR credentials, Himalaya (`juanelo@agenthood.me`) |
+| **agent-b** | — | No | — | — | Documented in README; not under `~/identyclaw-agents-app/agents/` |
+| **agent-c** | — | No | — | — | Documented in README; not under `~/identyclaw-agents-app/agents/` |
+
 ### Current state
 
-| Channel | How agent-a and agent-b talk today | Security gap |
-|--------|-------------------------------------|--------------|
-| Discord | Shared guild; `allowBots: "mentions"` lets bots @mention each other | Broad channel access; bot tokens; mention-based triggering with no per-peer credential |
-| Email (Himalaya) | Migadu mailboxes; any message to the address is accepted | Mailbox is a shared ingress; IMAP/SMTP credentials in agent secrets |
-| `sessions_send` | Listed in `tools.allow` | Same-gateway sessions only — **not** cross-container |
+| Channel | How agents talk today (dedalo43) | Security gap |
+|--------|----------------------------------|--------------|
+| A2A (inbound) | Plugin enabled; JWT gate returns **401** without Bearer token | Outbound peers not wired; hostname not public yet |
+| Discord | Not primary on agent-a | Broad channel access if enabled |
+| Email (Himalaya) | `juanelo@agenthood.me` via Himalaya | Mailbox is a shared ingress; IMAP/SMTP credentials in agent secrets |
+| `sessions_send` | Same-gateway only | **Not** cross-container |
 
 **Runtime paths:** all agents use [Runtime layout](#runtime-layout-repository-vs-app-directory) — `~/identyclaw-agents-app/agents/<id>/`.
 
-**Standalone dev:** gateways bind on `127.0.0.1` (`PUBLISH_HOST` in `~/identyclaw-agents-app/env.local`).
+**dedalo43:** production pod mode (`IDENTYCLAW_DEPLOY_MODE=pod`); ingress on **9443** via `identyclaw-nginx`. See [Live deploy status](#live-deploy-status-dedalo43--2026-06-08).
 
-**Production ingress:** see [Production ingress](#production-ingress-cicd--nginx-tls-sidecar). In pod mode, peer discovery can use pod-local URLs (`http://127.0.0.1:18791`, etc.) or public HTTPS URLs when `AGENT_*_A2A_PUBLIC_BASE_URL` / `AGENT_*_PUBLIC_HOST` are set in app `env.local`.
+**Standalone dev (other hosts):** gateways bind on `127.0.0.1` (`PUBLISH_HOST` in `~/identyclaw-agents-app/env.local`).
+
+**Production ingress:** see [Production ingress](#production-ingress-cicd--nginx-tls-sidecar). In pod mode, peer discovery uses public HTTPS URLs when `AGENT_*_A2A_PUBLIC_BASE_URL` / `AGENT_*_PUBLIC_HOST` are set in app `env.local`, or pod-local URLs for same-host peers (`http://127.0.0.1:18791`, etc.).
 
 **Standalone multi-container:** peer traffic uses Podman network `identyclaw-net` and container DNS (`http://openclaw-agent-b:18789`, etc.) — see `ensure_identyclaw_network` in `scripts/lib.sh`.
 
@@ -680,15 +728,20 @@ Automated by `./identyclaw.sh start` when `secrets/near-credentials/*.json` exis
 
 #### 1. Prerequisites (each agent in `A2A_PEER_AGENTS`)
 
-- NEAR Passport credentials in `~/identyclaw-agents-app/agents/<id>/secrets/near-credentials/*.json`
-- `./identyclaw.sh restart agent-a agent-b` to apply bootstrap
+- [x] **dedalo43 / agent-a:** NEAR Passport credentials in `secrets/near-credentials/*.json`.
+- [ ] **agent-b,c:** provision agents and add to `A2A_PEER_AGENTS` when deploying multi-agent on a host.
+- `./identyclaw.sh restart <id>` to apply bootstrap after credential or peer changes.
 
-#### 2. Peer Agent Card URLs (container DNS)
+#### 2. Peer Agent Card URLs
+
+**Same-host pod (when agent-b is deployed):**
 
 | Agent | Peer Agent Card URL |
 |-------|---------------------|
 | agent-a | `http://openclaw-agent-b:18789/.well-known/agent-card.json` |
 | agent-b | `http://openclaw-agent-a:18789/.well-known/agent-card.json` |
+
+**dedalo43 today:** only agent-a — cross-machine peers use public HTTPS URLs in `outbound.agents` (see [Cross-machine A2A](#cross-machine-a2a-option-a--implementation-plan)).
 
 #### 3. Optional public exposure
 
@@ -730,4 +783,4 @@ Discord and email can remain as fallback channels. Tightening them (separate cha
 
 ---
 
-*Last updated: 2026-06-08*
+*Last updated: 2026-06-08 (dedalo43 pod deploy verified locally)*
