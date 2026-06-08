@@ -233,13 +233,30 @@ agent_public_host() {
   esac
 }
 
+agent_ingress_port() {
+  load_env
+  local explicit=""
+  case "$1" in
+    agent-a) explicit="${AGENT_A_INGRESS_PORT:-}" ;;
+    agent-b) explicit="${AGENT_B_INGRESS_PORT:-}" ;;
+    agent-c) explicit="${AGENT_C_INGRESS_PORT:-}" ;;
+    *) echo "${IDENTYCLAW_INGRESS_PORT}"; return 0 ;;
+  esac
+  if [[ -n "$explicit" ]]; then
+    echo "$explicit"
+  else
+    echo "${IDENTYCLAW_INGRESS_PORT}"
+  fi
+}
+
 agent_public_base_url() {
   local id="$1"
-  local host
+  local host port
   load_env
   host="$(agent_public_host "$id")"
   [[ -n "$host" ]] || return 0
-  echo "https://${host}:${IDENTYCLAW_INGRESS_PORT}"
+  port="$(agent_ingress_port "$id")"
+  echo "https://${host}:${port}"
 }
 
 # HTTPS ingress base for A2A + OpenClaw webhooks (pod mode). Same as agent_public_base_url.
@@ -1325,7 +1342,7 @@ ensure_production_ingress_config() {
   local public_url internal_port
   public_url="$(agent_public_base_url "$id")"
   internal_port="$(agent_internal_gateway_port "$id")"
-  python3 - "$config" "$public_url" "$internal_port" "$IDENTYCLAW_INGRESS_PORT" <<'PY'
+  python3 - "$config" "$public_url" "$internal_port" "$(agent_ingress_port "$id")" <<'PY'
 import json, sys
 from pathlib import Path
 
