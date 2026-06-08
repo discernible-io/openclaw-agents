@@ -22,7 +22,7 @@ load_env() {
         value="${value:1:${#value}-2}"
       fi
       case "$key" in
-        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*) printf -v "$key" '%s' "$value" ;;
+        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|DEPLOY_*) printf -v "$key" '%s' "$value" ;;
       esac
     done <"$f"
   fi
@@ -49,6 +49,11 @@ load_env() {
   A2A_PLUGIN_REPO="${A2A_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-a2a-idc-plugin.git}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+  IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
+  IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-5443}"
+  AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
+  AGENT_B_PUBLIC_HOST="${AGENT_B_PUBLIC_HOST:-agent-b.identyclaw.com}"
+  AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
 }
 
 detect_himalaya_arch() {
@@ -65,7 +70,11 @@ detect_himalaya_arch() {
 
 agent_home() {
   local id="$1"
-  echo "${IDENTYCLAW_STATE_DIR:-$HOME}/.openclaw-${id}"
+  if [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]]; then
+    echo "${IDENTYCLAW_AGENT_STATE_ROOT}/${id}"
+  else
+    echo "${IDENTYCLAW_STATE_DIR:-$HOME}/.openclaw-${id}"
+  fi
 }
 
 agent_container() {
@@ -74,12 +83,18 @@ agent_container() {
 
 agent_a2a_public_base_url() {
   load_env
+  local explicit=""
   case "$1" in
-    agent-a) echo "${AGENT_A_A2A_PUBLIC_BASE_URL:-}" ;;
-    agent-b) echo "${AGENT_B_A2A_PUBLIC_BASE_URL:-}" ;;
-    agent-c) echo "${AGENT_C_A2A_PUBLIC_BASE_URL:-}" ;;
-    *) echo "" ;;
+    agent-a) explicit="${AGENT_A_A2A_PUBLIC_BASE_URL:-}" ;;
+    agent-b) explicit="${AGENT_B_A2A_PUBLIC_BASE_URL:-}" ;;
+    agent-c) explicit="${AGENT_C_A2A_PUBLIC_BASE_URL:-}" ;;
+    *) echo ""; return 0 ;;
   esac
+  if [[ -n "$explicit" ]]; then
+    echo "$explicit"
+  elif [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    agent_public_base_url "$1"
+  fi
 }
 
 agent_a2a_audience() {
@@ -151,6 +166,137 @@ agent_ports() {
     agent-c) echo "$AGENT_C_GATEWAY_PORT $AGENT_C_BRIDGE_PORT" ;;
     *) echo "unknown agent: $id" >&2; exit 1 ;;
   esac
+}
+
+agent_internal_gateway_port() {
+  local id="$1"
+  load_env
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    case "$id" in
+      agent-a) echo "18789" ;;
+      agent-b) echo "18791" ;;
+      agent-c) echo "18793" ;;
+      *) echo "unknown agent: $id" >&2; exit 1 ;;
+    esac
+  else
+    echo "${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
+  fi
+}
+
+agent_public_host() {
+  load_env
+  case "$1" in
+    agent-a) echo "$AGENT_A_PUBLIC_HOST" ;;
+    agent-b) echo "$AGENT_B_PUBLIC_HOST" ;;
+    agent-c) echo "$AGENT_C_PUBLIC_HOST" ;;
+    *) echo "" ;;
+  esac
+}
+
+agent_public_base_url() {
+  local id="$1"
+  local host
+  load_env
+  host="$(agent_public_host "$id")"
+  [[ -n "$host" ]] || return 0
+  echo "https://${host}:${IDENTYCLAW_INGRESS_PORT}"
+}
+
+# HTTPS ingress base for A2A + OpenClaw webhooks (pod mode). Same as agent_public_base_url.
+agent_ingress_base_url() {
+  agent_public_base_url "$1"
+}
+
+agent_webhook_url() {
+  local id="$1"
+  local path="${2:-hooks/wake}"
+  path="${path#/}"
+  local base
+  base="$(agent_ingress_base_url "$id")"
+  if [[ -n "$base" ]]; then
+    echo "${base}/${path}"
+    return 0
+  fi
+  load_env
+  local gw
+  read -r gw _ < <(agent_ports "$id")
+  echo "http://${PUBLISH_HOST}:${gw}/${path}"
+}
+
+agent_a2a_endpoint_url() {
+  local id="$1"
+  local base
+  base="$(agent_a2a_public_base_url "$id")"
+  if [[ -n "$base" ]]; then
+    echo "${base}/a2a"
+    return 0
+  fi
+  load_env
+  local gw
+  read -r gw _ < <(agent_ports "$id")
+  echo "http://${PUBLISH_HOST}:${gw}/a2a"
+}
+
+agent_agent_card_public_url() {
+  local id="$1"
+  local base
+  base="$(agent_a2a_public_base_url "$id")"
+  if [[ -n "$base" ]]; then
+    echo "${base}/.well-known/agent-card.json"
+    return 0
+  fi
+  agent_agent_card_url "$id"
+}
+
+openclaw_hooks_enabled() {
+  local id="$1"
+  local config
+  config="$(agent_home "$id")/openclaw.json"
+  [[ -f "$config" ]] || return 1
+  python3 - "$config" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+hooks = data.get("hooks") or {}
+sys.exit(0 if hooks.get("enabled") else 1)
+PY
+}
+
+print_agent_ingress_urls() {
+  local id="$1"
+  load_env
+  local base card a2a wake agent_hook
+  base="$(agent_ingress_base_url "$id")"
+  if [[ -n "$base" ]]; then
+    card="${base}/.well-known/agent-card.json"
+    a2a="${base}/a2a"
+    wake="${base}/hooks/wake"
+    agent_hook="${base}/hooks/agent"
+    echo "  ${id} ingress (${base}):"
+    echo "    A2A discovery: ${card}"
+    echo "    A2A messaging: POST ${a2a}  (Authorization: Bearer <RODiT JWT>)"
+    echo "    Webhook wake:  POST ${wake}  (Authorization: Bearer <hooks.token>)"
+    echo "    Webhook agent: POST ${agent_hook}  (Authorization: Bearer <hooks.token>)"
+    if openclaw_hooks_enabled "$id"; then
+      echo "    hooks.enabled: yes (see openclaw.json hooks.token — not the Control UI token)"
+    else
+      echo "    hooks.enabled: no — enable hooks in openclaw.json before external senders can POST"
+    fi
+    return 0
+  fi
+  local gw
+  read -r gw _ < <(agent_ports "$id")
+  echo "  ${id} (standalone — loopback only unless tunneled):"
+  echo "    Webhook wake:  POST http://${PUBLISH_HOST}:${gw}/hooks/wake"
+  echo "    Webhook agent: POST http://${PUBLISH_HOST}:${gw}/hooks/agent"
+  echo "    A2A:           POST http://${PUBLISH_HOST}:${gw}/a2a"
+}
+
+agent_id_from_dir() {
+  local base
+  base="$(basename "$1")"
+  base="${base#.openclaw-}"
+  echo "$base"
 }
 
 generate_token() {
@@ -480,22 +626,97 @@ os.chmod(env_file, 0o600)
 PY
 }
 
+write_agent_identyclaw_doc() {
+  local id="$1"
+  local config_dir="$2"
+  local display_name peers has_a2a=""
+  load_env
+  display_name="$(agent_display_name "$id")"
+  mkdir -p "$config_dir/workspace"
+  if agent_has_near_credentials "$config_dir"; then
+    has_a2a="yes"
+    peers="$A2A_PEER_AGENTS"
+  fi
+  cat >"$config_dir/workspace/IDENTYCLAW.md" <<EOF
+# IdentyClaw identity + A2A peer messaging
+
+This agent uses **two** published integrations. Use the right one for the job:
+
+| Need | Use | Source |
+|------|-----|--------|
+| HOLA verify, Passport lookup, DID, API cheat sheet | **identyclaw** skill + \`identyclaw_*\` tools | [ClawHub: identyclaw/identyclaw](https://clawhub.ai/identyclaw/identyclaw) |
+| Message another OpenClaw agent (tasks, files, multi-turn) | **a2a_*** tools | [openclaw-a2a-idc-plugin](https://github.com/discernible-io/openclaw-a2a-idc-plugin) |
+
+## IdentyClaw (ClawHub skill + plugin)
+
+- **Skill:** \`identyclaw\` — workflows for JWT login, HOLA create/verify, DID resolution, agent discovery. Read \`SKILL.md\` when handling identity.
+- **Plugin:** \`identyclaw-tools\` — typed tools (\`identyclaw_verify_hola\`, \`identyclaw_list_agents\`, …). Passport signing key stays local; never paste keys into chat.
+- **API base:** \`https://api.identyclaw.com\`
+- **Credentials:** \`secrets/near-credentials/*.json\` → synced to \`.env\` as \`IDENTYCLAW_ACCOUNT_ID\`, \`IDENTYCLAW_NEAR_PRIVATE_KEY\`, \`IDENTYCLAW_BASE_URL\`.
+
+### First contact from an unknown agent (HOLA)
+
+1. \`identyclaw_verify_hola\` on the exact inbound HOLA string — trust only when \`verified: true\`.
+2. Note \`peerTokenId\` (12-letter Passport ID).
+3. \`identyclaw_get_agent_identity\` (or \`identyclaw_list_agents\` + lookup) for DN, \`contactUri\`, traits.
+4. **Impersonation guard:** reject if verified \`peerTokenId\` ≠ the ID the entity officially publishes on channels they control.
+
+For outbound HOLA, prefer \`identyclaw_create_hola\` (plugin v1.3.0+) or follow the skill’s HOLA section — fetch a **new** nonce immediately before each HOLA you sign.
+
+## A2A (GitHub plugin — RODiT JWT)
+
+- **Plugin id:** \`a2a\` — built from \`${A2A_PLUGIN_REPO}\` on bootstrap when Passport credentials exist.
+- **Auth:** RODiT / Passport JWT (no static A2A API keys). Outbound login uses \`IDENTYCLAW_*\` env vars; inbound validates \`iss\` + \`aud\` + \`token_id\`.
+- **Display name:** ${display_name}
+EOF
+  if [[ "$has_a2a" == "yes" ]]; then
+    cat >>"$config_dir/workspace/IDENTYCLAW.md" <<EOF
+- **Configured peers:** ${peers} (see \`plugins.entries.a2a.config.outbound.agents\` in \`openclaw.json\`).
+
+### A2A tools
+
+| Tool | Purpose |
+|------|---------|
+| \`a2a_get_agents\` | List configured remote agents |
+| \`a2a_send_message\` | Send message/files to a peer; returns \`context_id\` / \`task_id\` |
+| \`a2a_get_task\` | Poll long-running peer tasks |
+| \`a2a_update_agent_card\` | Update this agent’s public Agent Card |
+
+Prefer A2A for ongoing work with known peers (agent-a ↔ agent-b). Use IdentyClaw HOLA when verifying identity of an unknown sender or proving your Passport to a human-facing channel.
+EOF
+  else
+    cat >>"$config_dir/workspace/IDENTYCLAW.md" <<'EOF'
+- **A2A:** not configured — add `secrets/near-credentials/*.json` and restart to enable peer messaging.
+EOF
+  fi
+  chmod 644 "$config_dir/workspace/IDENTYCLAW.md"
+}
+
+identyclaw_skill_installed_in_container() {
+  local container="$1"
+  podman exec "$container" sh -c \
+    'test -f /home/node/.openclaw/workspace/skills/identyclaw/SKILL.md \
+      || test -f /home/node/.openclaw/skills/identyclaw/SKILL.md' 2>/dev/null
+}
+
 ensure_identyclaw_config() {
   local config_dir="$1"
   local config="$config_dir/openclaw.json"
   local cred_dir="$config_dir/secrets/near-credentials"
-  local has_creds=0
+  local has_creds=0 cred_path=""
   [[ -f "$config" ]] || return 0
   if [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]; then
     has_creds=1
+    cred_path="$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
     sync_identyclaw_env "$config_dir"
   fi
-  python3 - "$config" "$has_creds" <<'PY'
+  python3 - "$config" "$has_creds" "$cred_path" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 has_creds = sys.argv[2] == "1"
+cred_path = sys.argv[3]
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
@@ -514,6 +735,18 @@ if cfg.get("baseUrl") != "https://api.identyclaw.com":
     cfg["baseUrl"] = "https://api.identyclaw.com"
     changed = True
 
+if has_creds and cred_path:
+    creds = json.loads(Path(cred_path).read_text(encoding="utf-8"))
+    account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
+    private_key = creds.get("private_key", "")
+    if account_id and private_key:
+        if cfg.get("accountid") != account_id:
+            cfg["accountid"] = account_id
+            changed = True
+        if cfg.get("nearPrivateKey") != private_key:
+            cfg["nearPrivateKey"] = private_key
+            changed = True
+
 identyclaw_tools = [
     "identyclaw_list_agents",
     "identyclaw_list_resources",
@@ -523,7 +756,11 @@ if has_creds:
     identyclaw_tools.extend([
         "identyclaw_get_my_identity",
         "identyclaw_get_nonce",
+        "identyclaw_create_hola",
         "identyclaw_verify_hola",
+        "identyclaw_get_agent_identity",
+        "identyclaw_check_subagent_signer",
+        "identyclaw_resolve_did",
     ])
 allow = data.setdefault("tools", {}).setdefault("allow", [])
 for tool in identyclaw_tools:
@@ -547,10 +784,16 @@ ensure_identyclaw_packages() {
     echo "    (${id}: installing ClawHub identyclaw plugin…)" >&2
     podman exec "$container" node /app/openclaw.mjs plugins install clawhub:@identyclaw/openclaw-identyclaw-plugin --pin >&2 || true
   fi
-  if ! podman exec "$container" test -f /home/node/.openclaw/workspace/skills/identyclaw/SKILL.md 2>/dev/null; then
+  if ! identyclaw_skill_installed_in_container "$container"; then
     echo "    (${id}: installing ClawHub identyclaw skill…)" >&2
-    podman exec "$container" node /app/openclaw.mjs skills install identyclaw >&2 || true
+    podman exec "$container" node /app/openclaw.mjs skills install clawhub:identyclaw >&2 || true
   fi
+}
+
+ensure_agent_identyclaw_tooling() {
+  local id="$1"
+  local config_dir="$2"
+  write_agent_identyclaw_doc "$id" "$config_dir"
 }
 
 build_a2a_peer_map() {
@@ -863,6 +1106,7 @@ ensure_agent_bootstrap() {
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir"
   ensure_a2a_config "$id" "$config_dir"
+  ensure_agent_identyclaw_tooling "$id" "$config_dir"
   sync_quiet_plugin_env "$config_dir"
   ensure_identyclaw_packages "$id"
   ensure_a2a_packages "$id"
@@ -972,10 +1216,12 @@ PY
 ensure_internal_gateway_port() {
   local config_dir="$1"
   local host_gateway_port="$2"
+  local internal_port="${3:-}"
   local config="$config_dir/openclaw.json"
   [[ -f "$config" ]] || return 0
   load_env
-  python3 - "$config" "$host_gateway_port" "$OPENCLAW_CONTAINER_GATEWAY_PORT" <<'PY'
+  [[ -n "$internal_port" ]] || internal_port="$(agent_internal_gateway_port "$(agent_id_from_dir "$config_dir")")"
+  python3 - "$config" "$host_gateway_port" "$internal_port" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -994,6 +1240,47 @@ for origin in (
     f"http://localhost:{internal_port}",
 ):
     if origin not in origins:
+        origins.append(origin)
+        changed = True
+if changed:
+    Path(path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    Path(path).chmod(0o600)
+PY
+}
+
+ensure_production_ingress_config() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  load_env
+  local public_url internal_port
+  public_url="$(agent_public_base_url "$id")"
+  internal_port="$(agent_internal_gateway_port "$id")"
+  python3 - "$config" "$public_url" "$internal_port" "$IDENTYCLAW_INGRESS_PORT" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, public_url, internal_port, ingress_port = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+data = json.loads(Path(path).read_text(encoding="utf-8"))
+gateway = data.setdefault("gateway", {})
+changed = False
+if gateway.get("bind") != "lan":
+    gateway["bind"] = "lan"
+    changed = True
+if gateway.get("port") != internal_port:
+    gateway["port"] = internal_port
+    changed = True
+origins = gateway.setdefault("controlUi", {}).setdefault("allowedOrigins", [])
+candidates = [
+    f"http://127.0.0.1:{internal_port}",
+    f"http://localhost:{internal_port}",
+]
+if public_url:
+    candidates.append(public_url)
+    candidates.append(public_url.replace(f":{ingress_port}", "", 1))
+for origin in candidates:
+    if origin and origin not in origins:
         origins.append(origin)
         changed = True
 if changed:
@@ -1023,7 +1310,8 @@ write_openclaw_json() {
   },
   "skills": {
     "entries": {
-      "himalaya": { "enabled": true }
+      "himalaya": { "enabled": true },
+      "identyclaw": { "enabled": true }
     }
   },
   "tools": {

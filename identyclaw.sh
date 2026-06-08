@@ -18,6 +18,8 @@
 #   logs <id>            Follow logs
 #   test-mail <id>       himalaya envelope list inside container
 #   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
+#   test-webhook <id>    Smoke-test webhook ingress auth (expect 401 without hooks.token)
+#   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
@@ -279,10 +281,29 @@ cmd_status() {
   load_env
   podman ps -a --filter 'name=openclaw-agent-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
   echo ""
-  echo "Control UI (use token from: $0 token <id>):"
-  echo "  agent-a: http://${PUBLISH_HOST}:${AGENT_A_GATEWAY_PORT}/"
-  echo "  agent-b: http://${PUBLISH_HOST}:${AGENT_B_GATEWAY_PORT}/"
-  echo "  agent-c: http://${PUBLISH_HOST}:${AGENT_C_GATEWAY_PORT}/"
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    echo "Production ingress (A2A + webhooks — port ${IDENTYCLAW_INGRESS_PORT}):"
+    for id in agent-a agent-b agent-c; do
+      print_agent_ingress_urls "$id"
+    done
+    echo ""
+    echo "Control UI (operator; gateway token required):"
+    for id in agent-a agent-b agent-c; do
+      local base
+      base="$(agent_ingress_base_url "$id")"
+      [[ -n "$base" ]] && echo "  ${id}: ${base}/"
+    done
+  else
+    echo "Control UI (use token from: $0 token <id>):"
+    echo "  agent-a: http://${PUBLISH_HOST}:${AGENT_A_GATEWAY_PORT}/"
+    echo "  agent-b: http://${PUBLISH_HOST}:${AGENT_B_GATEWAY_PORT}/"
+    echo "  agent-c: http://${PUBLISH_HOST}:${AGENT_C_GATEWAY_PORT}/"
+    echo ""
+    echo "Webhooks / A2A (loopback — tunnel or pod deploy for HTTPS):"
+    for id in agent-a agent-b agent-c; do
+      print_agent_ingress_urls "$id"
+    done
+  fi
 }
 
 cmd_logs() {
@@ -305,11 +326,10 @@ cmd_test_a2a() {
   require_agent_running "$from_id"
   require_agent_running "$to_id"
 
-  local from_container to_container to_url gw
+  local from_container to_container to_url
   from_container="$(agent_container "$from_id")"
   to_container="$(agent_container "$to_id")"
   to_url="$(agent_agent_card_url "$to_id")"
-  read -r gw _ < <(agent_ports "$to_id")
 
   echo "==> Discovery: ${from_id} → ${to_id}"
   podman exec "$from_container" curl -sf "$to_url"
@@ -320,12 +340,13 @@ cmd_test_a2a() {
   echo ""
 
   echo "==> Inbound auth (expect HTTP 401 without Bearer token)"
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://${PUBLISH_HOST}:${gw}/a2a" \
+  local code a2a_url
+  a2a_url="$(agent_a2a_endpoint_url "$to_id")"
+  code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$a2a_url" \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{"id":"smoke"}}')"
   if [[ "$code" != "401" ]]; then
-    echo "FAIL: POST /a2a without auth returned HTTP ${code}, expected 401" >&2
+    echo "FAIL: POST /a2a without auth returned HTTP ${code}, expected 401 (${a2a_url})" >&2
     exit 1
   fi
   echo "OK: unauthenticated POST /a2a rejected (HTTP 401)"
@@ -334,6 +355,35 @@ cmd_test_a2a() {
   echo "A2A smoke passed (discovery + inbound auth gate)."
   echo "For end-to-end RODiT messaging, run:"
   echo "  $0 ask ${from_id} 'Use a2a_send_message to ping ${to_id} and report the task id'"
+}
+
+cmd_webhook_url() {
+  local id="${1:?Usage: $0 webhook-url agent-a|agent-b|agent-c [hooks/wake|hooks/agent|hooks/name]}"
+  local path="${2:-hooks/wake}"
+  agent_webhook_url "$id" "$path"
+}
+
+cmd_test_webhook() {
+  local id="${1:?Usage: $0 test-webhook agent-a|agent-b|agent-c}"
+  load_env
+  local url code
+  url="$(agent_webhook_url "$id" hooks/wake)"
+  echo "==> Webhook ingress auth (expect HTTP 401 without hooks.token)"
+  echo "    POST ${url}"
+  code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$url" \
+    -H 'Content-Type: application/json' \
+    -d '{"text":"identyclaw smoke"}')"
+  case "$code" in
+    401) echo "OK: unauthenticated POST /hooks/wake rejected (HTTP 401)" ;;
+    404)
+      echo "WARN: HTTP 404 — enable hooks in openclaw.json (hooks.enabled=true, hooks.token)" >&2
+      exit 1
+      ;;
+    *)
+      echo "FAIL: POST /hooks/wake without auth returned HTTP ${code}, expected 401" >&2
+      exit 1
+      ;;
+  esac
 }
 
 cmd_token() {
@@ -527,6 +577,8 @@ main() {
     logs) cmd_logs "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
+    test-webhook) cmd_test_webhook "$@" ;;
+    webhook-url) cmd_webhook_url "$@" ;;
     token) cmd_token "$@" ;;
     chat) cmd_chat "$@" ;;
     ask) cmd_ask "$@" ;;
