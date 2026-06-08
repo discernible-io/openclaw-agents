@@ -8,7 +8,8 @@
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #
 # Optional env (defaults match deploy.yml):
-#   APP_PORT=9443 (main) or 4443 (development)
+#   DEPLOY_TIER / TARGET   main or development (default: image tag, else git branch)
+#   APP_PORT=9443 (both tiers for now)
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
@@ -23,7 +24,6 @@ APP_DIR="${APP_DIR/#\~/$HOME}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:?OPENCLAW_IMAGE is required}"
 NGINX_IMAGE="${NGINX_IMAGE:?NGINX_IMAGE is required}"
 
-APP_PORT="${APP_PORT:-9443}"
 POD_NAME="${POD_NAME:-identyclaw-agents-pod}"
 NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -34,6 +34,16 @@ export IDENTYCLAW_DEPLOY_MODE=pod
 
 # shellcheck source=lib.sh
 source "$REPO_ROOT/scripts/lib.sh"
+
+DEPLOY_TIER="$(resolve_deploy_tier "$REPO_ROOT" "$OPENCLAW_IMAGE")"
+case "$DEPLOY_TIER" in
+  development|main) ;;
+  *)
+    echo "DEPLOY_TIER must be development or main (got: $DEPLOY_TIER)" >&2
+    exit 1
+    ;;
+esac
+APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
 
 ensure_app_layout
 load_env

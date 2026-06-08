@@ -8,6 +8,7 @@ Planned and recommended hardening for the identyclaw multi-agent stack (OpenClaw
 | [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) | **Live on dedalo43** (local pod deploy); CI/CD path not wired yet |
 | [Cross-machine A2A (Option A)](#cross-machine-a2a-option-a--implementation-plan) | **In progress** — pod + A2A inbound on dedalo43; DNS, firewall, outbound peer pending |
 | [A2A agent-to-agent](#a2a-agent-to-agent-communication-agent-a--agent-b) | **agent-a live** on dedalo43; agent-b/c not provisioned on this host |
+| [Plugin compatibility](#identyclaw-agents--openclaw-a2a-idc-plugin-compatibility) | **Compatible in principle** — deployment/config gaps (peer URLs, JWT audience, TLS) are active risks |
 
 ---
 
@@ -657,7 +658,7 @@ Each agent exposes a small, purpose-built HTTP surface for peer messaging instea
 
 **Standalone dev (other hosts):** gateways bind on `127.0.0.1` (`PUBLISH_HOST` in `~/identyclaw-agents-app/env.local`).
 
-**Production ingress:** see [Production ingress](#production-ingress-cicd--nginx-tls-sidecar). In pod mode, peer discovery uses public HTTPS URLs when `AGENT_*_A2A_PUBLIC_BASE_URL` / `AGENT_*_PUBLIC_HOST` are set in app `env.local`, or pod-local URLs for same-host peers (`http://127.0.0.1:18791`, etc.).
+**Production ingress:** see [Production ingress](#production-ingress-cicd--nginx-tls-sidecar). In pod mode, **inbound** `publicBaseUrl` / JWT `audience` use public HTTPS when `AGENT_*_A2A_PUBLIC_BASE_URL` / `AGENT_*_PUBLIC_HOST` are set; **outbound** peer URLs from `build_a2a_peer_map` still use container DNS unless edited manually — see [Plugin compatibility](#identyclaw-agents--openclaw-a2a-idc-plugin-compatibility).
 
 **Standalone multi-container:** peer traffic uses Podman network `identyclaw-net` and container DNS (`http://openclaw-agent-b:18789`, etc.) — see `ensure_identyclaw_network` in `scripts/lib.sh`.
 
@@ -784,4 +785,131 @@ Discord and email can remain as fallback channels. Tightening them (separate cha
 
 ---
 
-*Last updated: 2026-06-08 (dedalo43 pod deploy verified locally)*
+## identyclaw-agents ↔ openclaw-a2a-idc-plugin compatibility
+
+Review of the local `identyclaw-agents` checkout and the plugin fork plan ([`a2afork.md`](https://github.com/discernible-io/openclaw-a2a-idc-plugin/blob/main/a2afork.md) in [`discernible-io/openclaw-a2a-idc-plugin`](https://github.com/discernible-io/openclaw-a2a-idc-plugin)).
+
+**Overall verdict:** **Compatible in principle.** `identyclaw-agents` bootstraps the IdentyClaw fork of this plugin, configures RODiT JWT auth, wires nginx for `/a2a` and `/.well-known/agent-card.json`, and pins OpenClaw `2026.5.27-slim`, which satisfies the plugin’s `>=2026.4.8` requirement.
+
+What is **not** fully solved yet is **cross-machine peer wiring**, **JWT audience alignment**, and **outbound discovery URLs** in pod mode. Those are operational/bootstrap issues, not A2A protocol mismatches.
+
+### What aligns well
+
+| Area | Status |
+|------|--------|
+| Plugin variant | Bootstrap installs the **IDC fork** (RODiT JWT), not upstream `@a2anet/openclaw-a2a-plugin` (API keys only) |
+| Auth model | `ensure_a2a_config()` sets `inbound.auth.provider: rodit`, outbound `login_server`, never `allowUnauthenticated` |
+| Credentials | Gated on `secrets/near-credentials/*.json` → synced to `IDENTYCLAW_*` env vars |
+| Tools | All 7 `a2a_*` tools added to `tools.allow` |
+| Ingress paths | nginx proxies `/` to gateways; A2A lives at `/a2a` and `/.well-known/agent-card.json` (not under `/hooks/`) |
+| Reverse proxy headers | `X-Forwarded-Host`, `X-Forwarded-Proto`, etc. are set; plugin also supports explicit `inbound.publicBaseUrl` |
+| OpenClaw version | `2026.5.27` > plugin minimum `2026.4.8` |
+
+### Concerns (ordered by severity)
+
+#### 1. Outbound peer URLs don’t match pod / cross-machine topology
+
+Bootstrap builds outbound peers with **container DNS** via `agent_agent_card_url()` in [`scripts/lib.sh`](scripts/lib.sh):
+
+```bash
+agent_agent_card_url() {
+  local id="$1"
+  load_env
+  echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")/.well-known/agent-card.json"
+}
+```
+
+`build_a2a_peer_map()` uses that helper for every peer in `outbound.agents`.
+
+That works in **standalone** mode on `identyclaw-net`, but:
+
+- **Pod mode** ([`scripts/deploy-pod.sh`](scripts/deploy-pod.sh)): agents share a pod network namespace; `openclaw-agent-b` hostnames typically **won’t resolve**. Use `http://127.0.0.1:18791` or public HTTPS URLs instead.
+- **Cross-machine**: peers must use **remote public HTTPS** Agent Card URLs (e.g. `https://agent-b.identyclaw.com:9443/.well-known/agent-card.json`), which bootstrap does **not** auto-wire.
+
+[Live deploy status on dedalo43](#live-deploy-status-dedalo43--2026-06-08) shows **inbound working** but **outbound peers not configured**. This matches the plugin fork’s Phase 5 status in `a2afork.md`.
+
+**Impact:** `a2a_send_message` will fail at discovery unless you manually edit `outbound.agents` in each agent’s `openclaw.json`.
+
+#### 2. JWT `audience` must exactly match what IdentyClaw issues
+
+Bootstrap sets both `inbound.auth.audience` and `inbound.publicBaseUrl` to the public base URL, e.g. `https://agent-a.identyclaw.com:9443`.
+
+The plugin validates JWTs with that value as `owner_id` in the RODiT audience object ([`src/auth/rodit-inbound.ts`](https://github.com/discernible-io/openclaw-a2a-idc-plugin/blob/main/src/auth/rodit-inbound.ts) in the fork repo):
+
+```typescript
+function buildAudienceRodit(config: A2AInboundRoditAuthConfig): RoditAudienceRodit {
+    return {
+        token_id: "a2a-inbound",
+        owner_id: config.audience,
+        metadata: {
+            subjectuniqueidentifier_url: config.issuer,
+        },
+    };
+}
+```
+
+**Impact:** If `login_server` issues JWTs with a different `aud` (hostname without port, `http` vs `https`, etc.), **all inbound A2A calls return 401**. Verify with a live JWT from `login_server` before declaring production-ready (Tier 2/3 in `a2afork.md`).
+
+#### 3. Self-signed TLS on peer HTTPS
+
+Production ingress uses self-signed nginx certs. The plugin’s outbound HTTP client has **no TLS skip-verify option**. Node’s default `fetch` will reject self-signed peer certificates.
+
+**Impact:** Cross-machine `a2a_send_message` over `https://peer:9443` may fail unless you use CA-signed certs or terminate TLS at a trusted edge (Cloudflare, Let’s Encrypt, etc.). Inbound curl tests with `curl -k` don’t exercise this path.
+
+#### 4. Plugin install is fragile and failures can be silent
+
+Bootstrap clones `A2A_PLUGIN_REPO` (default: `openclaw-a2a-idc-plugin`), runs `npm install && npm run build`, and copies into `extensions/a2a/`. But:
+
+- Requires **git + npm on the host** (not inside the container)
+- Uses **shallow clone with no commit pin** — version drift risk
+- `ensure_a2a_packages` **returns 0 even if the build fails**, so agents can start without a working plugin:
+
+```bash
+  if ! install_a2a_idc_plugin "$config_dir"; then
+    return 0
+  fi
+```
+
+**Impact:** A2A may appear configured in `openclaw.json` but the plugin binary is missing. Check for `extensions/a2a/dist/index.js` after bootstrap.
+
+#### 5. `test-a2a` smoke test assumptions
+
+`./identyclaw.sh test-a2a` uses container DNS for discovery (`agent_agent_card_url`), which is unreliable in **pod mode**. It only checks unauthenticated `POST /a2a → 401`; it does **not** validate end-to-end RODiT messaging.
+
+Tier 3 (`a2a_send_message` across hosts) is still marked **not started** in `a2afork.md`.
+
+#### 6. Peer group vs deployed agents
+
+`A2A_PEER_AGENTS=agent-a agent-b` by default, but:
+
+- Peers are only added to `outbound.agents` if they have `near-credentials`
+- On dedalo43, only **agent-a** is deployed
+
+Harmless for outbound (agent-b is skipped), but easy to misread as “peers are wired” when they aren’t.
+
+#### 7. Minor / documentation drift
+
+- [A2A section](#a2a-agent-to-agent-communication-agent-a--agent-b) says pod mode should use public URLs or `127.0.0.1:port`, but `build_a2a_peer_map` still emits container DNS — docs and code disagree.
+- Plugin is **not published to npm/ClawHub yet** (Phase 7 in `a2afork.md`); production relies on git clone at bootstrap.
+- Upstream `@a2anet/openclaw-a2a-plugin` would **not** work with identyclaw’s RODiT deployment without config changes.
+
+### Deployment verification checklist
+
+| # | Check | How |
+|---|-------|-----|
+| 1 | Plugin actually loaded | `extensions/a2a/dist/index.js` exists; gateway logs show A2A routes registered |
+| 2 | Inbound auth | Unauthenticated `POST /a2a` → 401 (confirmed on dedalo43) |
+| 3 | JWT audience | Decode a token from `login_server`; confirm `aud` / `owner_id` matches `inbound.auth.audience` exactly (including port) |
+| 4 | Outbound peers | For each remote agent, manually set `outbound.agents.<id>.url` to the **public** Agent Card URL |
+| 5 | TLS | Use trusted certs for cross-host outbound, or confirm fetch succeeds against the peer’s cert chain |
+| 6 | End-to-end | `./identyclaw.sh ask agent-a 'Use a2a_send_message to ping <peer>…'` from the calling host |
+
+### Bottom line
+
+There is **no fundamental incompatibility** between `identyclaw-agents` and the IDC plugin fork — they are built for each other. The real risks are **configuration topology** (outbound peer URLs, JWT audience, TLS trust) and **bootstrap maturity** (silent plugin build failures, no cross-machine auto-wiring, Tier 3 testing incomplete).
+
+**Follow-up options:** concrete `openclaw.json` / `env.local` changes for a specific host pair (e.g. dedalo43 ↔ another machine), or a patch to `build_a2a_peer_map` to use public URLs in pod mode.
+
+---
+
+*Last updated: 2026-06-08 (dedalo43 pod deploy verified locally; plugin compatibility review added)*

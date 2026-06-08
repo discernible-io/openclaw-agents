@@ -19,8 +19,10 @@ env:
   SSH_KNOWN_HOSTS: ${{ github.ref == 'refs/heads/main' && secrets.SSH_KNOWN_HOSTS_MAIN || secrets.SSH_KNOWN_HOSTS_DEVELOPMENT }}
   APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/identyclaw-agents-app
   # Primary health-check host — must match nginx server_name for agent-a.
-  DOMAIN: ${{ github.ref == 'refs/heads/main' && 'agent-a.identyclaw.com' || 'agent-a.dihola.io' }}
-  APP_PORT: ${{ github.ref == 'refs/heads/main' && '9443' || '4443' }}
+  # Development tier uses main config until dev-specific hosts/ports are provisioned.
+  DOMAIN: agent-a.identyclaw.com
+  APP_PORT: '9443'
+  NGINX_BUILD_ENV: main
   POD_NAME: identyclaw-agents-pod
   NGINX_CONTAINER_NAME: identyclaw-nginx
   REGISTRY: ghcr.io
@@ -80,7 +82,7 @@ jobs:
           file: ./nginx.Dockerfile
           push: true
           build-args: |
-            NODE_ENV=${{ env.DEPLOY_TIER }}
+            NODE_ENV=${{ env.NGINX_BUILD_ENV }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}
           cache-from: type=gha
@@ -183,6 +185,7 @@ jobs:
             APP_DIR='${{ env.APP_DIR }}' \
             OPENCLAW_IMAGE='${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}' \
             NGINX_IMAGE='${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}' \
+            DEPLOY_TIER='${{ env.DEPLOY_TIER }}' \
             APP_PORT='${{ env.APP_PORT }}' \
             POD_NAME='${{ env.POD_NAME }}' \
             NGINX_CONTAINER_NAME='${{ env.NGINX_CONTAINER_NAME }}' \

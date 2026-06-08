@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Local Podman deploy — mirrors .github/workflows/deploy.yml on this host.
 #
+# Tier defaults match deploy.yml: main branch -> main tier; development (or any
+# other branch) -> development tier. Override with TARGET=main|development.
+#
 # Usage (repo root):
 #   ./scripts/deploy-local-podman.sh
 #   TARGET=main ./scripts/deploy-local-podman.sh
@@ -8,8 +11,8 @@
 #
 # Env:
 #   APP_DIR                  Default: ~/identyclaw-agents-app
-#   APP_PORT                 Default: 9443 (main) or 4443 (development)
-#   TARGET                   development (default) or main
+#   APP_PORT                 Default: 9443 (both tiers for now)
+#   TARGET                   Override tier (default: from current git branch)
 #   GITHUB_SHA               Image tag (default: git HEAD)
 #   PULL_FROM_GHCR=1         Pull images instead of local build
 #   USE_LOCAL_RESOLVE=1      curl --resolve for health check on loopback
@@ -22,7 +25,7 @@ for arg in "$@"; do
   case "$arg" in
     --skip-build) SKIP_BUILD=1 ;;
     -h|--help)
-      sed -n '1,20p' "$0"
+      sed -n '1,22p' "$0"
       exit 0
       ;;
   esac
@@ -31,14 +34,14 @@ done
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 APP_DIR="${APP_DIR:-$HOME/identyclaw-agents-app}"
 APP_DIR="${APP_DIR/#\~/$HOME}"
-DEPLOY_TIER="${TARGET:-main}"
-APP_PORT="${APP_PORT:-}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 USE_LOCAL_RESOLVE="${USE_LOCAL_RESOLVE:-0}"
 PULL_FROM_GHCR="${PULL_FROM_GHCR:-0}"
+HEALTH_CHECK_MAX_ATTEMPTS="${HEALTH_CHECK_MAX_ATTEMPTS:-5}"
+HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-5}"
 
-DOMAIN_MAIN="agent-a.identyclaw.com"
-DOMAIN_DEVELOPMENT="agent-a.dihola.io"
+# shellcheck source=lib.sh
+source "$REPO_ROOT/scripts/lib.sh"
 
 if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
   DEPLOY_SHA="${GITHUB_SHA:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
@@ -46,26 +49,18 @@ else
   DEPLOY_SHA="${GITHUB_SHA:-local}"
 fi
 
-APP_PORT="${APP_PORT:-9443}"
-
+DEPLOY_TIER="$(resolve_deploy_tier "$REPO_ROOT")"
 case "$DEPLOY_TIER" in
-  development)
-    NGINX_BUILD_ENV="development"
-    DOMAIN="$DOMAIN_DEVELOPMENT"
-    APP_PORT="${APP_PORT:-4443}"
-    INGRESS_PORT="${INGRESS_PORT:-4443}"
-    ;;
-  main)
-    NGINX_BUILD_ENV="main"
-    DOMAIN="$DOMAIN_MAIN"
-    APP_PORT="${APP_PORT:-9443}"
-    INGRESS_PORT="${INGRESS_PORT:-9443}"
-    ;;
+  development|main) ;;
   *)
     echo "TARGET must be development or main (got: $DEPLOY_TIER)" >&2
     exit 1
     ;;
 esac
+
+APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
+DOMAIN="$(deploy_tier_health_domain "$DEPLOY_TIER")"
+NGINX_BUILD_ENV="$(deploy_tier_nginx_build_env "$DEPLOY_TIER")"
 
 github_repository_from_origin() {
   local url origin
@@ -94,10 +89,9 @@ build_images() {
     --build-arg "OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim" \
     --build-arg "HIMALAYA_VERSION=v1.2.0" \
     --build-arg "HIMALAYA_ARCH=${arch}"
-  echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV}, INGRESS_PORT=${INGRESS_PORT})"
+  echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV})"
   podman build -f "$REPO_ROOT/nginx.Dockerfile" -t "$NGINX_IMAGE" "$REPO_ROOT" \
-    --build-arg "NODE_ENV=${NGINX_BUILD_ENV}" \
-    --build-arg "INGRESS_PORT=${INGRESS_PORT}"
+    --build-arg "NODE_ENV=${NGINX_BUILD_ENV}"
 }
 
 if [[ "$PULL_FROM_GHCR" == 1 ]]; then
@@ -114,14 +108,33 @@ APP_DIR="$APP_DIR" \
 OPENCLAW_IMAGE="$OPENCLAW_IMAGE" \
 NGINX_IMAGE="$NGINX_IMAGE" \
 APP_PORT="$APP_PORT" \
+DEPLOY_TIER="$DEPLOY_TIER" \
 REPO_ROOT="$REPO_ROOT" \
 SKIP_PULL=1 \
 bash "$REPO_ROOT/scripts/deploy-pod.sh"
 
 HEALTH_URL="https://${DOMAIN}:${APP_PORT}/health"
 echo "==> Health check: ${HEALTH_URL} (tier=${DEPLOY_TIER}, tag=${IMAGE_TAG})"
-if [[ "$USE_LOCAL_RESOLVE" == 1 ]]; then
-  curl -sk --resolve "${DOMAIN}:${APP_PORT}:127.0.0.1" "$HEALTH_URL" | grep -q healthy && echo "healthy" || echo "health check failed (nginx may still be starting)"
+attempt=0
+while [[ $attempt -lt $HEALTH_CHECK_MAX_ATTEMPTS ]]; do
+  if [[ "$USE_LOCAL_RESOLVE" == 1 ]]; then
+    if curl -sk --resolve "${DOMAIN}:${APP_PORT}:127.0.0.1" "$HEALTH_URL" | grep -q healthy; then
+      echo "healthy"
+      exit 0
+    fi
+  elif curl -sk "$HEALTH_URL" | grep -q healthy; then
+    echo "healthy"
+    exit 0
+  fi
+  attempt=$((attempt + 1))
+  echo "Health check attempt ${attempt}/${HEALTH_CHECK_MAX_ATTEMPTS}"
+  if [[ $attempt -lt $HEALTH_CHECK_MAX_ATTEMPTS ]]; then
+    sleep "$HEALTH_CHECK_INTERVAL"
+  fi
+done
+if [[ "$USE_LOCAL_RESOLVE" != 1 ]]; then
+  echo "health check failed (use USE_LOCAL_RESOLVE=1 if DNS is not pointed here yet)" >&2
 else
-  curl -sk "$HEALTH_URL" | grep -q healthy && echo "healthy" || echo "health check failed (use USE_LOCAL_RESOLVE=1 if DNS is not pointed here yet)"
+  echo "health check failed (nginx may still be starting)" >&2
 fi
+exit 1

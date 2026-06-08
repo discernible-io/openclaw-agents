@@ -12,6 +12,63 @@ identyclaw_env_file() {
   echo "$(identyclaw_app_dir)/env.local"
 }
 
+# Mirrors .github/workflows/deploy.yml tier mapping:
+# refs/heads/main -> main; any other branch (e.g. development) -> development.
+resolve_deploy_tier() {
+  local repo_root="${1:-${IDENTYCLAW_ROOT}}"
+  local image_ref="${2:-${OPENCLAW_IMAGE:-}}"
+
+  if [[ -n "${TARGET:-}" ]]; then
+    printf '%s' "$TARGET"
+    return 0
+  fi
+  if [[ -n "${DEPLOY_TIER:-}" ]]; then
+    printf '%s' "$DEPLOY_TIER"
+    return 0
+  fi
+  if [[ -n "$image_ref" ]]; then
+    if [[ "$image_ref" =~ :[^/]+-main$ ]]; then
+      printf 'main'
+      return 0
+    fi
+    if [[ "$image_ref" =~ :[^/]+-development$ ]]; then
+      printf 'development'
+      return 0
+    fi
+  fi
+  if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local branch
+    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [[ "$branch" == "main" ]]; then
+      printf 'main'
+    else
+      printf 'development'
+    fi
+    return 0
+  fi
+  printf 'development'
+}
+
+deploy_tier_app_port() {
+  # Development tier uses main settings until dev-specific hosts/ports are provisioned.
+  case "$1" in
+    development|main) printf '9443' ;;
+    *) return 1 ;;
+  esac
+}
+
+deploy_tier_health_domain() {
+  case "$1" in
+    development|main) printf 'agent-a.identyclaw.com' ;;
+    *) return 1 ;;
+  esac
+}
+
+deploy_tier_nginx_build_env() {
+  # Development images use main nginx config for now (same listen port and server_name).
+  printf 'main'
+}
+
 ensure_app_layout() {
   local app env_file
   app="$(identyclaw_app_dir)"
