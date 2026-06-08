@@ -196,6 +196,7 @@ start_one() {
     node dist/index.js gateway --bind lan --port 18789
 
   ensure_openclaw_cli_link "$container"
+  ensure_agent_packages "$id"
   echo "Started ${container} → http://${PUBLISH_HOST}:${gw}/"
 }
 

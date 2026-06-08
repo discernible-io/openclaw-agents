@@ -49,6 +49,9 @@ load_env() {
   A2A_PLUGIN_REPO="${A2A_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-a2a-idc-plugin.git}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+  # https://clawhub.ai/identyclaw/identyclaw
+  IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin}"
+  IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
 }
 
 detect_himalaya_arch() {
@@ -539,18 +542,37 @@ PY
 
 ensure_identyclaw_packages() {
   local id="$1"
-  local container
+  local container plugin_spec skill_spec
+  load_env
   container="$(agent_container "$id")"
+  plugin_spec="${IDENTYCLAW_CLAWHUB_PLUGIN}"
+  skill_spec="${IDENTYCLAW_CLAWHUB_SKILL}"
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
   ensure_openclaw_cli_link "$container"
   if ! podman exec "$container" test -f /home/node/.openclaw/extensions/identyclaw-tools/openclaw.plugin.json 2>/dev/null; then
-    echo "    (${id}: installing ClawHub identyclaw plugin…)" >&2
-    podman exec "$container" node /app/openclaw.mjs plugins install clawhub:@identyclaw/openclaw-identyclaw-plugin --pin >&2 || true
+    echo "    (${id}: installing ClawHub plugin ${plugin_spec}…)" >&2
+    podman exec "$container" node /app/openclaw.mjs plugins install "$plugin_spec" --pin >&2 || true
   fi
   if ! podman exec "$container" test -f /home/node/.openclaw/workspace/skills/identyclaw/SKILL.md 2>/dev/null; then
-    echo "    (${id}: installing ClawHub identyclaw skill…)" >&2
-    podman exec "$container" node /app/openclaw.mjs skills install identyclaw >&2 || true
+    echo "    (${id}: installing ClawHub skill ${skill_spec} from identyclaw/identyclaw…)" >&2
+    if ! podman exec "$container" node /app/openclaw.mjs skills install "$skill_spec" >&2; then
+      podman exec "$container" node /app/openclaw.mjs skills install identyclaw >&2 || true
+    fi
   fi
+}
+
+ensure_a2a_plugin_build() {
+  local id="$1"
+  local config_dir
+  config_dir="$(agent_home "$id")"
+  agent_has_near_credentials "$config_dir" || return 0
+  install_a2a_idc_plugin "$config_dir"
+}
+
+ensure_agent_packages() {
+  local id="$1"
+  ensure_identyclaw_packages "$id"
+  ensure_a2a_packages "$id"
 }
 
 build_a2a_peer_map() {
@@ -864,8 +886,7 @@ ensure_agent_bootstrap() {
   ensure_identyclaw_config "$config_dir"
   ensure_a2a_config "$id" "$config_dir"
   sync_quiet_plugin_env "$config_dir"
-  ensure_identyclaw_packages "$id"
-  ensure_a2a_packages "$id"
+  ensure_a2a_plugin_build "$id"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     echo "Note: ${id} has no Migadu password yet — run: ./identyclaw.sh set-password ${id}" >&2
   fi
