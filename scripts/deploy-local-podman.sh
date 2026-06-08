@@ -46,6 +46,8 @@ else
   DEPLOY_SHA="${GITHUB_SHA:-local}"
 fi
 
+APP_PORT="${APP_PORT:-9443}"
+
 case "$DEPLOY_TIER" in
   development)
     NGINX_BUILD_ENV="development"

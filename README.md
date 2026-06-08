@@ -350,7 +350,7 @@ Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport cred
 ./identyclaw.sh ask agent-a 'Verify any inbound HOLA with identyclaw_verify_hola; use a2a_send_message for peer agent-b'
 ```
 
-See [`security-compliance-improvements.md`](security-compliance-improvements.md#a2a-agent-to-agent-communication-agent-a--agent-b) for RODiT JWT details and production ingress.
+See [`security-compliance-improvements.md`](security-compliance-improvements.md#a2a-agent-to-agent-communication-agent-a--agent-b) for RODiT JWT details and production ingress. For agents on **different machines**, follow [Cross-machine A2A (Option A)](security-compliance-improvements.md#cross-machine-a2a-option-a) (public HTTPS on **9443**).
 
 ### Agent A (configured)
 
@@ -689,7 +689,7 @@ Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 
 Required repository secrets (same names as other IdentyClaw `-idc` repos): `SSH_HOST_MAIN`, `SSH_USER_MAIN`, `SSH_PRIVATE_KEY_MAIN`, `SSH_KNOWN_HOSTS_MAIN`, and the `*_DEVELOPMENT` variants, plus `GHCR_PULL_TOKEN`.
 
-Push to `main` or `development` to build and deploy. Images are tagged `<commit-sha>-main` or `<commit-sha>-development` so dev and prod tiers do not overwrite each other on GHCR. Health check probes `https://<DOMAIN>:9443/health` (advisory; may fail from the runner while the pod is healthy on the host).
+Push to `main` or `development` to build and deploy. Images are tagged `<commit-sha>-main` or `<commit-sha>-development` so dev and prod tiers do not overwrite each other on GHCR. Health check probes `https://<DOMAIN>:9443/health` (main) or `:4443/health` (development) — advisory; may fail from the runner while the pod is healthy on the host).
 
 ### Local deploy (same layout as CI)
 
