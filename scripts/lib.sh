@@ -97,6 +97,7 @@ load_env() {
   AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
+  AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
 }
 
 detect_himalaya_arch() {
@@ -394,6 +395,13 @@ podman_runtime_args() {
   fi
 }
 
+# Map container-namespace ownership back to the deploy user (rootless uid 0 in podman unshare).
+restore_pod_path_for_host() {
+  local path="$1"
+  [[ -e "$path" ]] || return 0
+  podman unshare chown -R 0:0 "$path" 2>/dev/null || true
+}
+
 # Runtime mode follows the running container (pod vs keep-id standalone), not env alone.
 agent_runtime_deploy_mode() {
   local id="$1"
@@ -489,22 +497,44 @@ ensure_agent_state_for_container_exec() {
   fi
 }
 
+# Nginx sidecar logs run as uid 101 inside the container user namespace.
+ensure_pod_logs_for_container() {
+  local log_dir="$1"
+  mkdir -p "$log_dir"
+  chmod 0775 "$log_dir" 2>/dev/null || true
+  podman unshare chown -R 101:101 "$log_dir" 2>/dev/null || true
+}
+
 # Restore ownership so the deploy user can read/write agent state on the host.
 # Skip agents whose gateway is running — restore races with pod container uid (1000).
 restore_pod_agent_state_for_host() {
+  local ids="${1:-${AGENT_IDS:-agent-a agent-b agent-c}}"
   load_env
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
   [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
   local id dir container
-  for id in agent-a agent-b agent-c; do
+  for id in $ids; do
     dir="$(agent_home "$id")"
     [[ -d "$dir" ]] || continue
     container="$(agent_container "$id")"
     if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' | grep -qx "$container"; then
       continue
     fi
-    podman unshare chown -R 0:0 "$dir" 2>/dev/null || true
+    restore_pod_path_for_host "$dir"
   done
+}
+
+# Before host-side deploy writes (config bootstrap, mkdir, chmod), undo container-namespace
+# ownership left by the previous pod run. Call after stopping/removing pod containers.
+prepare_pod_deploy_host_paths() {
+  local app
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  app="${IDENTYCLAW_APP_DIR:-${APP_DIR:-}}"
+  [[ -n "$app" ]] || return 0
+  echo "==> Restore host ownership for pod deploy paths"
+  restore_pod_agent_state_for_host
+  restore_pod_path_for_host "${app}/logs/nginx"
 }
 
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.

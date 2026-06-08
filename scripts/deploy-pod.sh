@@ -26,7 +26,6 @@ NGINX_IMAGE="${NGINX_IMAGE:?NGINX_IMAGE is required}"
 APP_PORT="${APP_PORT:-9443}"
 POD_NAME="${POD_NAME:-identyclaw-agents-pod}"
 NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
-AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 export IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$APP_DIR}"
@@ -38,6 +37,7 @@ source "$REPO_ROOT/scripts/lib.sh"
 
 ensure_app_layout
 load_env
+AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
 
 require_podman() {
   command -v podman >/dev/null 2>&1 || { echo "podman not found" >&2; exit 1; }
@@ -167,6 +167,8 @@ for c in $AGENT_IDS "$NGINX_CONTAINER_NAME"; do
 done
 podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || true
 
+prepare_pod_deploy_host_paths
+
 podman pod create --name "$POD_NAME" -p "${APP_PORT}:${APP_PORT}"
 
 for id in $AGENT_IDS; do
@@ -178,9 +180,7 @@ for id in $AGENT_IDS; do
   start_agent_in_pod "$id"
 done
 
-mkdir -p "$APP_DIR/logs/nginx"
-chmod 0775 "$APP_DIR/logs/nginx" || true
-podman unshare chown -R 101:101 "$APP_DIR/logs/nginx" || true
+ensure_pod_logs_for_container "$APP_DIR/logs/nginx"
 ensure_tls_certs
 normalize_tls_certs
 
