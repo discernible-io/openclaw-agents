@@ -1,0 +1,215 @@
+name: Deploy identyclaw-agents
+
+on:
+  push:
+    branches: [ main, development ]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to deploy'
+        required: false
+        default: ''
+
+env:
+  DEPLOY_SHA: ${{ github.event.inputs.commit_sha || github.sha }}
+  DEPLOY_TIER: ${{ github.ref == 'refs/heads/main' && 'main' || 'development' }}
+  SSH_HOST: ${{ github.ref == 'refs/heads/main' && secrets.SSH_HOST_MAIN || secrets.SSH_HOST_DEVELOPMENT }}
+  SSH_USER: ${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}
+  SSH_PRIVATE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SSH_PRIVATE_KEY_MAIN || secrets.SSH_PRIVATE_KEY_DEVELOPMENT }}
+  SSH_KNOWN_HOSTS: ${{ github.ref == 'refs/heads/main' && secrets.SSH_KNOWN_HOSTS_MAIN || secrets.SSH_KNOWN_HOSTS_DEVELOPMENT }}
+  APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/identyclaw-agents-app
+  # Primary health-check host — must match nginx server_name for agent-a.
+  DOMAIN: ${{ github.ref == 'refs/heads/main' && 'agent-a.identyclaw.com' || 'agent-a.dihola.io' }}
+  APP_PORT: 5443
+  POD_NAME: identyclaw-agents-pod
+  NGINX_CONTAINER_NAME: identyclaw-nginx
+  REGISTRY: ghcr.io
+  OPENCLAW_IMAGE_NAME: ${{ github.repository }}/openclaw-himalaya
+  NGINX_IMAGE_NAME: ${{ github.repository }}/identyclaw-nginx
+  HEALTH_CHECK_MAX_ATTEMPTS: 5
+  HEALTH_CHECK_INTERVAL: 5
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          fetch-depth: 0
+
+      - name: Secret scan (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push OpenClaw image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Containerfile.himalaya
+          push: true
+          build-args: |
+            OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim
+            HIMALAYA_VERSION=v1.2.0
+            HIMALAYA_ARCH=x86_64-linux
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Nginx image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./nginx.Dockerfile
+          push: true
+          build-args: |
+            NODE_ENV=${{ env.DEPLOY_TIER }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  test-and-deploy:
+    needs: build-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate required SSH secrets
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for var in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::${var} is missing or empty for branch tier ${DEPLOY_TIER}."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Checkout deploy scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          sparse-checkout: |
+            scripts/deploy-pod.sh
+            scripts/ensure-podman-linger.sh
+            scripts/lib.sh
+            identyclaw.sh
+            env.example
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ env.SSH_PRIVATE_KEY }}
+          name: id_rsa
+          known_hosts: ${{ env.SSH_KNOWN_HOSTS }}
+
+      - name: Validate SSH host key
+        run: |
+          set -euo pipefail
+
+          if ! ssh-keygen -F "${SSH_HOST}" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error::SSH_KNOWN_HOSTS does not contain an entry for SSH_HOST."
+            echo "Installed known_hosts fingerprints:"
+            ssh-keygen -lf ~/.ssh/known_hosts || true
+            echo "Live host key fingerprints for SSH_HOST:"
+            ssh-keyscan -T 10 -t ed25519,rsa "${SSH_HOST}" 2>/dev/null | ssh-keygen -lf - || true
+            exit 1
+          fi
+
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "${SSH_USER}@${SSH_HOST}" "true"
+
+      - name: Enable systemd linger for rootless Podman
+        run: |
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "DEPLOY_USER=${{ env.SSH_USER }} bash -s" \
+            < scripts/ensure-podman-linger.sh
+
+      - name: Setup directories and login to GHCR
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "mkdir -p ${{ env.APP_DIR }}/{certs,logs,nginx,secrets,agents} && mkdir -p ${{ env.APP_DIR }}/logs/nginx && chmod 711 ${{ env.APP_DIR }}/certs && chmod 750 ${{ env.APP_DIR }}/secrets && chmod 0775 ${{ env.APP_DIR }}/logs/nginx && podman unshare chown -R 101:101 ${{ env.APP_DIR }}/logs/nginx || true"
+          if [ -z "${GHCR_PULL_TOKEN}" ]; then
+            echo "::error::GHCR_PULL_TOKEN secret is missing or empty. Add a PAT with read:packages scope."
+            exit 1
+          fi
+          printf '%s\n' "$GHCR_PULL_TOKEN" | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} \
+            "podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin"
+
+      - name: Sync deploy scripts to host
+        run: |
+          tar -czf - scripts identyclaw.sh env.example | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
+            set -euo pipefail
+            mkdir -p ${{ env.APP_DIR }}/repo
+            tar -xzf - -C ${{ env.APP_DIR }}/repo
+          "
+
+      - name: Deploy pod
+        id: deploy
+        run: |
+          ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
+            set -euxo pipefail
+            APP_DIR='${{ env.APP_DIR }}' \
+            OPENCLAW_IMAGE='${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}' \
+            NGINX_IMAGE='${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}' \
+            APP_PORT='${{ env.APP_PORT }}' \
+            POD_NAME='${{ env.POD_NAME }}' \
+            NGINX_CONTAINER_NAME='${{ env.NGINX_CONTAINER_NAME }}' \
+            REPO_ROOT='${{ env.APP_DIR }}/repo' \
+            bash '${{ env.APP_DIR }}/repo/scripts/deploy-pod.sh'
+          "
+
+      - name: Health check
+        id: health-check
+        continue-on-error: true
+        env:
+          MAX_ATTEMPTS: ${{ env.HEALTH_CHECK_MAX_ATTEMPTS }}
+          INTERVAL: ${{ env.HEALTH_CHECK_INTERVAL }}
+          DOMAIN: ${{ env.DOMAIN }}
+          APP_PORT: ${{ env.APP_PORT }}
+        run: |
+          if [ -z "${DOMAIN}" ]; then
+            echo "::error::DOMAIN is empty. Check deploy.yml DOMAIN mapping for this branch."
+            exit 1
+          fi
+          HEALTH_URL="https://${DOMAIN}:${APP_PORT}/health"
+          echo "Probing: ${HEALTH_URL}"
+          ATTEMPT=0
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            if curl -sk -m 5 "${HEALTH_URL}" 2>/dev/null | grep -q healthy; then
+              echo "Service is healthy"
+              echo "health_status=success" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "Health check attempt ${ATTEMPT}/${MAX_ATTEMPTS}"
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              sleep $INTERVAL
+            fi
+          done
+          echo "Service failed health check"
+          body=$(mktemp)
+          code=$(curl -sk -m 15 -o "${body}" -w "%{http_code}" "${HEALTH_URL}") || true
+          echo "HTTP status: ${code:-000}"
+          head -c 800 "${body}" 2>/dev/null || true
+          echo
+          rm -f "${body}"
+          echo "health_status=failed" >> "$GITHUB_OUTPUT"
+          echo "::warning::Health check failed - containers were deployed; verify on host with podman logs ${NGINX_CONTAINER_NAME}"

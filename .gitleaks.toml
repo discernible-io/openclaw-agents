@@ -1,0 +1,11 @@
+# Gitleaks config for identyclaw-agents.
+# Runtime secrets belong in host ~/identyclaw-agents-app/secrets/ and per-agent dirs.
+# See ../docs/docs/cicd-deployment-standard.md
+
+title = "identyclaw-agents gitleaks"
+
+[allowlist]
+  paths = [
+    '''env\.example''',
+    '''openclaw-identyclaw-plugin/docs/openclaw\.sample\.json''',
+  ]
