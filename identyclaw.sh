@@ -316,6 +316,7 @@ cmd_logs() {
 
 cmd_test_mail() {
   local id="${1:?Usage: $0 test-mail agent-a|agent-b|agent-c}"
+  ensure_pod_agent_state_for_container "$id"
   podman exec "$(agent_container "$id")" himalaya --version
   podman exec "$(agent_container "$id")" himalaya folder list
   podman exec "$(agent_container "$id")" himalaya envelope list --folder INBOX
@@ -431,6 +432,7 @@ require_agent_running() {
     echo "Start ${container} first: $0 start ${id}" >&2
     exit 1
   }
+  ensure_pod_agent_state_for_container "$id"
   ensure_openclaw_cli_link "$container"
 }
 
@@ -588,10 +590,9 @@ cmd_onboard() {
 main() {
   local cmd="${1:-}"
   shift || true
-  case "$cmd" in
-    build-image|""|-h|--help|help) ;;
-    *) restore_pod_agent_state_for_host ;;
-  esac
+  if ! identyclaw_skips_host_restore "$cmd"; then
+    restore_pod_agent_state_for_host
+  fi
   case "$cmd" in
     build-image) cmd_build_image "$@" ;;
     init) cmd_init "$@" ;;

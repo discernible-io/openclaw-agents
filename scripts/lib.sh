@@ -407,6 +407,32 @@ restore_pod_agent_state_for_host() {
   done
 }
 
+# Map agent state for the pod's node user (uid 1000). Required before podman exec and after deploy.
+ensure_pod_agent_state_for_container() {
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
+  local ids=("$@")
+  local id dir
+  if [[ ${#ids[@]} -eq 0 ]]; then
+    ids=(agent-a agent-b agent-c)
+  fi
+  for id in "${ids[@]}"; do
+    dir="$(agent_home "$id")"
+    [[ -d "$dir" ]] || continue
+    podman unshare chown -R 1000:1000 "$dir"
+    chmod 700 "$dir/secrets" 2>/dev/null || true
+  done
+}
+
+# Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
+identyclaw_skips_host_restore() {
+  case "${1:-}" in
+    chat|ask|logs|test-mail|test-a2a|status|build-image|""|-h|--help|help) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 write_himalaya_config() {
   local email="$1"
   local display_name="$2"
