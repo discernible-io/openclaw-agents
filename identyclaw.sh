@@ -364,9 +364,14 @@ cmd_test_a2a() {
   echo ""
 
   echo "==> Inbound auth (expect HTTP 401 without Bearer token)"
-  local code a2a_url
+  local code a2a_url host port curl_resolve=()
   a2a_url="$(agent_a2a_endpoint_url "$to_id")"
-  code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$a2a_url" \
+  host="$(agent_public_host "$to_id")"
+  port="$(agent_ingress_port "$to_id")"
+  if [[ -n "$host" && -n "$port" && "$a2a_url" == https://* ]]; then
+    curl_resolve=(--resolve "${host}:${port}:127.0.0.1")
+  fi
+  code="$(curl -sk "${curl_resolve[@]}" -o /dev/null -w '%{http_code}' -X POST "$a2a_url" \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{"id":"smoke"}}')"
   if [[ "$code" != "401" ]]; then

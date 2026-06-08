@@ -145,14 +145,14 @@ agent_a2a_audience() {
     echo "$public_url"
   else
     load_env
-    echo "http://$(agent_container "$id"):${OPENCLAW_CONTAINER_GATEWAY_PORT}"
+    echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")"
   fi
 }
 
 agent_agent_card_url() {
   local id="$1"
   load_env
-  echo "http://$(agent_container "$id"):${OPENCLAW_CONTAINER_GATEWAY_PORT}/.well-known/agent-card.json"
+  echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")/.well-known/agent-card.json"
 }
 
 agent_has_near_credentials() {
