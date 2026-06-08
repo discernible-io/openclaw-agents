@@ -669,10 +669,11 @@ cp ~/identyclaw-agents/env.example ~/identyclaw-agents-app/env.local
 chmod 600 ~/identyclaw-agents-app/env.local
 # Set IDENTYCLAW_DEPLOY_MODE=pod, IDENTYCLAW_INGRESS_PORT, and AGENT_*_PUBLIC_HOST for your branch
 
-# TLS — issue certs for all three agent hostnames (SAN or separate), then:
-#   ~/identyclaw-agents-app/certs/fullchain.pem
-#   ~/identyclaw-agents-app/certs/privkey.pem
-# See infra/CERTIFICATE-MANAGEMENT.md on servers using the infra repo.
+# TLS — self-signed bootstrap (same pattern as clienttest-idc):
+./identyclaw.sh generate-certs
+# Writes ~/identyclaw-agents-app/certs/{fullchain.pem,privkey.pem} with SANs for
+# AGENT_A/B/C_PUBLIC_HOST. RODiT JWT handles A2A/webhook mutual auth — CA-issued
+# certs are optional. Replace with real PEMs when ready (infra/CERTIFICATE-MANAGEMENT.md).
 ```
 
 Per-agent runtime state lives under `~/identyclaw-agents-app/agents/agent-{a,b,c}/`. Scripts resolve this automatically (`IDENTYCLAW_AGENT_STATE_ROOT` defaults to `${IDENTYCLAW_APP_DIR}/agents`). Initialize passwords and API keys with the usual commands:
@@ -693,9 +694,10 @@ Push to `main` or `development` to build and deploy. Images are tagged `<commit-
 ### Local deploy (same layout as CI)
 
 ```bash
+./identyclaw.sh generate-certs          # optional; deploy-pod auto-generates if PEMs are missing
 ./scripts/deploy-local-podman.sh
 TARGET=main ./scripts/deploy-local-podman.sh
-USE_LOCAL_RESOLVE=1 ./scripts/deploy-local-podman.sh   # before DNS points here
+USE_LOCAL_RESOLVE=1 ./scripts/deploy-local-podman.sh   # before DNS points here; curl -k for self-signed TLS
 ```
 
 Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tunnels for local webhook testing, or pod deploy above for public HTTPS A2A/webhooks.

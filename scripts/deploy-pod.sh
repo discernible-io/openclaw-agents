@@ -188,6 +188,7 @@ done
 mkdir -p "$APP_DIR/logs/nginx"
 chmod 0775 "$APP_DIR/logs/nginx" || true
 podman unshare chown -R 101:101 "$APP_DIR/logs/nginx" || true
+ensure_tls_certs
 normalize_tls_certs
 
 z="$(selinux_mount_suffix)"

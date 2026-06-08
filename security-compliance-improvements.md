@@ -58,7 +58,7 @@ Override the app root: `export IDENTYCLAW_APP_DIR=/custom/path` (CI and `deploy-
 |------|----------|---------|----------------------|
 | `~/identyclaw-agents` | Scripts, images, nginx configs | Yes | Clone + run deploy scripts only |
 | `~/identyclaw-agents-app/env.local` | Ports, deploy mode, public hosts, optional mailbox passwords | No | Never |
-| `~/identyclaw-agents-app/certs/` | TLS PEMs for nginx sidecar | No | Never (operator installs) |
+| `~/identyclaw-agents-app/certs/` | TLS PEMs for nginx sidecar (self-signed bootstrap or CA-issued) | No | Never |
 | `~/identyclaw-agents-app/agents/<id>/` | Per-agent `openclaw.json`, `.env`, `secrets/`, workspace | No | Never |
 | `~/identyclaw-agents-app/exports/` | Migration archives from `export-agent` | No | Never |
 
@@ -299,10 +299,12 @@ Ordered checklist to go from **in-repo** to **live production**:
 
 #### 2. TLS certificates
 
-- [ ] Issue certs covering `agent-a`, `agent-b`, and `agent-c` hostnames (multi-SAN or wildcard).
-- [ ] Install `fullchain.pem` and `privkey.pem` under `~/identyclaw-agents-app/certs/`.
+- [x] Self-signed bootstrap via [`scripts/generate-self-signed-certs.sh`](scripts/generate-self-signed-certs.sh) (imported from [`clienttest-idc`](../clienttest-idc)); operator entry: `./identyclaw.sh generate-certs`. `deploy-pod.sh` auto-generates when PEMs are missing.
+- [ ] **Optional:** replace with CA-issued certs covering `agent-a`, `agent-b`, and `agent-c` hostnames (multi-SAN or wildcard) under `~/identyclaw-agents-app/certs/`.
 - [ ] On hosts using the [`infra`](../../infra) repo: add `identyclaw-agents-app` to `install-certs-to-apps.sh` / `verify-certs-in-apps.sh` (not done yet).
 - [ ] Verify after install: `podman unshare chown 101:101` + key mode `600` (deploy script applies this each run).
+
+**RODiT vs TLS:** A2A and webhook **mutual authentication** uses RODiT Passport JWT signatures (same rationale as [`clienttest-idc`](../clienttest-idc) `WEBHOOK_TLS_SKIP_VERIFY`). Self-signed nginx PEMs provide transport encryption only; peers and health checks may use `curl -k` / `--resolve` until CA certs are installed.
 
 #### 3. Host bootstrap
 
@@ -460,8 +462,9 @@ Each side publishes exactly these values to the other (no secrets in Agent Card)
 
 #### Phase 2 — TLS certificates
 
-- [ ] Issue cert(s) with SAN covering the agent hostname(s).
-- [ ] Install on dedalo43:
+- [x] Bootstrap: `./identyclaw.sh generate-certs` (or rely on `deploy-pod.sh` auto-generation).
+- [ ] **Optional:** CA-issued cert(s) with SAN covering all agent hostnames.
+- [ ] Install on dedalo43 (self-signed or CA):
   - `~/identyclaw-agents-app/certs/fullchain.pem`
   - `~/identyclaw-agents-app/certs/privkey.pem`
 - [ ] Remote operator installs certs on their ingress path (same layout or equivalent reverse proxy).

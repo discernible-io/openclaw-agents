@@ -26,6 +26,22 @@ ensure_app_layout() {
   fi
 }
 
+# Bootstrap TLS for nginx when no CA-issued certs are installed.
+# RODiT JWT handles mutual auth on A2A/webhooks; self-signed PEMs encrypt transport only.
+ensure_tls_certs() {
+  local force="${1:-}"
+  local cert_dir extra_sans args=()
+  ensure_app_layout
+  load_env
+  cert_dir="$(identyclaw_app_dir)/certs"
+  extra_sans="DNS:${AGENT_B_PUBLIC_HOST},DNS:${AGENT_C_PUBLIC_HOST}"
+  case "$force" in
+    --force|1|true) args+=(--force) ;;
+  esac
+  TLS_CN="${AGENT_A_PUBLIC_HOST}" EXTRA_SANS="$extra_sans" \
+    bash "${IDENTYCLAW_ROOT}/scripts/generate-self-signed-certs.sh" "$cert_dir" "${args[@]}"
+}
+
 load_env() {
   local f
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"

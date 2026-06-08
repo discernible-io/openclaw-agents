@@ -17,6 +17,7 @@
 #   status               Show podman + health URLs
 #   logs <id>            Follow logs
 #   test-mail <id>       himalaya envelope list inside container
+#   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
 #   test-webhook <id>    Smoke-test webhook ingress auth (expect 401 without hooks.token)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
@@ -320,6 +321,27 @@ cmd_test_mail() {
   podman exec "$(agent_container "$id")" himalaya envelope list --folder INBOX
 }
 
+cmd_generate_certs() {
+  local force=""
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force="--force" ;;
+      -h|--help)
+        echo "Usage: $0 generate-certs [--force]"
+        echo "Writes fullchain.pem + privkey.pem under \$(identyclaw_app_dir)/certs/"
+        echo "SANs: AGENT_A/B/C_PUBLIC_HOST from env.local (defaults in env.example)."
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $arg (try --force)" >&2
+        exit 1
+        ;;
+    esac
+  done
+  ensure_tls_certs "$force"
+  echo "TLS material ready in $(identyclaw_app_dir)/certs/"
+}
+
 cmd_test_a2a() {
   local from_id="${1:?Usage: $0 test-a2a agent-a agent-b}"
   local to_id="${2:?Usage: $0 test-a2a agent-a agent-b}"
@@ -582,6 +604,7 @@ main() {
     status) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
+    generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-webhook) cmd_test_webhook "$@" ;;
     webhook-url) cmd_webhook_url "$@" ;;
