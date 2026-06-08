@@ -129,7 +129,7 @@ start_agent_in_pod() {
   z="$(selinux_mount_suffix)"
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
-  ensure_pod_agent_state_for_container "$id"
+  prepare_agent_state_for_gateway_start "$id" pod
 
   podman run -d \
     --pod "$POD_NAME" \

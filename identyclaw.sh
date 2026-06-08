@@ -174,7 +174,13 @@ start_one() {
   sync_discord_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
 
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    echo "IDENTYCLAW_DEPLOY_MODE=pod — use scripts/deploy-pod.sh instead of identyclaw.sh start" >&2
+    exit 1
+  fi
+
   podman rm -f "$container" 2>/dev/null || true
+  prepare_agent_state_for_gateway_start "$id" standalone
 
   local network_args=()
   if podman network exists "$IDENTYCLAW_NETWORK" 2>/dev/null; then
@@ -316,7 +322,8 @@ cmd_logs() {
 
 cmd_test_mail() {
   local id="${1:?Usage: $0 test-mail agent-a|agent-b|agent-c}"
-  ensure_pod_agent_state_for_container "$id"
+  require_podman
+  require_agent_running "$id"
   podman exec "$(agent_container "$id")" himalaya --version
   podman exec "$(agent_container "$id")" himalaya folder list
   podman exec "$(agent_container "$id")" himalaya envelope list --folder INBOX
@@ -432,7 +439,7 @@ require_agent_running() {
     echo "Start ${container} first: $0 start ${id}" >&2
     exit 1
   }
-  ensure_pod_agent_state_for_container "$id"
+  ensure_agent_state_for_container_exec "$id"
   ensure_openclaw_cli_link "$container"
 }
 

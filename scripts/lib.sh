@@ -394,6 +394,25 @@ podman_runtime_args() {
   fi
 }
 
+# Runtime mode follows the running container (pod vs keep-id standalone), not env alone.
+agent_runtime_deploy_mode() {
+  local id="$1"
+  local container pod userns
+  container="$(agent_container "$id")"
+  pod="$(podman inspect "$container" --format '{{.HostConfig.Pod}}' 2>/dev/null || true)"
+  if [[ -n "$pod" ]]; then
+    echo pod
+    return 0
+  fi
+  userns="$(podman inspect "$container" --format '{{.HostConfig.Userns.Mode}}' 2>/dev/null || true)"
+  if [[ "$userns" == "keep-id" ]]; then
+    echo standalone
+    return 0
+  fi
+  load_env
+  echo "${IDENTYCLAW_DEPLOY_MODE:-standalone}"
+}
+
 # Pod agents map host state into the container user namespace (uid 1000 / node).
 # Host CLI (token, status, bootstrap) needs the inverse — see restore_pod_agent_state_for_host.
 ensure_pod_agent_state_for_container() {
@@ -413,6 +432,63 @@ ensure_pod_agent_state_for_container() {
   done
 }
 
+# Standalone agents use --userns=keep-id; state must be owned by the deploy user on the host.
+# Repairs dirs that were accidentally chowned for pod mode (subuid) so gateway/TUI can read sessions.
+ensure_standalone_agent_state_for_container() {
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" != "pod" ]] || return 0
+  local ids=("$@")
+  local id dir uid gid
+  uid="$(id -u)"
+  gid="$(id -g)"
+  if [[ ${#ids[@]} -eq 0 ]]; then
+    ids=(agent-a agent-b agent-c)
+  fi
+  for id in "${ids[@]}"; do
+    dir="$(agent_home "$id")"
+    [[ -d "$dir" ]] || continue
+    if ! chown -R "${uid}:${gid}" "$dir" 2>/dev/null; then
+      podman unshare chown -R 0:0 "$dir" 2>/dev/null || true
+    fi
+    chmod 700 "$dir/secrets" 2>/dev/null || true
+  done
+}
+
+# Gateway restart leaves orphaned session locks; clear them only while the container is stopped.
+remove_stale_session_locks() {
+  local config_dir="$1"
+  local sessions_root="$config_dir/agents"
+  [[ -d "$sessions_root" ]] || return 0
+  find "$sessions_root" -name '*.jsonl.lock' -type f -delete 2>/dev/null || true
+}
+
+# Normalize ownership + drop stale locks before (re)starting a gateway container.
+prepare_agent_state_for_gateway_start() {
+  local id="$1"
+  local mode="${2:-}"
+  local dir
+  dir="$(agent_home "$id")"
+  [[ -n "$mode" ]] || mode="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
+  if [[ "$mode" == "pod" ]]; then
+    ensure_pod_agent_state_for_container "$id"
+  else
+    ensure_standalone_agent_state_for_container "$id"
+  fi
+  remove_stale_session_locks "$dir"
+}
+
+# Ensure the container user can read/write state before podman exec (gateway already running).
+ensure_agent_state_for_container_exec() {
+  local id="$1"
+  local mode
+  mode="$(agent_runtime_deploy_mode "$id")"
+  if [[ "$mode" == "pod" ]]; then
+    ensure_pod_agent_state_for_container "$id"
+  else
+    ensure_standalone_agent_state_for_container "$id"
+  fi
+}
+
 # Restore ownership so the deploy user can read/write agent state on the host.
 restore_pod_agent_state_for_host() {
   load_env
@@ -429,7 +505,7 @@ restore_pod_agent_state_for_host() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|status|build-image|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-a2a|build-image|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
