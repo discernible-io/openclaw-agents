@@ -101,13 +101,14 @@ init_one_agent() {
 
 cmd_init() {
   require_rootless_user
+  ensure_app_layout
   load_env
   init_one_agent agent-a "$AGENT_A_EMAIL" "$AGENT_A_DISPLAY_NAME" "${AGENT_A_PASSWORD:-}" "$AGENT_A_GATEWAY_PORT"
   init_one_agent agent-b "$AGENT_B_EMAIL" "$AGENT_B_DISPLAY_NAME" "${AGENT_B_PASSWORD:-}" "$AGENT_B_GATEWAY_PORT"
   init_one_agent agent-c "$AGENT_C_EMAIL" "$AGENT_C_DISPLAY_NAME" "${AGENT_C_PASSWORD:-}" "$AGENT_C_GATEWAY_PORT"
   echo ""
   echo "Next:"
-  echo "  1. Edit ${ROOT}/env.local if needed (cp env.example env.local)"
+  echo "  1. Edit $(identyclaw_env_file) if needed"
   echo "  2. $0 set-password agent-a   # if passwords not in env.local"
   echo "  3. $0 build-image"
   echo "  4. $0 start all"
@@ -559,6 +560,10 @@ cmd_onboard() {
 main() {
   local cmd="${1:-}"
   shift || true
+  case "$cmd" in
+    build-image|""|-h|--help|help) ;;
+    *) restore_pod_agent_state_for_host ;;
+  esac
   case "$cmd" in
     build-image) cmd_build_image "$@" ;;
     init) cmd_init "$@" ;;

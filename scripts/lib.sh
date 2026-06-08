@@ -3,11 +3,33 @@ set -euo pipefail
 
 IDENTYCLAW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-load_env() {
-  local f="$IDENTYCLAW_ROOT/env.local"
-  if [[ ! -f "$f" ]]; then
-    f="$IDENTYCLAW_ROOT/env.example"
+# Runtime config and secrets live under IDENTYCLAW_APP_DIR (never in the git checkout).
+identyclaw_app_dir() {
+  echo "${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
+}
+
+identyclaw_env_file() {
+  echo "$(identyclaw_app_dir)/env.local"
+}
+
+ensure_app_layout() {
+  local app env_file
+  app="$(identyclaw_app_dir)"
+  env_file="${app}/env.local"
+  mkdir -p "${app}"/{certs,logs/nginx,secrets,agents,exports}
+  chmod 711 "${app}/certs" 2>/dev/null || true
+  chmod 750 "${app}/secrets" 2>/dev/null || true
+  if [[ ! -f "$env_file" ]]; then
+    cp "${IDENTYCLAW_ROOT}/env.example" "$env_file"
+    chmod 600 "$env_file"
+    echo "Created ${env_file} from env.example"
   fi
+}
+
+load_env() {
+  local f
+  IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
+  f="${IDENTYCLAW_APP_DIR}/env.local"
   if [[ -f "$f" ]]; then
     # Parse KEY=VALUE safely (supports quoted values with spaces).
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -53,10 +75,12 @@ load_env() {
   IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin}"
   IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
-  IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-5443}"
+  IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
   AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
   AGENT_B_PUBLIC_HOST="${AGENT_B_PUBLIC_HOST:-agent-b.identyclaw.com}"
   AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
+  IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
+  IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
 }
 
 detect_himalaya_arch() {
@@ -73,11 +97,8 @@ detect_himalaya_arch() {
 
 agent_home() {
   local id="$1"
-  if [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]]; then
-    echo "${IDENTYCLAW_AGENT_STATE_ROOT}/${id}"
-  else
-    echo "${IDENTYCLAW_STATE_DIR:-$HOME}/.openclaw-${id}"
-  fi
+  load_env
+  echo "${IDENTYCLAW_AGENT_STATE_ROOT}/${id}"
 }
 
 agent_container() {
@@ -296,10 +317,7 @@ print_agent_ingress_urls() {
 }
 
 agent_id_from_dir() {
-  local base
-  base="$(basename "$1")"
-  base="${base#.openclaw-}"
-  echo "$base"
+  basename "$1"
 }
 
 generate_token() {
@@ -332,6 +350,19 @@ podman_runtime_args() {
     # ROOTFUL: runs as image user (node). Ensure host dirs are readable.
     echo ""
   fi
+}
+
+# Pod agents chown state into the container user namespace; restore before host CLI reads config.
+restore_pod_agent_state_for_host() {
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
+  local id dir
+  for id in agent-a agent-b agent-c; do
+    dir="$(agent_home "$id")"
+    [[ -d "$dir" ]] || continue
+    podman unshare chown -R 0:0 "$dir" 2>/dev/null || true
+  done
 }
 
 write_himalaya_config() {
@@ -1603,7 +1634,7 @@ manifest = {
     "stateDirBasename": Path(config_dir).name,
     "importSteps": [
         "Copy identyclaw-agents repo to target host",
-        "cp env.example env.local && merge env.local.fragment",
+        "ensure_app_layout && merge env.local.fragment into identyclaw-agents-app/env.local",
         "./identyclaw.sh build-image",
         f"./identyclaw.sh import-agent {agent_id} <this-archive>",
         f"./identyclaw.sh start {agent_id}",
@@ -1647,7 +1678,7 @@ write_agent_export_env_fragment() {
       ;;
   esac
   cat >"$fragment_path" <<EOF
-# Merge into env.local on the target host (chmod 600 env.local).
+# Merge into $(identyclaw_app_dir)/env.local on the target host (chmod 600).
 # Secrets are inside the archive under secrets/ — passwords here are optional duplicates.
 
 ${prefix}_EMAIL=${email}
@@ -1697,7 +1728,9 @@ export_agent_bundle() {
   sync_agent_secrets_for_export "$id" "$config_dir"
 
   if [[ -z "$output" ]]; then
-    output="${IDENTYCLAW_ROOT}/identyclaw-migrate-${id}-$(date +%Y%m%d-%H%M%S).tar.gz"
+    load_env
+    mkdir -p "${IDENTYCLAW_APP_DIR}/exports"
+    output="${IDENTYCLAW_APP_DIR}/exports/identyclaw-migrate-${id}-$(date +%Y%m%d-%H%M%S).tar.gz"
   fi
   output="$(readlink -f "$output")"
 
@@ -1791,9 +1824,10 @@ PY
   echo ""
   echo "Imported ${id} into ${config_dir}"
   if [[ -f "$staging/env.local.fragment" ]]; then
-    echo "Merge ${staging}/env.local.fragment into ${IDENTYCLAW_ROOT}/env.local on this host."
-    cp "$staging/env.local.fragment" "${IDENTYCLAW_ROOT}/env.local.fragment.${id}"
-    echo "Saved fragment: ${IDENTYCLAW_ROOT}/env.local.fragment.${id}"
+    local fragment_dest
+    fragment_dest="$(identyclaw_app_dir)/env.local.fragment.${id}"
+    cp "$staging/env.local.fragment" "$fragment_dest"
+    echo "Merge ${fragment_dest} into $(identyclaw_env_file) on this host."
   fi
   echo "Next: ./identyclaw.sh build-image && ./identyclaw.sh start ${id}"
 }

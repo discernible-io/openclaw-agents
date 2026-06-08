@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib.sh
+source "$ROOT/scripts/lib.sh"
+
 id="${1:-}"
-if [[ "$id" != "agent-a" && "$id" != "agent-b" ]]; then
-  echo "usage: $0 agent-a|agent-b" >&2
+if [[ "$id" != "agent-a" && "$id" != "agent-b" && "$id" != "agent-c" ]]; then
+  echo "usage: $0 agent-a|agent-b|agent-c" >&2
   exit 1
 fi
 
+load_env
 container="openclaw-${id}"
-agent_dir="$HOME/.openclaw-${id}"
+agent_dir="$(agent_home "$id")"
 log_file="${agent_dir}/cron/email-poll.log"
 
 mkdir -p "${agent_dir}/cron"
 
-if ! podman ps --format '{{.Names}}' | rg -xq "${container}"; then
+if ! podman ps --format '{{.Names}}' | grep -qx "${container}"; then
   {
     date -u +"[%Y-%m-%dT%H:%M:%SZ] ${id} container not running"
   } >>"${log_file}"

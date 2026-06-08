@@ -8,7 +8,7 @@
 #
 # Env:
 #   APP_DIR                  Default: ~/identyclaw-agents-app
-#   APP_PORT                 Default: 5443
+#   APP_PORT                 Default: 9443 (main) or 4443 (development)
 #   TARGET                   development (default) or main
 #   GITHUB_SHA               Image tag (default: git HEAD)
 #   PULL_FROM_GHCR=1         Pull images instead of local build
@@ -31,8 +31,8 @@ done
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 APP_DIR="${APP_DIR:-$HOME/identyclaw-agents-app}"
 APP_DIR="${APP_DIR/#\~/$HOME}"
-DEPLOY_TIER="${TARGET:-development}"
-APP_PORT="${APP_PORT:-5443}"
+DEPLOY_TIER="${TARGET:-main}"
+APP_PORT="${APP_PORT:-}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 USE_LOCAL_RESOLVE="${USE_LOCAL_RESOLVE:-0}"
 PULL_FROM_GHCR="${PULL_FROM_GHCR:-0}"
@@ -50,10 +50,14 @@ case "$DEPLOY_TIER" in
   development)
     NGINX_BUILD_ENV="development"
     DOMAIN="$DOMAIN_DEVELOPMENT"
+    APP_PORT="${APP_PORT:-4443}"
+    INGRESS_PORT="${INGRESS_PORT:-4443}"
     ;;
   main)
     NGINX_BUILD_ENV="main"
     DOMAIN="$DOMAIN_MAIN"
+    APP_PORT="${APP_PORT:-9443}"
+    INGRESS_PORT="${INGRESS_PORT:-9443}"
     ;;
   *)
     echo "TARGET must be development or main (got: $DEPLOY_TIER)" >&2
@@ -88,9 +92,10 @@ build_images() {
     --build-arg "OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim" \
     --build-arg "HIMALAYA_VERSION=v1.2.0" \
     --build-arg "HIMALAYA_ARCH=${arch}"
-  echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV})"
+  echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV}, INGRESS_PORT=${INGRESS_PORT})"
   podman build -f "$REPO_ROOT/nginx.Dockerfile" -t "$NGINX_IMAGE" "$REPO_ROOT" \
-    --build-arg "NODE_ENV=${NGINX_BUILD_ENV}"
+    --build-arg "NODE_ENV=${NGINX_BUILD_ENV}" \
+    --build-arg "INGRESS_PORT=${INGRESS_PORT}"
 }
 
 if [[ "$PULL_FROM_GHCR" == 1 ]]; then
@@ -102,11 +107,13 @@ fi
 
 "$REPO_ROOT/scripts/ensure-podman-linger.sh"
 
+IDENTYCLAW_APP_DIR="$APP_DIR" \
 APP_DIR="$APP_DIR" \
 OPENCLAW_IMAGE="$OPENCLAW_IMAGE" \
 NGINX_IMAGE="$NGINX_IMAGE" \
 APP_PORT="$APP_PORT" \
 REPO_ROOT="$REPO_ROOT" \
+SKIP_PULL=1 \
 bash "$REPO_ROOT/scripts/deploy-pod.sh"
 
 HEALTH_URL="https://${DOMAIN}:${APP_PORT}/health"
