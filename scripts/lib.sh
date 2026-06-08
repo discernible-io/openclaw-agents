@@ -394,20 +394,8 @@ podman_runtime_args() {
   fi
 }
 
-# Pod agents chown state into the container user namespace; restore before host CLI reads config.
-restore_pod_agent_state_for_host() {
-  load_env
-  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
-  [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
-  local id dir
-  for id in agent-a agent-b agent-c; do
-    dir="$(agent_home "$id")"
-    [[ -d "$dir" ]] || continue
-    podman unshare chown -R 0:0 "$dir" 2>/dev/null || true
-  done
-}
-
-# Map agent state for the pod's node user (uid 1000). Required before podman exec and after deploy.
+# Pod agents map host state into the container user namespace (uid 1000 / node).
+# Host CLI (token, status, bootstrap) needs the inverse — see restore_pod_agent_state_for_host.
 ensure_pod_agent_state_for_container() {
   load_env
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
@@ -422,6 +410,19 @@ ensure_pod_agent_state_for_container() {
     [[ -d "$dir" ]] || continue
     podman unshare chown -R 1000:1000 "$dir"
     chmod 700 "$dir/secrets" 2>/dev/null || true
+  done
+}
+
+# Restore ownership so the deploy user can read/write agent state on the host.
+restore_pod_agent_state_for_host() {
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
+  local id dir
+  for id in agent-a agent-b agent-c; do
+    dir="$(agent_home "$id")"
+    [[ -d "$dir" ]] || continue
+    podman unshare chown -R 0:0 "$dir" 2>/dev/null || true
   done
 }
 
