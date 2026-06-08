@@ -394,7 +394,16 @@ podman_runtime_args() {
   fi
 }
 
-# Pod agents chown state into the container user namespace; restore before host CLI reads config.
+# Pod agents map host state into the container user namespace (uid 1000 / node).
+# Host CLI (token, status, bootstrap) needs the inverse — see restore_pod_agent_state_for_host.
+ensure_pod_agent_state_for_container() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 0
+  podman unshare chown -R 1000:1000 "$dir"
+  chmod 700 "$dir/secrets" 2>/dev/null || true
+}
+
+# Restore ownership so the deploy user can read/write agent state on the host.
 restore_pod_agent_state_for_host() {
   load_env
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0

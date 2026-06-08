@@ -425,12 +425,17 @@ cmd_token() {
 
 require_agent_running() {
   local id="$1"
-  local container
+  local container dir
   container="$(agent_container "$id")"
   podman ps --format '{{.Names}}' | grep -qx "$container" || {
     echo "Start ${container} first: $0 start ${id}" >&2
     exit 1
   }
+  load_env
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    dir="$(agent_home "$id")"
+    ensure_pod_agent_state_for_container "$dir"
+  fi
   ensure_openclaw_cli_link "$container"
 }
 
@@ -590,6 +595,8 @@ main() {
   shift || true
   case "$cmd" in
     build-image|""|-h|--help|help) ;;
+    # podman exec — keep state owned by container uid (node)
+    chat|ask|logs|test-a2a|test-mail) ;;
     *) restore_pod_agent_state_for_host ;;
   esac
   case "$cmd" in

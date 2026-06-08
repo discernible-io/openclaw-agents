@@ -120,13 +120,6 @@ ensure_agent_runtime() {
   ensure_discord_allow_bots_mentions "$dir"
 }
 
-ensure_agent_state_for_pod() {
-  local dir="$1"
-  # Pods cannot use --userns=keep-id; map state to the container uid in the user namespace.
-  podman unshare chown -R 1000:1000 "$dir"
-  chmod 700 "$dir/secrets" 2>/dev/null || true
-}
-
 start_agent_in_pod() {
   local id="$1"
   local dir container gw_port z
@@ -136,7 +129,7 @@ start_agent_in_pod() {
   z="$(selinux_mount_suffix)"
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
-  ensure_agent_state_for_pod "$dir"
+  ensure_pod_agent_state_for_container "$dir"
 
   podman run -d \
     --pod "$POD_NAME" \
