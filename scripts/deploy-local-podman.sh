@@ -8,7 +8,7 @@
 #
 # Env:
 #   APP_DIR                  Default: ~/identyclaw-agents-app
-#   APP_PORT                 Default: 5443
+#   APP_PORT                 Default: 9443
 #   TARGET                   development (default) or main
 #   GITHUB_SHA               Image tag (default: git HEAD)
 #   PULL_FROM_GHCR=1         Pull images instead of local build
@@ -32,7 +32,6 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 APP_DIR="${APP_DIR:-$HOME/identyclaw-agents-app}"
 APP_DIR="${APP_DIR/#\~/$HOME}"
 DEPLOY_TIER="${TARGET:-development}"
-APP_PORT="${APP_PORT:-5443}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 USE_LOCAL_RESOLVE="${USE_LOCAL_RESOLVE:-0}"
 PULL_FROM_GHCR="${PULL_FROM_GHCR:-0}"
@@ -45,6 +44,8 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse HEAD >/dev/nu
 else
   DEPLOY_SHA="${GITHUB_SHA:-local}"
 fi
+
+APP_PORT="${APP_PORT:-9443}"
 
 case "$DEPLOY_TIER" in
   development)

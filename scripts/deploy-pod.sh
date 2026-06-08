@@ -8,7 +8,7 @@
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #
 # Optional env (defaults match deploy.yml):
-#   APP_PORT=5443
+#   APP_PORT=9443
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
@@ -23,7 +23,7 @@ APP_DIR="${APP_DIR/#\~/$HOME}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:?OPENCLAW_IMAGE is required}"
 NGINX_IMAGE="${NGINX_IMAGE:?NGINX_IMAGE is required}"
 
-APP_PORT="${APP_PORT:-5443}"
+APP_PORT="${APP_PORT:-9443}"
 POD_NAME="${POD_NAME:-identyclaw-agents-pod}"
 NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
 AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"

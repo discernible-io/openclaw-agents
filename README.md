@@ -340,7 +340,7 @@ Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport cred
 ./identyclaw.sh ask agent-a 'Verify any inbound HOLA with identyclaw_verify_hola; use a2a_send_message for peer agent-b'
 ```
 
-See [`security-compliance-improvements.md`](security-compliance-improvements.md#a2a-agent-to-agent-communication-agent-a--agent-b) for RODiT JWT details and production ingress.
+See [`security-compliance-improvements.md`](security-compliance-improvements.md#a2a-agent-to-agent-communication-agent-a--agent-b) for RODiT JWT details and production ingress. For agents on **different machines**, follow [Cross-machine A2A (Option A)](security-compliance-improvements.md#cross-machine-a2a-option-a) (public HTTPS on **9443**).
 
 ### Agent A (configured)
 
@@ -584,7 +584,7 @@ Each agent’s webhooks are HTTP paths on **that agent’s gateway** — they do
 | Mode | agent-a webhook wake (example) |
 |------|--------------------------------|
 | Standalone dev | `http://127.0.0.1:18789/hooks/wake` |
-| Production pod (main) | `https://agent-a.identyclaw.com:5443/hooks/wake` |
+| Production pod (main) | `https://agent-a.identyclaw.com:9443/hooks/wake` |
 
 Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Use a **separate `hooks.token` per agent** (not the Control UI token). External services must call the correct subdomain. See [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
 
@@ -620,10 +620,10 @@ Production HTTPS ingress exists primarily for **A2A** (`POST /a2a`, agent-card d
 
 | Branch | Primary health host | Agent hosts |
 |--------|---------------------|-------------|
-| `development` | `agent-a.dihola.io:5443` | `agent-b.dihola.io`, `agent-c.dihola.io` |
-| `main` | `agent-a.identyclaw.com:5443` | `agent-b.identyclaw.com`, `agent-c.identyclaw.com` |
+| `development` | `agent-a.dihola.io:9443` | `agent-b.dihola.io`, `agent-c.dihola.io` |
+| `main` | `agent-a.identyclaw.com:9443` | `agent-b.identyclaw.com`, `agent-c.identyclaw.com` |
 
-Deploy layout: **nginx sidecar** on **5443** (TLS, subdomain → gateway upstream) + **three OpenClaw containers** on pod-local ports 18789 / 18791 / 18793. See [`security-compliance-improvements.md`](security-compliance-improvements.md#production-ingress-cicd--nginx-tls-sidecar) for A2A/webhook URL tables and [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
+Deploy layout: **nginx sidecar** on **9443** (TLS, subdomain → gateway upstream) plus **three OpenClaw containers** on pod-local ports 18789 / 18791 / 18793. See [`security-compliance-improvements.md`](security-compliance-improvements.md#production-ingress-cicd--nginx-tls-sidecar) for A2A/webhook URL tables and [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
 
 ### Webhook URLs (production)
 
@@ -631,9 +631,9 @@ Each agent has its own HTTPS base. External senders must hit the **correct subdo
 
 | Agent (main) | Webhook wake | Webhook agent |
 |--------------|--------------|---------------|
-| agent-a | `https://agent-a.identyclaw.com:5443/hooks/wake` | `…/hooks/agent` |
-| agent-b | `https://agent-b.identyclaw.com:5443/hooks/wake` | `…/hooks/agent` |
-| agent-c | `https://agent-c.identyclaw.com:5443/hooks/wake` | `…/hooks/agent` |
+| agent-a | `https://agent-a.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
+| agent-b | `https://agent-b.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
+| agent-c | `https://agent-c.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
 
 Use `agent-*.dihola.io` on the development branch. Register the base URL in RODiT token metadata `webhook_url` (same field as [`clienttest-idc`](../clienttest-idc) uses for `https://webhook.discernible.io:7443`).
 
@@ -679,7 +679,7 @@ Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 
 Required repository secrets (same names as other IdentyClaw `-idc` repos): `SSH_HOST_MAIN`, `SSH_USER_MAIN`, `SSH_PRIVATE_KEY_MAIN`, `SSH_KNOWN_HOSTS_MAIN`, and the `*_DEVELOPMENT` variants, plus `GHCR_PULL_TOKEN`.
 
-Push to `main` or `development` to build and deploy. Images are tagged `<commit-sha>-main` or `<commit-sha>-development` so dev and prod tiers do not overwrite each other on GHCR. Health check probes `https://<DOMAIN>:5443/health` (advisory; may fail from the runner while the pod is healthy on the host).
+Push to `main` or `development` to build and deploy. Images are tagged `<commit-sha>-main` or `<commit-sha>-development` so dev and prod tiers do not overwrite each other on GHCR. Health check probes `https://<DOMAIN>:9443/health` (advisory; may fail from the runner while the pod is healthy on the host).
 
 ### Local deploy (same layout as CI)
 
