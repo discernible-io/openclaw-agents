@@ -20,7 +20,7 @@ env:
   APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/identyclaw-agents-app
   # Primary health-check host — must match nginx server_name for agent-a.
   DOMAIN: ${{ github.ref == 'refs/heads/main' && 'agent-a.identyclaw.com' || 'agent-a.dihola.io' }}
-  APP_PORT: 9443
+  APP_PORT: ${{ github.ref == 'refs/heads/main' && '9443' || '4443' }}
   POD_NAME: identyclaw-agents-pod
   NGINX_CONTAINER_NAME: identyclaw-nginx
   REGISTRY: ghcr.io

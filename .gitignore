@@ -1,5 +1,4 @@
-# Identyclaw repo — keep secrets, runtime state, and build trees out of git.
-# Copy env.example → env.local (never commit env.local).
+# Identyclaw repo — code only. Runtime config/secrets live in ~/identyclaw-agents-app/.
 
 # --- Secrets / local env ---
 env.local
@@ -12,7 +11,7 @@ env.local.fragment*
 **/DISCORD_BOT_TOKEN
 **/jwt.txt
 
-# --- OpenClaw agent state (default: ~/.openclaw-agent-* on host) ---
+# --- Legacy / accidental agent state inside the checkout ---
 .openclaw-agent-*/
 .openclaw-agent-*
 

@@ -8,7 +8,7 @@
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #
 # Optional env (defaults match deploy.yml):
-#   APP_PORT=9443
+#   APP_PORT=9443 (main) or 4443 (development)
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
@@ -27,33 +27,20 @@ APP_PORT="${APP_PORT:-9443}"
 POD_NAME="${POD_NAME:-identyclaw-agents-pod}"
 NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
 AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
-IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${APP_DIR}/agents}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-export IDENTYCLAW_AGENT_STATE_ROOT
+export IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$APP_DIR}"
+export IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${APP_DIR}/agents}"
 export IDENTYCLAW_DEPLOY_MODE=pod
-export IDENTITYCLAW_ROOT="$REPO_ROOT"
-if [[ -f "$APP_DIR/env.local" ]]; then
-  export IDENTITYCLAW_ROOT="$APP_DIR"
-fi
 
 # shellcheck source=lib.sh
 source "$REPO_ROOT/scripts/lib.sh"
 
+ensure_app_layout
+load_env
+
 require_podman() {
   command -v podman >/dev/null 2>&1 || { echo "podman not found" >&2; exit 1; }
-}
-
-selinux_z() {
-  if [[ "$(uname -s)" == "Linux" ]] && command -v getenforce >/dev/null 2>&1; then
-    local mode
-    mode="$(getenforce 2>/dev/null || true)"
-    if [[ "$mode" == "Enforcing" || "$mode" == "Permissive" ]]; then
-      echo ":Z"
-      return
-    fi
-  fi
-  echo ""
 }
 
 normalize_tls_certs() {
@@ -133,15 +120,23 @@ ensure_agent_runtime() {
   ensure_discord_allow_bots_mentions "$dir"
 }
 
+ensure_agent_state_for_pod() {
+  local dir="$1"
+  # Pods cannot use --userns=keep-id; map state to the container uid in the user namespace.
+  podman unshare chown -R 1000:1000 "$dir"
+  chmod 700 "$dir/secrets" 2>/dev/null || true
+}
+
 start_agent_in_pod() {
   local id="$1"
   local dir container gw_port z
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   gw_port="$(agent_internal_gateway_port "$id")"
-  z="$(selinux_z)"
+  z="$(selinux_mount_suffix)"
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
+  ensure_agent_state_for_pod "$dir"
 
   podman run -d \
     --pod "$POD_NAME" \
@@ -161,14 +156,17 @@ start_agent_in_pod() {
 
 require_podman
 
-mkdir -p "$APP_DIR"/{certs,logs,nginx,secrets} "$IDENTYCLAW_AGENT_STATE_ROOT"
-mkdir -p "$APP_DIR/logs/nginx"
-chmod 711 "$APP_DIR/certs" 2>/dev/null || true
-chmod 750 "$APP_DIR/secrets" 2>/dev/null || true
+mkdir -p "$IDENTYCLAW_AGENT_STATE_ROOT"
 
-echo "==> Pull images"
-podman pull "$OPENCLAW_IMAGE"
-podman pull "$NGINX_IMAGE"
+if [[ "${SKIP_PULL:-0}" == 1 ]]; then
+  echo "==> Skip pull (SKIP_PULL=1) — using local images"
+  podman image exists "$OPENCLAW_IMAGE" || { echo "Missing image: $OPENCLAW_IMAGE" >&2; exit 1; }
+  podman image exists "$NGINX_IMAGE" || { echo "Missing image: $NGINX_IMAGE" >&2; exit 1; }
+else
+  echo "==> Pull images"
+  podman pull "$OPENCLAW_IMAGE"
+  podman pull "$NGINX_IMAGE"
+fi
 
 echo "==> Recreate pod ${POD_NAME}"
 for c in $AGENT_IDS "$NGINX_CONTAINER_NAME"; do
@@ -192,7 +190,7 @@ chmod 0775 "$APP_DIR/logs/nginx" || true
 podman unshare chown -R 101:101 "$APP_DIR/logs/nginx" || true
 normalize_tls_certs
 
-z="$(selinux_z)"
+z="$(selinux_mount_suffix)"
 echo "==> Start nginx sidecar"
 podman run -d \
   --pod "$POD_NAME" \
