@@ -19,7 +19,7 @@
 #   test-mail <id>       himalaya envelope list inside container
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
-#   test-webhook <id>    Smoke-test webhook ingress auth (expect 401 without hooks.token)
+#   test-webhook <id>    Smoke-test webhook ingress (expect 400/401 without RODiT x-signature)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
@@ -392,19 +392,20 @@ cmd_test_webhook() {
   load_env
   local url code
   url="$(agent_webhook_url "$id" hooks/wake)"
-  echo "==> Webhook ingress auth (expect HTTP 401 without hooks.token)"
+  echo "==> Webhook ingress auth (expect HTTP 400/401 without RODiT origin signature)"
   echo "    POST ${url}"
+  echo "    Senders sign at origin via @rodit/rodit-auth-be: x-signature + x-timestamp (see clienttest-idc)"
   code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$url" \
     -H 'Content-Type: application/json' \
     -d '{"text":"identyclaw smoke"}')"
   case "$code" in
-    401) echo "OK: unauthenticated POST /hooks/wake rejected (HTTP 401)" ;;
+    400|401) echo "OK: POST /hooks/wake without RODiT signature rejected (HTTP ${code})" ;;
     404)
-      echo "WARN: HTTP 404 — enable hooks in openclaw.json (hooks.enabled=true, hooks.token)" >&2
+      echo "WARN: HTTP 404 — webhook route not exposed yet on this gateway" >&2
       exit 1
       ;;
     *)
-      echo "FAIL: POST /hooks/wake without auth returned HTTP ${code}, expected 401" >&2
+      echo "FAIL: POST /hooks/wake without auth returned HTTP ${code}, expected 400 or 401" >&2
       exit 1
       ;;
   esac
@@ -434,11 +435,11 @@ cmd_chat() {
   require_podman
   require_agent_running "$id"
   load_env
-  local display gw
+  local display ui_base
   display="$(agent_display_name "$id")"
-  read -r gw _ < <(agent_ports "$id")
+  ui_base="$(agent_ui_base_url "$id")"
   printf '\033]0;%s (%s) — identyclaw chat\007' "$display" "$id"
-  echo "=== ${display} · ${id} · http://${PUBLISH_HOST}:${gw}/ · session main ==="
+  echo "=== ${display} · ${id} · ${ui_base}/ · session main ==="
   echo ""
   # Suppress @rodit/rodit-auth-be JSON logs when chat loads the A2A plugin.
   podman exec -it \

@@ -148,7 +148,7 @@ Expose each OpenClaw gateway on the public internet over **HTTPS** for **agent-t
 
 Images build in GitHub Actions, publish to GHCR, and deploy to a rootless Podman host with an **nginx TLS sidecar** in front of the gateways ([`cicd-deployment-standard.md`](../docs/docs/cicd-deployment-standard.md)).
 
-The nginx sidecar **complements** the OpenClaw gateway — it terminates TLS and reverse-proxies HTTP/WebSocket traffic. It does **not** replace gateway auth (`hooks.token` for webhooks, RODiT JWT for A2A, gateway token for Control UI).
+The nginx sidecar **complements** the OpenClaw gateway — it terminates TLS and reverse-proxies HTTP/WebSocket traffic. It does **not** replace gateway auth (RODiT origin signatures / JWT for webhooks and A2A via `@rodit/rodit-auth-be`; gateway token for Control UI only).
 
 **Comparison with [`clienttest-idc`](../clienttest-idc):**
 
@@ -157,7 +157,7 @@ The nginx sidecar **complements** the OpenClaw gateway — it terminates TLS and
 | Purpose | RODiT webhook test API | A2A + OpenClaw webhooks per agent |
 | Host | `webhook.discernible.io:7443` (one service) | `agent-{a,b,c}.*:9443` (main) or `:4443` (dev) |
 | Webhook paths | `/webhook`, `/hooks/wake`, `/hooks/agent` | OpenClaw `/hooks/wake`, `/hooks/agent`, `/hooks/<name>` |
-| Webhook auth | RODiT Ed25519 (`x-signature`) | OpenClaw `hooks.token` (`Authorization: Bearer`) |
+| Webhook auth | RODiT Ed25519 (`x-signature` + `x-timestamp`) | RODiT Ed25519 (`x-signature` + `x-timestamp`) — same `@rodit/rodit-auth-be` pattern |
 | A2A | N/A | `POST /a2a` + `GET /.well-known/agent-card.json` |
 | nginx routing | Catch-all `location /` → Node :8080 | Catch-all `location /` → gateway upstream per `server_name` |
 
@@ -186,7 +186,7 @@ The nginx sidecar **complements** the OpenClaw gateway — it terminates TLS and
 | TLS | Self-signed bootstrap PEMs in `~/identyclaw-agents-app/certs/` |
 | A2A inbound (`audience`, `publicBaseUrl`) | `https://agent-a.identyclaw.com:9443` |
 | A2A outbound peers | None configured |
-| Webhooks (`hooks.enabled`) | Not enabled — external POST blocked |
+| Webhooks | RODiT origin signature required — no `hooks.token` / HMAC |
 | Local ingress verify | Health **200**, Agent Card OK, unauthenticated `POST /a2a` → **401** |
 | Public DNS | `agent-a.identyclaw.com` — **no A record yet** (hostname does not resolve externally) |
 | Firewall **9443** | Not confirmed open |
@@ -225,7 +225,7 @@ flowchart TB
 
   PEER -->|"HTTPS POST /a2a + RODiT JWT"| NGX
   PEER -->|"HTTPS GET /.well-known/agent-card.json"| NGX
-  WH -->|"HTTPS POST /hooks/wake|agent + hooks.token"| NGX
+  WH -->|"HTTPS POST /hooks/wake|agent + RODiT x-signature"| NGX
   OP -->|HTTPS Control UI optional| NGX
   A <-->|pod-local| B
   A <-->|pod-local| C
@@ -263,7 +263,7 @@ Each agent gets its own hostname. Route external senders to the **correct subdom
 
 **Development (`agent-*.dihola.io`, port **4443**):** same table with `dihola.io` hosts and `:4443`.
 
-**Webhook auth (OpenClaw):** `Authorization: Bearer <hooks.token>` or `x-openclaw-token: <hooks.token>`. Query-string tokens are rejected. Configure in each agent’s `openclaw.json` (`hooks.enabled`, `hooks.token`) — separate from `OPENCLAW_GATEWAY_TOKEN`. See [OpenClaw webhook docs](https://github.com/openclaw/openclaw/blob/main/docs/automation/webhook.md).
+**Webhook auth (RODiT — same as [`clienttest-idc`](../clienttest-idc)):** inbound webhooks are **digitally signed at origin** via `@rodit/rodit-auth-be` — `x-signature` (Ed25519 hex over payload + `x-timestamp`) and `x-timestamp`. No shared `hooks.token`, no HMAC. Senders use NEAR Passport credentials (`login_server` / origin signing). Register `webhook_url` in Passport metadata; peers append `/hooks/wake`, `/hooks/agent`, etc.
 
 **RODiT / Passport metadata:** register the agent’s webhook base (e.g. `https://agent-a.identyclaw.com:9443`) in token metadata `webhook_url`, same field pattern as [`clienttest-idc`](../clienttest-idc) (`https://webhook.discernible.io:7443`). Outbound peers append the path (`/hooks/wake`, `/hooks/agent`, etc.) when sending.
 
@@ -274,7 +274,7 @@ Each agent gets its own hostname. Route external senders to the **correct subdom
 ./identyclaw.sh webhook-url agent-a              # …/hooks/wake
 ./identyclaw.sh webhook-url agent-a hooks/agent
 ./identyclaw.sh status                           # all ingress URLs in pod mode
-./identyclaw.sh test-webhook agent-a             # expect HTTP 401 without token
+./identyclaw.sh test-webhook agent-a             # expect HTTP 400/401 without x-signature
 ./identyclaw.sh test-a2a agent-a agent-b
 ```
 
@@ -285,7 +285,7 @@ Each agent gets its own hostname. Route external senders to the **correct subdom
 | Control UI (`/`) | `OPENCLAW_GATEWAY_TOKEN` | Token required; do not expose token in URLs on untrusted clients |
 | `POST /a2a` | RODiT Passport JWT | See [A2A section](#a2a-agent-to-agent-communication-agent-a--agent-b) |
 | `GET /.well-known/agent-card.json` | Public by design | A2A discovery; no secrets in Agent Card |
-| Webhooks (`/hooks/...`) | Per-agent `hooks.token` | Route to correct subdomain per agent |
+| Webhooks (`/hooks/...`) | RODiT origin signature (`x-signature` + `x-timestamp`) | Route to correct subdomain per agent |
 | nginx | TLS 1.2/1.3, security headers, HSTS (main), rate limiting | Shared includes in `nginx/inc/` |
 | Host filesystem | `~/identyclaw-agents-app/agents/*/secrets/` mode `700` | Never in git; not copied by CI |
 
@@ -363,7 +363,7 @@ See [Runtime layout](#runtime-layout-repository-vs-app-directory) for the full t
 - [x] **dedalo43 (localhost):** health **200**, Agent Card, `POST /a2a` without JWT → **401** (via `curl -sk -H 'Host: agent-a.identyclaw.com' https://127.0.0.1:9443/...`).
 - [ ] **Public:** health and Agent Card via `https://agent-a.identyclaw.com:9443/...` (requires DNS + firewall).
 - [ ] Push to target branch for CI deploy (or repeat local deploy on other hosts).
-- [ ] Webhooks: enable `hooks.enabled` + `hooks.token` in `openclaw.json`, then `./identyclaw.sh test-webhook agent-a` → HTTP 401 without token.
+- [ ] Webhooks: verify `./identyclaw.sh test-webhook agent-a` → HTTP 400/401 without RODiT `x-signature` (NEAR credentials in `secrets/near-credentials/`).
 - [ ] A2A same-host: `./identyclaw.sh test-a2a agent-a agent-b` (requires agent-b on host); cross-machine: wire outbound peer (see [Phase 5](#phase-5--wire-outbound-peer-both-sides)).
 - [ ] Control UI (optional): `https://agent-a.<host>:9443/#token=<token>` from `./identyclaw.sh token agent-a`
 
@@ -429,7 +429,7 @@ Single-agent hosts (e.g. dedalo43 with only **agent-a**) use the same pattern: o
 | Public DNS | `agent-a.identyclaw.com` does not resolve | A record → dedalo43 public IP |
 | Firewall | **9443** not confirmed open | Inbound TCP 9443 |
 | External reachability | Localhost verify only | Peers resolve hostname from internet |
-| Webhooks | `hooks.enabled` not set | Enable before integrator POST |
+| Webhooks | RODiT origin signing (no `hooks.token`) | Integrators sign with Passport key at origin |
 
 ### End-to-end flow (two machines)
 
@@ -638,7 +638,7 @@ Each agent exposes a small, purpose-built HTTP surface for peer messaging instea
 
 | Agent | Display name | Deployed | A2A inbound | Outbound peers | Notes |
 |-------|--------------|----------|-------------|----------------|-------|
-| **agent-a** | Juanelo | Yes (pod) | `https://agent-a.identyclaw.com:9443` | none | OpenRouter, NEAR credentials, Himalaya (`juanelo@agenthood.me`) |
+| **agent-a** | Juanelo | Yes (pod) | `https://agent-a.identyclaw.com:9443` (ingress **9443**; gateway **18789** pod-internal) | none | OpenRouter, NEAR credentials, Himalaya (`juanelo@agenthood.me`) |
 | **agent-b** | — | No | — | — | Documented in README; not under `~/identyclaw-agents-app/agents/` |
 | **agent-c** | — | No | — | — | Documented in README; not under `~/identyclaw-agents-app/agents/` |
 
@@ -705,6 +705,7 @@ Bootstrap never sets `allowUnauthenticated: true`.
 |------------|---------|--------|
 | `OPENCLAW_GATEWAY_TOKEN` | Control UI / gateway admin | Human operator |
 | A2A inbound RODiT JWT | Who may call `POST /a2a` | Peer agents with valid Passport |
+| Webhook RODiT origin signature | Who may call `POST /hooks/*` | Integrators with Passport Ed25519 key (`x-signature` + `x-timestamp`) |
 | A2A outbound JWT | Credential presented **to** the peer | Obtained via `login_server` per call |
 | `IDENTYCLAW_*` / NEAR key | Outbound JWT acquisition | Per-agent Passport |
 | OpenRouter API key | Model provider | LLM calls only |
