@@ -65,8 +65,8 @@ When Migadu passwords are ready:
 
 The local image pins `ghcr.io/openclaw/openclaw:2026.5.27-slim` and pre-installs `@openclaw/discord` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
-- Agent A UI: http://127.0.0.1:18789/ — token: `./identyclaw.sh token agent-a`
-- Agent B UI: http://127.0.0.1:18791/ — token: `./identyclaw.sh token agent-b`
+- **Pod mode** (dedalo43): Agent A UI: `https://agent-a.identyclaw.com:9443/` — token: `./identyclaw.sh token agent-a`
+- **Standalone dev**: Agent A UI: http://127.0.0.1:18789/ — Agent B: http://127.0.0.1:18791/
 
 See [Accessing agents (CLI and browser)](#accessing-agents-cli-and-browser) for terminal chat and remote laptop access.
 
@@ -352,20 +352,23 @@ Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport cred
 
 See [`security-compliance-improvements.md`](security-compliance-improvements.md#a2a-agent-to-agent-communication-agent-a--agent-b) for RODiT JWT details and production ingress. For agents on **different machines**, follow [Cross-machine A2A (Option A)](security-compliance-improvements.md#cross-machine-a2a-option-a) (public HTTPS on **9443**).
 
-### Agent A (configured)
+### Agent A (configured — dedalo43 / Juanelo)
 
-Onboarded 2026-05-23. Customer-support oriented setup with email + OpenRouter + DuckDuckGo (Spain).
+Onboarded 2026-05-23. Customer-support oriented setup with email + OpenRouter + DuckDuckGo (Spain). **Production pod** on dedalo43 (`IDENTYCLAW_DEPLOY_MODE=pod`).
 
 | Setting | Value |
 |---------|--------|
 | State dir | `~/identyclaw-agents-app/agents/agent-a` |
-| Container | `openclaw-agent-a` |
-| Mailbox | `agent-a@identyclaw.com` (Migadu) |
-| Gateway ports (host) | **18789** (UI/API), **18790** (bridge) |
-| Control UI | http://127.0.0.1:18789/ |
+| Container | `openclaw-agent-a` (in `identyclaw-agents-pod` with `identyclaw-nginx`) |
+| Display name | Juanelo |
+| Mailbox | `juanelo@agenthood.me` (Migadu) |
+| **Ingress port (public)** | **9443** — `https://agent-a.identyclaw.com:9443` |
+| Gateway port (pod-internal) | **18789** (UI/API), **18790** (bridge) — nginx upstream only |
+| Control UI | `https://agent-a.identyclaw.com:9443/` (or `curl -sk -H 'Host: agent-a.identyclaw.com' https://127.0.0.1:9443/` until DNS is live) |
+| A2A | `POST https://agent-a.identyclaw.com:9443/a2a` |
 | Token | `./identyclaw.sh token agent-a` |
-| Publish bind | `127.0.0.1` (`PUBLISH_HOST` in `env.local`) |
-| Gateway bind | loopback (localhost only) |
+| Deploy mode | `pod` (`IDENTYCLAW_INGRESS_PORT=9443` in `env.local`) |
+| Gateway bind | `lan` (reachable from nginx sidecar inside the pod) |
 | Gateway auth | token |
 | Model | `openrouter/x-ai/grok-4.3` (OpenRouter API key, no fallbacks) |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
@@ -382,7 +385,7 @@ Key `openclaw.json` excerpts (secrets redacted):
 {
   "gateway": {
     "port": 18789,
-    "bind": "loopback",
+    "bind": "lan",
     "auth": { "mode": "token" }
   },
   "agents": {
@@ -422,7 +425,9 @@ Key `openclaw.json` excerpts (secrets redacted):
 }
 ```
 
-Webhooks (if added later) share the gateway port — no extra port. Use agent A’s host port **18789** and a dedicated `hooks.token` (not the Control UI token). See [Troubleshooting](#webhooks-and-port-conflicts-two-agents).
+Webhooks use the same ingress hostname — no extra port. On dedalo43 (pod): `POST https://agent-a.identyclaw.com:9443/hooks/wake` with **RODiT origin signature** (`x-signature` + `x-timestamp` via `@rodit/rodit-auth-be`) — same pattern as [`clienttest-idc`](../clienttest-idc). No `hooks.token` or HMAC. Standalone dev uses host port **18789**. See [Troubleshooting](#webhooks-and-port-conflicts-two-agents).
+
+**Standalone dev** (other hosts or local loopback): `PUBLISH_HOST=127.0.0.1`, Control UI at `http://127.0.0.1:18789/`, `./identyclaw.sh start agent-a`.
 
 **Fix OpenRouter auth** (if onboard saved a shell command instead of `sk-or-...`):
 
@@ -596,7 +601,7 @@ Each agent’s webhooks are HTTP paths on **that agent’s gateway** — they do
 | Standalone dev | `http://127.0.0.1:18789/hooks/wake` |
 | Production pod (main) | `https://agent-a.identyclaw.com:9443/hooks/wake` |
 
-Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Use a **separate `hooks.token` per agent** (not the Control UI token). External services must call the correct subdomain. See [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
+Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at origin** with RODiT/Passport credentials (`x-signature` + `x-timestamp`) — not the Control UI gateway token. External services must call the correct subdomain. See [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
 
 ### Run as `dedalo46`, not `root`
 
@@ -637,7 +642,7 @@ Deploy layout: **nginx sidecar** on **9443** (main) or **4443** (development) �
 
 ### Webhook URLs (production)
 
-Each agent has its own HTTPS base. External senders must hit the **correct subdomain** with that agent’s `hooks.token` (not the Control UI token):
+Each agent has its own HTTPS base. External senders must hit the **correct subdomain** and include a **RODiT origin signature** (`x-signature` + `x-timestamp`):
 
 | Agent (main) | Webhook wake | Webhook agent |
 |--------------|--------------|---------------|
@@ -649,11 +654,11 @@ Use `agent-*.dihola.io` on the development branch. Register the base URL in RODi
 
 ```bash
 ./identyclaw.sh webhook-url agent-a
-./identyclaw.sh test-webhook agent-a    # requires hooks.enabled in openclaw.json
+./identyclaw.sh test-webhook agent-a    # expect 400/401 without RODiT x-signature
 ./identyclaw.sh status                  # ingress URLs in pod mode
 ```
 
-Enable webhooks in each agent’s `openclaw.json` before go-live (`hooks.enabled`, `hooks.token`). Auth: `Authorization: Bearer <hooks.token>` — see [OpenClaw webhook docs](https://github.com/openclaw/openclaw/blob/main/docs/automation/webhook.md).
+Webhook auth matches [`clienttest-idc`](../clienttest-idc): **Ed25519 signed at origin** via `@rodit/rodit-auth-be` (`x-signature` + `x-timestamp` on the raw body). No shared `hooks.token`, no HMAC. Each agent needs `secrets/near-credentials/*.json` for verification. Register `webhook_url` in Passport metadata (base URL without path).
 
 ### Host bootstrap (once per environment)
 

@@ -13,7 +13,7 @@ map $uri $openclaw_health_limit_key {
     "~^/health$" $remote_addr;
 }
 
-# A2A + OpenClaw webhook paths (see OpenClaw docs/automation/webhook.md).
+# A2A + webhook paths — auth via RODiT (@rodit/rodit-auth-be), not hooks.token / HMAC.
 map $uri $openclaw_ingress_limit_key {
     default "";
     "~^/a2a$"                    $binary_remote_addr;

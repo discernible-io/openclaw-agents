@@ -247,6 +247,21 @@ agent_ingress_base_url() {
   agent_public_base_url "$1"
 }
 
+# Operator-facing Control UI / API base URL (HTTPS ingress in pod mode, loopback in standalone).
+agent_ui_base_url() {
+  local id="$1"
+  load_env
+  local ingress
+  ingress="$(agent_ingress_base_url "$id")"
+  if [[ -n "$ingress" ]]; then
+    echo "$ingress"
+    return 0
+  fi
+  local gw
+  read -r gw _ < <(agent_ports "$id")
+  echo "http://${PUBLISH_HOST}:${gw}"
+}
+
 agent_webhook_url() {
   local id="$1"
   local path="${2:-hooks/wake}"
@@ -288,18 +303,12 @@ agent_agent_card_public_url() {
   agent_agent_card_url "$id"
 }
 
-openclaw_hooks_enabled() {
+# Webhook ingress uses RODiT origin signatures (@rodit/rodit-auth-be), not hooks.token / HMAC.
+rodit_webhook_auth_ready() {
   local id="$1"
-  local config
-  config="$(agent_home "$id")/openclaw.json"
-  [[ -f "$config" ]] || return 1
-  python3 - "$config" <<'PY'
-import json, sys
-from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-hooks = data.get("hooks") or {}
-sys.exit(0 if hooks.get("enabled") else 1)
-PY
+  local config_dir
+  config_dir="$(agent_home "$id")"
+  agent_has_near_credentials "$config_dir"
 }
 
 print_agent_ingress_urls() {
@@ -315,12 +324,12 @@ print_agent_ingress_urls() {
     echo "  ${id} ingress (${base}):"
     echo "    A2A discovery: ${card}"
     echo "    A2A messaging: POST ${a2a}  (Authorization: Bearer <RODiT JWT>)"
-    echo "    Webhook wake:  POST ${wake}  (Authorization: Bearer <hooks.token>)"
-    echo "    Webhook agent: POST ${agent_hook}  (Authorization: Bearer <hooks.token>)"
-    if openclaw_hooks_enabled "$id"; then
-      echo "    hooks.enabled: yes (see openclaw.json hooks.token — not the Control UI token)"
+    echo "    Webhook wake:  POST ${wake}  (RODiT origin signature: x-signature + x-timestamp)"
+    echo "    Webhook agent: POST ${agent_hook}  (RODiT origin signature: x-signature + x-timestamp)"
+    if rodit_webhook_auth_ready "$id"; then
+      echo "    Webhook auth: RODiT (@rodit/rodit-auth-be) — Ed25519 signed at origin; no hooks.token / HMAC"
     else
-      echo "    hooks.enabled: no — enable hooks in openclaw.json before external senders can POST"
+      echo "    Webhook auth: needs secrets/near-credentials/*.json for RODiT verification"
     fi
     return 0
   fi
