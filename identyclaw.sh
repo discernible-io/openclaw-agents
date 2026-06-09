@@ -293,24 +293,25 @@ cmd_status() {
   echo ""
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     echo "Production ingress (A2A + webhooks — port ${IDENTYCLAW_INGRESS_PORT}):"
-    for id in agent-a agent-b agent-c; do
+    for id in $AGENT_IDS; do
       print_agent_ingress_urls "$id"
     done
     echo ""
     echo "Control UI (operator; gateway token required):"
-    for id in agent-a agent-b agent-c; do
+    for id in $AGENT_IDS; do
       local base
       base="$(agent_ingress_base_url "$id")"
       [[ -n "$base" ]] && echo "  ${id}: ${base}/"
     done
   else
     echo "Control UI (use token from: $0 token <id>):"
-    echo "  agent-a: http://${PUBLISH_HOST}:${AGENT_A_GATEWAY_PORT}/"
-    echo "  agent-b: http://${PUBLISH_HOST}:${AGENT_B_GATEWAY_PORT}/"
-    echo "  agent-c: http://${PUBLISH_HOST}:${AGENT_C_GATEWAY_PORT}/"
+    for id in $AGENT_IDS; do
+      read -r gw _ < <(agent_ports "$id")
+      echo "  ${id}: http://${PUBLISH_HOST}:${gw}/"
+    done
     echo ""
     echo "Webhooks / A2A (loopback — tunnel or pod deploy for HTTPS):"
-    for id in agent-a agent-b agent-c; do
+    for id in $AGENT_IDS; do
       print_agent_ingress_urls "$id"
     done
   fi
