@@ -16,6 +16,9 @@
 #   GITHUB_SHA               Image tag (default: git HEAD)
 #   PULL_FROM_GHCR=1         Pull images instead of local build
 #   USE_LOCAL_RESOLVE=1      curl --resolve for health check on loopback
+#   SKIP_PLUGIN_UPDATE=1     Skip cloning/building GitHub plugins (deploy-pod.sh)
+#
+# Requires git + npm (Node 22+) on the host — plugins are built during deploy.
 
 set -euo pipefail
 [[ "${TRACE:-0}" == 1 ]] && set -x

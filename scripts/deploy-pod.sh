@@ -15,6 +15,7 @@
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
 #   REPO_ROOT            Git checkout path (for identyclaw.sh init/bootstrap)
 #   AGENT_IDS            Space-separated list (default: agent-a agent-b agent-c)
+#   SKIP_PLUGIN_UPDATE=1 Skip GitHub plugin clone/build/install (requires git + npm when unset)
 
 set -euo pipefail
 [[ "${TRACE:-0}" == 1 ]] && set -x
@@ -191,6 +192,20 @@ for id in $AGENT_IDS; do
   echo "==> Start ${id} in pod"
   start_agent_in_pod "$id"
 done
+
+if [[ "${SKIP_PLUGIN_UPDATE:-0}" != 1 ]]; then
+  for id in $AGENT_IDS; do
+    upgrade_agent_plugins "$id"
+    ensure_agent_packages "$id"
+    container="$(agent_container "$id")"
+    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      echo "    (${id}: restarting gateway to load plugins…)"
+      podman restart "$container" >/dev/null
+    fi
+  done
+else
+  echo "==> Skip plugin update (SKIP_PLUGIN_UPDATE=1)"
+fi
 
 ensure_pod_logs_for_container "$APP_DIR/logs/nginx"
 ensure_tls_certs
