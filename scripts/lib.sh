@@ -146,6 +146,7 @@ load_env() {
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-agent-a agent-b}"
   A2A_PLUGIN_REPO="${A2A_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-a2a-idc-plugin.git}"
+  IDENTYCLAW_PLUGIN_REPO="${IDENTYCLAW_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-identyclaw-plugin.git}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
   # https://clawhub.ai/identyclaw/identyclaw
@@ -1051,17 +1052,29 @@ PY
 
 ensure_identyclaw_packages() {
   local id="$1"
-  local container plugin_spec skill_spec
+  local container config_dir skill_spec
   load_env
   container="$(agent_container "$id")"
-  plugin_spec="${IDENTYCLAW_CLAWHUB_PLUGIN}"
+  config_dir="$(agent_home "$id")"
   skill_spec="${IDENTYCLAW_CLAWHUB_SKILL}"
+
+  if ! install_identyclaw_plugin "$config_dir"; then
+    echo "    (${id}: IdentyClaw plugin build/install skipped — see errors above)" >&2
+  fi
+
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
   ensure_openclaw_cli_link "$container"
   if ! podman exec "$container" test -f /home/node/.openclaw/extensions/identyclaw-tools/openclaw.plugin.json 2>/dev/null; then
-    echo "    (${id}: installing ClawHub plugin ${plugin_spec}…)" >&2
-    podman exec "$container" node /app/openclaw.mjs plugins install "$plugin_spec" --pin >&2 || true
+    local idc_build
+    idc_build="$(mktemp -d /tmp/openclaw-idc-plugin.XXXXXX)"
+    if build_git_plugin "$IDENTYCLAW_PLUGIN_REPO" "$idc_build" prepare:publish \
+      && [[ -f "$idc_build/dist/index.js" ]]; then
+      install_plugin_tree_in_container "$container" identyclaw-tools "$idc_build" \
+        dist openclaw.plugin.json package.json node_modules hola-client
+    fi
+    rm -rf "$idc_build"
   fi
+  podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
   if ! identyclaw_skill_installed_in_container "$container"; then
     echo "    (${id}: installing ClawHub skill ${skill_spec} from identyclaw/identyclaw…)" >&2
     if ! podman exec "$container" node /app/openclaw.mjs skills install "$skill_spec" >&2; then
@@ -1228,43 +1241,159 @@ if changed:
 PY
 }
 
+copy_openclaw_plugin_tree() {
+  local build_dir="$1"
+  local ext_dir="$2"
+  shift 2
+  local item
+
+  rm -rf "$ext_dir"
+  mkdir -p "$ext_dir"
+  for item in "$@"; do
+    cp -a "$build_dir/$item" "$ext_dir/"
+  done
+  rm -rf "$ext_dir/node_modules/openclaw"
+  ln -sf /app "$ext_dir/node_modules/openclaw"
+}
+
+build_git_plugin() {
+  local repo="$1"
+  local build_dir="$2"
+  local build_cmd="${3:-build}"
+
+  command -v git >/dev/null 2>&1 || {
+    echo "    (plugin: git required to clone ${repo})" >&2
+    return 1
+  }
+  command -v npm >/dev/null 2>&1 || {
+    echo "    (plugin: npm required to build ${repo})" >&2
+    return 1
+  }
+
+  rm -rf "$build_dir"
+  git clone --depth 1 "$repo" "$build_dir" >&2 || return 1
+  (
+    cd "$build_dir"
+    npm install >&2
+    npm run "$build_cmd" >&2
+  ) || true
+}
+
 install_a2a_idc_plugin() {
   local config_dir="$1"
+  local force="${2:-0}"
   local ext_dir="$config_dir/extensions/a2a"
   local build_dir="$config_dir/.a2a-plugin-build"
   load_env
 
-  if [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
+  if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
     return 0
   fi
 
-  command -v git >/dev/null 2>&1 || {
-    echo "    (A2A plugin: git required to clone ${A2A_PLUGIN_REPO})" >&2
-    return 1
-  }
-  command -v npm >/dev/null 2>&1 || {
-    echo "    (A2A plugin: npm required to build ${A2A_PLUGIN_REPO})" >&2
-    return 1
-  }
-
   echo "    (building A2A plugin from ${A2A_PLUGIN_REPO}…)" >&2
-  rm -rf "$build_dir"
-  git clone --depth 1 "$A2A_PLUGIN_REPO" "$build_dir" >&2 || return 1
-  (
-    cd "$build_dir"
-    npm install >&2
-    npm run build >&2
-  ) || true
+  build_git_plugin "$A2A_PLUGIN_REPO" "$build_dir" build || return 1
   [[ -f "$build_dir/dist/index.js" ]] || {
     echo "    (A2A plugin build failed — dist/index.js missing)" >&2
     return 1
   }
 
-  rm -rf "$ext_dir"
-  mkdir -p "$ext_dir"
-  cp -a "$build_dir"/{dist,openclaw.plugin.json,package.json,node_modules} "$ext_dir/"
-  rm -rf "$ext_dir/node_modules/openclaw"
-  ln -sf /app "$ext_dir/node_modules/openclaw"
+  copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json node_modules
+}
+
+install_identyclaw_plugin() {
+  local config_dir="$1"
+  local force="${2:-0}"
+  local ext_dir="$config_dir/extensions/identyclaw-tools"
+  local build_dir="$config_dir/.identyclaw-plugin-build"
+  load_env
+
+  if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
+    return 0
+  fi
+
+  echo "    (building IdentyClaw plugin from ${IDENTYCLAW_PLUGIN_REPO}…)" >&2
+  build_git_plugin "$IDENTYCLAW_PLUGIN_REPO" "$build_dir" prepare:publish || return 1
+  [[ -f "$build_dir/dist/index.js" ]] || {
+    echo "    (IdentyClaw plugin build failed — dist/index.js missing)" >&2
+    return 1
+  }
+
+  copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json node_modules hola-client
+}
+
+install_plugin_tree_in_container() {
+  local container="$1"
+  local ext_name="$2"
+  local build_dir="$3"
+  shift 3
+  local item items=() ext_dir="/home/node/.openclaw/extensions/${ext_name}"
+  local stage_dir="/tmp/.plugin-build-${ext_name}"
+  local copy_items=""
+
+  for item in "$@"; do
+    items+=("$item")
+    copy_items+=" $(printf '%q' "$item")"
+  done
+
+  podman exec "$container" rm -rf "$ext_dir" "$stage_dir" 2>/dev/null || true
+  podman cp "$build_dir" "$container:$stage_dir" >/dev/null
+  # shellcheck disable=SC2086
+  podman exec "$container" bash -c "
+    set -euo pipefail
+    ext_dir=$(printf '%q' "$ext_dir")
+    build_dir=$(printf '%q' "$stage_dir")
+    mkdir -p \"\$ext_dir\"
+    for item in${copy_items}; do
+      cp -a \"\$build_dir/\$item\" \"\$ext_dir/\"
+    done
+    rm -rf \"\$ext_dir/node_modules/openclaw\"
+    ln -sf /app \"\$ext_dir/node_modules/openclaw\"
+    rm -rf \"\$build_dir\"
+  "
+}
+
+upgrade_agent_plugins() {
+  local id="$1"
+  local container config_dir a2a_build idc_build
+  load_env
+  config_dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  a2a_build="$(mktemp -d /tmp/openclaw-a2a-plugin.XXXXXX)"
+  idc_build="$(mktemp -d /tmp/openclaw-idc-plugin.XXXXXX)"
+
+  echo "==> Upgrading plugins for ${id}"
+  echo "    (A2A: ${A2A_PLUGIN_REPO})"
+  build_git_plugin "$A2A_PLUGIN_REPO" "$a2a_build" build || return 1
+  [[ -f "$a2a_build/dist/index.js" ]] || {
+    echo "A2A plugin build failed for ${id}" >&2
+    return 1
+  }
+
+  echo "    (IdentyClaw: ${IDENTYCLAW_PLUGIN_REPO})"
+  build_git_plugin "$IDENTYCLAW_PLUGIN_REPO" "$idc_build" prepare:publish || return 1
+  [[ -f "$idc_build/dist/index.js" ]] || {
+    echo "IdentyClaw plugin build failed for ${id}" >&2
+    return 1
+  }
+
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    install_plugin_tree_in_container "$container" a2a "$a2a_build" dist openclaw.plugin.json package.json node_modules
+    install_plugin_tree_in_container "$container" identyclaw-tools "$idc_build" dist openclaw.plugin.json package.json node_modules hola-client
+    ensure_openclaw_cli_link "$container"
+    podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
+  else
+    copy_openclaw_plugin_tree "$a2a_build" "$config_dir/extensions/a2a" dist openclaw.plugin.json package.json node_modules
+    copy_openclaw_plugin_tree "$idc_build" "$config_dir/extensions/identyclaw-tools" dist openclaw.plugin.json package.json node_modules hola-client
+  fi
+
+  rm -rf "$a2a_build" "$idc_build"
+
+  if [[ -w "$config_dir/openclaw.json" ]]; then
+    ensure_identyclaw_config "$config_dir"
+    agent_has_near_credentials "$config_dir" && ensure_a2a_config "$id" "$config_dir" || true
+  else
+    echo "    (${id}: skipped openclaw.json config sync — run bootstrap as container owner or fix permissions)" >&2
+  fi
 }
 
 ensure_a2a_packages() {

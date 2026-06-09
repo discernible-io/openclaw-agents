@@ -26,6 +26,7 @@
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
+#   upgrade-plugins [id|all]  Rebuild + install latest A2A + IdentyClaw plugins from GitHub
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
@@ -545,6 +546,25 @@ cmd_configure() {
   podman exec -it "$container" node dist/index.js configure "$@"
 }
 
+cmd_upgrade_plugins() {
+  require_podman
+  require_rootless_user
+  load_env
+  local target="${1:-all}"
+  local id
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      upgrade_agent_plugins "$id"
+    done
+    echo ""
+    echo "Restart gateways to load plugins: $0 restart all"
+  else
+    upgrade_agent_plugins "$target"
+    echo ""
+    echo "Restart gateway to load plugins: $0 restart ${target}"
+  fi
+}
+
 cmd_onboard() {
   local id="${1:?Usage: $0 onboard agent-a|agent-b|agent-c}"
   shift
@@ -626,6 +646,7 @@ main() {
     chat) cmd_chat "$@" ;;
     ask) cmd_ask "$@" ;;
     onboard) cmd_onboard "$@" ;;
+    upgrade-plugins) cmd_upgrade_plugins "$@" ;;
     -h|--help|help|"") usage ;;
     *)
       echo "Unknown command: $cmd" >&2
