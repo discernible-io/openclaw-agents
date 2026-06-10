@@ -1615,6 +1615,44 @@ install_identyclaw_plugin() {
   copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json node_modules hola-client
 }
 
+# rodit-auth-be inbound JWT validation requires server own-RODiT state (RoditClient role=server).
+patch_a2a_rodit_inbound_server_warmup() {
+  local rodit_inbound="$1/dist/auth/rodit-inbound.js"
+  [[ -f "$rodit_inbound" ]] || return 0
+  grep -q 'ensureRoditServerReady' "$rodit_inbound" && return 0
+  python3 - "$rodit_inbound" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = """export const defaultRoditJwtValidator = async (token, config) => {
+    const { validate_jwt_token_be } = loadRoditAuthBe({ logLevel: config.logLevel });
+    return validate_jwt_token_be(token, buildAudienceRodit(config), {
+        enforceSessionRegistration: false,
+    });
+};"""
+new = """let roditServerReady = null;
+function ensureRoditServerReady(logLevel) {
+    if (!roditServerReady) {
+        const { RoditClient } = loadRoditAuthBe({ logLevel });
+        roditServerReady = RoditClient.create({ role: "server" });
+    }
+    return roditServerReady;
+}
+export const defaultRoditJwtValidator = async (token, config) => {
+    const { validate_jwt_token_be } = loadRoditAuthBe({ logLevel: config.logLevel });
+    await ensureRoditServerReady(config.logLevel);
+    return validate_jwt_token_be(token, buildAudienceRodit(config), {
+        enforceSessionRegistration: false,
+    });
+};"""
+if old not in text:
+    sys.exit(0)
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+}
+
 install_plugin_tree_in_container() {
   local container="$1"
   local ext_name="$2"
@@ -1671,11 +1709,13 @@ upgrade_agent_plugins() {
   }
 
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    patch_a2a_rodit_inbound_server_warmup "$a2a_build"
     install_plugin_tree_in_container "$container" a2a "$a2a_build" dist openclaw.plugin.json package.json node_modules
     install_plugin_tree_in_container "$container" identyclaw-tools "$idc_build" dist openclaw.plugin.json package.json node_modules hola-client
     ensure_openclaw_cli_link "$container"
     podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
   else
+    patch_a2a_rodit_inbound_server_warmup "$a2a_build"
     copy_openclaw_plugin_tree "$a2a_build" "$config_dir/extensions/a2a" dist openclaw.plugin.json package.json node_modules
     copy_openclaw_plugin_tree "$idc_build" "$config_dir/extensions/identyclaw-tools" dist openclaw.plugin.json package.json node_modules hola-client
   fi
