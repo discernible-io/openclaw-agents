@@ -1387,16 +1387,18 @@ desired_auth = {
 }
 if p2p_audience and inbound_auth_mode in ("p2p", "dual"):
     desired_auth["p2pAudience"] = p2p_audience
-    if public_base_url:
-        desired_auth["p2pIssuer"] = public_base_url.rstrip("/")
 for key, value in desired_auth.items():
     if auth.get(key) != value:
         auth[key] = value
         changed = True
+for stale in ("p2pAudience", "p2pIssuer"):
+    if inbound_auth_mode not in ("p2p", "dual") and stale in auth:
+        del auth[stale]
+        changed = True
 
 if inbound_auth_mode in ("p2p", "dual"):
     rodit_login = inbound.setdefault("roditLogin", {})
-    desired_login = {"enabled": True, "loginMode": "p2p"}
+    desired_login = {"enabled": True, "loginMode": "promiscuous"}
     for key, value in desired_login.items():
         if rodit_login.get(key) != value:
             rodit_login[key] = value

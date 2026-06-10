@@ -8,6 +8,7 @@ Planned and recommended hardening for the identyclaw multi-agent stack (OpenClaw
 | [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) | **Live on dedalo43** (local pod deploy); CI/CD path not wired yet |
 | [Cross-machine A2A (Option A)](#cross-machine-a2a-option-a--implementation-plan) | **In progress** — pod + A2A inbound on dedalo43; DNS, firewall, outbound peer pending |
 | [A2A agent-to-agent](#a2a-agent-to-agent-communication-agent-a--agent-b) | **agent-a live** on dedalo43; agent-b/c not provisioned on this host |
+| [First contact → registered peer runbook](#first-contact--registered-peer-runbook) | **Operator guide** — mediated bootstrap, P2P steady state, manual + future auto-registration |
 | [Plugin compatibility](#identyclaw-agents--openclaw-a2a-idc-plugin-compatibility) | **Compatible in principle** — deployment/config gaps (peer URLs, JWT audience, TLS) are active risks |
 
 ---
@@ -755,6 +756,249 @@ Set per-agent `AGENT_*_A2A_PUBLIC_BASE_URL` in `~/identyclaw-agents-app/env.loca
 ./identyclaw.sh test-a2a agent-a agent-b
 ./identyclaw.sh ask agent-a 'Use a2a_send_message to ping agent-b and report the task id'
 ```
+
+### First contact → registered peer runbook
+
+Operator guide for onboarding a **new peer** that discovers your agent dynamically (public Agent Card or IdentyClaw directory) and holds a NEAR Passport. The recommended policy is:
+
+| Phase | Auth path | Purpose |
+|-------|-----------|---------|
+| **Discovery** | Public Agent Card + optional IdentyClaw API | Find candidate agents; no secrets |
+| **Trust** | HOLA verify (`identyclaw_verify_hola`) | Bind claimed identity to Passport `token_id` |
+| **First A2A contact** | **Mediated** login via `api.identyclaw.com` | Central, auditable cold start — works before peer URLs are wired |
+| **Registration** | Record peer `token_id` + public base URL | Enables outbound callback and P2P login target |
+| **Steady state** | **P2P** login to peer `/api/login` (with mediated fallback) | Lower API coupling for ongoing A2A traffic |
+
+**Important:** “Registration” is **trust + peer wiring**, not a one-time login event. Mediated login issues **short-lived JWTs** on every send; registration means you persist who the peer is and where they live.
+
+#### Recommended auth modes (production policy)
+
+Set in `~/identyclaw-agents-app/env.local` (global defaults) or per-agent overrides:
+
+```bash
+# Accept both IdentyClaw-issued and peer-issued JWTs on POST /a2a
+IDENTYCLAW_A2A_INBOUND_AUTH_MODE=dual
+
+# Try P2P login per peer; fall back to mediated when P2P fails or peer is unknown
+IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE=auto
+
+# Optional per-agent overrides (example: agent-a accepts dual, agent-b prefers auto outbound)
+# AGENT_A_A2A_INBOUND_AUTH_MODE=dual
+# AGENT_B_A2A_OUTBOUND_AUTH_MODE=auto
+```
+
+Apply after editing:
+
+```bash
+cd ~/identyclaw-agents
+./identyclaw.sh restart agent-a agent-b   # re-runs ensure_a2a_config
+```
+
+Bootstrap behaviour when inbound mode is `p2p` or `dual` ([`ensure_a2a_config`](scripts/lib.sh)):
+
+- Sets `inbound.roditLogin.enabled: true` and exposes `GET/POST /api/login*` on the gateway.
+- Sets `inbound.roditLogin.loginMode: promiscuous` — **any** Passport holder can P2P-login to your agent today. Tighten to `partner` in `openclaw.json` when the fork supports per-peer allowlists for inbound login.
+- Probes `own_rodit.owner_id` → `inbound.auth.p2pAudience` for P2P JWT validation alongside mediated `audience`.
+
+| `inbound.auth.mode` | Accepts on `POST /a2a` | JWT issuer |
+|---------------------|------------------------|------------|
+| `mediated` (default) | IdentyClaw API JWT only | `api.identyclaw.com` |
+| `p2p` | Peer-issued JWT only | Receiving agent’s `login_client` |
+| `dual` | Either | Mixed — use for staged rollout |
+
+| `outbound.auth.mode` | Login target | When to use |
+|----------------------|--------------|-------------|
+| `mediated` (default) | `IDENTYCLAW_BASE_URL` / Passport metadata | First contact, unknown peers |
+| `p2p` | Each peer’s `{loginBaseUrl}/api/login` | Registered peers only |
+| `auto` | P2P first, mediated fallback | **Recommended steady state** |
+
+#### End-to-end flow
+
+```mermaid
+sequenceDiagram
+  participant Op as Operator / agent-a
+  participant API as api.identyclaw.com
+  participant Peer as New peer (Passport)
+  participant You as Your agent (receiver)
+
+  Note over Op,You: 1 — Discovery (public)
+  Op->>You: GET /.well-known/agent-card.json
+  Op->>API: identyclaw_list_agents / get_agent_identity
+
+  Note over Op,Peer: 2 — Trust (optional but recommended)
+  Peer-->>Op: Signed HOLA string
+  Op->>API: identyclaw_verify_hola → peerTokenId
+
+  Note over Peer,You: 3 — First A2A (mediated)
+  Peer->>API: login_server (Passport sign)
+  API-->>Peer: JWT (mediated aud)
+  Peer->>You: POST /a2a + Bearer JWT
+  You->>You: validate JWT; read token_id + rodit_webhookurl
+
+  Note over Op,You: 4 — Registration (operator)
+  Op->>Op: Add peer to A2A_PEER_AGENTS + outbound.agents
+
+  Note over You,Peer: 5 — Steady state (P2P or auto)
+  You->>Peer: GET /api/login/timestamp
+  You->>Peer: POST /api/login (Passport sign)
+  Peer-->>You: P2P JWT (peer owner_id aud)
+  You->>Peer: POST /a2a + Bearer JWT
+```
+
+#### Step 1 — Discovery (no credentials)
+
+Any party can discover your agent without authentication:
+
+| Method | Endpoint / tool | Notes |
+|--------|-----------------|-------|
+| A2A Agent Card | `GET {publicBaseUrl}/.well-known/agent-card.json` | Public by design; describes capabilities |
+| IdentyClaw directory | `identyclaw_list_agents`, `identyclaw_get_agent_identity` | Returns DN, traits, `contactUri`; public listing strips sensitive `webhook_url` |
+| Inbound probe | `POST {publicBaseUrl}/a2a` without Bearer | Must return **401** (confirms JWT gate is active) |
+
+Example (production pod on dedalo43):
+
+```bash
+curl -sk -H 'Host: agent-a.identyclaw.com' \
+  https://127.0.0.1:9443/.well-known/agent-card.json
+
+./identyclaw.sh test-a2a agent-a agent-b   # same-host smoke: discovery + 401 gate
+```
+
+**Inbound note:** Any peer with a valid Passport on the same IdentyClaw deployment can call your `POST /a2a` once they hold a JWT — **no outbound peer list is required on your side for inbound**. Outbound is where registration matters.
+
+#### Step 2 — Trust (unknown sender)
+
+Before treating a dynamically discovered agent as a long-term peer, verify identity via HOLA (see `workspace/IDENTYCLAW.md` on each agent):
+
+1. Peer sends a signed HOLA string (or you request one via your channel).
+2. Run `identyclaw_verify_hola` — trust only when `verified: true`.
+3. Record `peerTokenId` (12-letter Passport ID).
+4. Cross-check with `identyclaw_get_agent_identity` — DN, `contactUri`, traits.
+5. **Impersonation guard:** reject if verified `peerTokenId` ≠ the ID the entity publishes on channels they control.
+
+HOLA is orthogonal to A2A JWT login but is the compliance-relevant identity step for **first contact from an unknown agent**.
+
+#### Step 3 — First A2A contact (mediated)
+
+With default or explicit `outbound.auth.mode: mediated`, the **calling peer** (or your agent calling them):
+
+1. Obtains a timestamp and signs with their NEAR Passport (`login_server` → `api.identyclaw.com`).
+2. Receives a short-lived JWT whose `aud` matches your agent’s `inbound.auth.audience` (probed from live `login_server` — see [`probe_rodit_inbound_audience`](scripts/lib.sh)).
+3. Sends `POST /a2a` with `Authorization: Bearer <jwt>`.
+
+Your agent validates signature, `iss`, `aud`, and `exp`. Sender identity comes from JWT claim `rodit_id` / `token_id` (`identityClaim` in config).
+
+This path works **without** pre-configuring the caller in `outbound.agents` on your side — they only need your public Agent Card URL and a Passport.
+
+#### Step 4 — Registration (peer wiring)
+
+After a successful first contact (and HOLA verification when the peer was unknown), **register** the peer so your agent can call back and prefer P2P login:
+
+**Manual registration (supported today)**
+
+1. Add the peer id to `A2A_PEER_AGENTS` in `~/identyclaw-agents-app/env.local`:
+   ```bash
+   A2A_PEER_AGENTS="agent-a agent-b"
+   ```
+2. Set the peer’s public Agent Card URL when bootstrap cannot infer it (pod mode, cross-machine):
+   ```bash
+   AGENT_B_A2A_PUBLIC_BASE_URL=https://agent-b.identyclaw.com:9443
+   ```
+3. Restart both agents so `build_a2a_peer_map` rewrites `plugins.entries.a2a.config.outbound.agents`:
+   ```bash
+   ./identyclaw.sh restart agent-a agent-b
+   ```
+4. Confirm outbound map in `~/identyclaw-agents-app/agents/agent-a/openclaw.json`:
+   ```json
+   "outbound": {
+     "agents": {
+       "agent-b": {
+         "url": "https://agent-b.example.io/.well-known/agent-card.json"
+       }
+     }
+   }
+   ```
+5. Optionally add `loginBaseUrl` for P2P override (else derived from Agent Card URL):
+   ```json
+   "agent-b": {
+     "url": "https://agent-b.example.io/.well-known/agent-card.json",
+     "loginBaseUrl": "https://agent-b.example.io"
+   }
+   ```
+
+Record in your operator notes: peer **Passport `token_id`**, **public base URL**, **display name**, and **date verified** (HOLA).
+
+**Automatic registration (planned — fork Phase 8D / 9D)**
+
+When enabled in the A2A plugin (`outbound.dynamicPeersFromJwt: true`), a successful inbound JWT upserts an outbound peer entry from claims `rodit_webhookurl` and `token_id` — **only peers that have authenticated inbound** can be called back. Bootstrap does **not** set this flag yet (default off). Trust model: same as manual registration, but ephemeral/persisted by the plugin.
+
+#### Step 5 — Steady state (P2P with mediated fallback)
+
+Once registered:
+
+1. Set `IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE=auto` (or `p2p` when all peers are known).
+2. Ensure inbound `dual` on agents that should accept both login styles during migration.
+3. Outbound calls: plugin tries `{loginBaseUrl}/api/login` on the peer; on failure, falls back to mediated `login_server`.
+4. Inbound calls from registered peers can use either path while `dual` is enabled — you do **not** need to disable mediated after registration.
+
+Verify end-to-end messaging:
+
+```bash
+./identyclaw.sh test-a2a agent-a agent-b
+./identyclaw.sh ask agent-a 'Use a2a_send_message to ping agent-b and report the task id'
+./identyclaw.sh ask agent-b 'Reply to agent-a via a2a_send_message with a short ack'
+```
+
+#### Example: agent-a (dedalo43) ↔ remote agent-b
+
+| Step | agent-a (Juanelo) | Remote agent-b operator |
+|------|-------------------|-------------------------|
+| Discovery | Agent Card at `https://agent-a.identyclaw.com:9443/.well-known/agent-card.json` | Publishes their Agent Card at `https://agent-b.example.io:9443/...` |
+| Trust | Verify their HOLA → record `token_id` | Verify Juanelo’s HOLA / directory entry |
+| First contact | They POST `/a2a` with mediated JWT (401 without token confirmed) | Same in reverse |
+| Registration | Set `AGENT_B_A2A_PUBLIC_BASE_URL`, add to `A2A_PEER_AGENTS`, restart | Wire agent-a URL in their `outbound.agents` |
+| Steady state | `dual` inbound + `auto` outbound | Mirror auth modes |
+| TLS | Self-signed ingress — peers may need CA-signed certs or trusted edge for outbound fetch | See [Plugin compatibility — TLS](#3-self-signed-tls-on-peer-https) |
+
+Cross-machine checklist: [Cross-machine A2A (Option A)](#cross-machine-a2a-option-a--implementation-plan).
+
+#### Example: same-host agent-a ↔ agent-b (standalone)
+
+| Item | Value |
+|------|-------|
+| Network | Podman `identyclaw-net` |
+| Agent Card URLs | `http://openclaw-agent-b:18789/.well-known/agent-card.json` (bootstrap default) |
+| Auth modes | `dual` / `auto` after both have `secrets/near-credentials/*.json` |
+| Smoke | `./identyclaw.sh test-a2a agent-a agent-b` |
+
+In **pod mode** on a single host, container DNS hostnames often **do not resolve** — use `http://127.0.0.1:18791/...` or public HTTPS URLs in `outbound.agents` instead.
+
+#### Security and compliance notes
+
+| Topic | Guidance |
+|-------|----------|
+| **Do not conflate credentials** | A2A JWT ≠ gateway token ≠ Discord/email — see [Trust boundaries](#trust-boundaries-do-not-conflate) |
+| **Discovery vs action** | Agent Card is public; `/a2a` and `/api/login` require Passport-backed auth |
+| **Mediated revocation** | IdentyClaw API session semantics apply to mediated JWTs |
+| **P2P revocation** | Short JWT TTL + NEAR Passport state; no central kill switch per peer call |
+| **Inbound P2P loginMode** | Bootstrap uses `promiscuous` — consider `partner` when restricting who may hit `/api/login` |
+| **Audit** | Plugin stores tasks under `a2a/inbound/` and `a2a/outbound/` — include in log/export policy |
+| **JWT audience** | Mediated `aud` (service `owner_id`) ≠ P2P `aud` (peer `owner_id`); `dual` accepts both — verify with live tokens before production |
+
+#### What is automated vs manual today
+
+| Capability | Status |
+|------------|--------|
+| RODiT inbound/outbound auth config | **Automated** — `ensure_a2a_config` on start/restart |
+| Mediated JWT audience probe | **Automated** — `probe_rodit_inbound_audience` |
+| P2P audience (`p2pAudience`) when `dual`/`p2p` | **Automated** — `probe_rodit_own_owner_id` |
+| P2P login routes (`/api/login*`) when `dual`/`p2p` | **Automated** |
+| Outbound peer map from `A2A_PEER_AGENTS` | **Automated** (same-host DNS or public URL when set) |
+| Cross-machine / pod peer URLs | **Manual** — set `AGENT_*_A2A_PUBLIC_BASE_URL` |
+| Dynamic peer registry from inbound JWT | **Not in bootstrap** — fork Phase 8D/9D, `dynamicPeersFromJwt: false` default |
+| End-to-end RODiT messaging smoke | **Manual** — `./identyclaw.sh ask … a2a_send_message` |
+
+See also: fork work plan [Phase 9 — P2P RODiT login](https://github.com/discernible-io/openclaw-a2a-idc-plugin/blob/main/a2afork.md#phase-9--p2p-rodit-login-peer-issued-jwt-in-progress) and [Plugin compatibility](#identyclaw-agents--openclaw-a2a-idc-plugin-compatibility).
 
 ### Secrets handling
 
