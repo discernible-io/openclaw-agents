@@ -990,18 +990,29 @@ private_key = creds.get("private_key", "")
 if not account_id or not private_key:
     raise SystemExit(0)
 
+# Container path (agent state is mounted at /home/node/.openclaw).
+cred_basename = cred_file.name
+container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{cred_basename}"
+
+strip_prefixes = (
+    "IDENTYCLAW_ACCOUNT_ID=",
+    "IDENTYCLAW_NEAR_PRIVATE_KEY=",
+    "IDENTYCLAW_BASE_URL=",
+    "NEAR_CONTRACT_ID=",
+    "RODIT_NEAR_CREDENTIALS_SOURCE=",
+    "NEAR_CREDENTIALS_FILE_PATH=",
+)
 lines = []
 if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:
-        lines = [
-            ln for ln in f
-            if not ln.startswith(
-                ("IDENTYCLAW_ACCOUNT_ID=", "IDENTYCLAW_NEAR_PRIVATE_KEY=", "IDENTYCLAW_BASE_URL=")
-            )
-        ]
+        lines = [ln for ln in f if not ln.startswith(strip_prefixes)]
+
 lines.append("IDENTYCLAW_BASE_URL=https://api.identyclaw.com\n")
 lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
 lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
+lines.append("NEAR_CONTRACT_ID=genaaaa-identyclaw-com.near\n")
+lines.append("RODIT_NEAR_CREDENTIALS_SOURCE=file\n")
+lines.append(f"NEAR_CREDENTIALS_FILE_PATH={container_cred_path}\n")
 with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)

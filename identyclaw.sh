@@ -169,14 +169,14 @@ start_one() {
   z="$(selinux_mount_suffix)"
   rt="$(podman_runtime_args)"
 
-  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run $0 init" >&2; exit 1; }
-  [[ -f "$dir/openclaw.json" ]] || { echo "Missing config — run $0 init" >&2; exit 1; }
-
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     start_pod_agent "$id" || return 1
     echo "Full pod redeploy: ./scripts/deploy-local-podman.sh --skip-build"
     return 0
   fi
+
+  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run $0 init" >&2; exit 1; }
+  [[ -f "$dir/openclaw.json" ]] || { echo "Missing config — run $0 init" >&2; exit 1; }
 
   read -r gw br < <(agent_ports "$id")
   ensure_internal_gateway_port "$dir" "$gw"
