@@ -68,6 +68,8 @@ jobs:
           push: true
           build-args: |
             OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim
+            OPENCLAW_GATEWAY_VERSION=2026.5.27
+            OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.5.27
             HIMALAYA_VERSION=v1.2.0
             HIMALAYA_ARCH=x86_64-linux
           tags: |
@@ -152,7 +154,16 @@ jobs:
             APP_DIR='${{ env.APP_DIR }}'
             # Undo container-namespace ownership from prior deploys before host mkdir/chmod.
             podman unshare chown -R 0:0 \"\${APP_DIR}/logs/nginx\" 2>/dev/null || true
-            for id in agent-a agent-b agent-c; do
+            AGENT_IDS=\"agent-a agent-b agent-c\"
+            if [ -f \"\${APP_DIR}/env.local\" ]; then
+              line=\$(grep -E '^AGENT_IDS=' \"\${APP_DIR}/env.local\" | head -1 || true)
+              if [ -n \"\${line}\" ]; then
+                AGENT_IDS=\"\${line#AGENT_IDS=}\"
+                AGENT_IDS=\"\${AGENT_IDS%\\\"}\"
+                AGENT_IDS=\"\${AGENT_IDS#\\\"}\"
+              fi
+            fi
+            for id in \${AGENT_IDS}; do
               podman unshare chown -R 0:0 \"\${APP_DIR}/agents/\${id}\" 2>/dev/null || true
             done
             mkdir -p \"\${APP_DIR}/{certs,logs,nginx,secrets,agents}\"
@@ -230,3 +241,9 @@ jobs:
           rm -f "${body}"
           echo "health_status=failed" >> "$GITHUB_OUTPUT"
           echo "::warning::Health check failed - containers were deployed; verify on host with podman logs ${NGINX_CONTAINER_NAME}"
+
+      - name: Post-deploy operator hint
+        if: steps.deploy.outcome == 'success'
+        run: |
+          echo "Deploy scripts and identyclaw.sh are at: ${{ env.APP_DIR }}/repo/"
+          echo "Restart gateways on host: ${{ env.APP_DIR }}/repo/identyclaw.sh restart all"

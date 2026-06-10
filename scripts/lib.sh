@@ -126,7 +126,8 @@ load_env() {
     done <"$f"
   fi
   OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.5.27-slim}"
-  OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord}"
+  OPENCLAW_GATEWAY_VERSION="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
+  OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@${OPENCLAW_GATEWAY_VERSION}}"
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
   HIMALAYA_VERSION="${HIMALAYA_VERSION:-v1.2.0}"
   PUBLISH_HOST="${PUBLISH_HOST:-127.0.0.1}"
@@ -160,6 +161,71 @@ load_env() {
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
   AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
+}
+
+openclaw_gateway_version_from_image() {
+  local image_ref="${1:-}"
+  local tag="${image_ref##*:}"
+  tag="${tag%%-*}"
+  echo "${tag:-2026.5.27}"
+}
+
+# Pin bare @openclaw/discord to the gateway version (prevents channel provider crashes).
+resolve_openclaw_bundled_plugins() {
+  load_env
+  local gw spec resolved=()
+  gw="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
+  for spec in ${OPENCLAW_BUNDLED_PLUGINS}; do
+    if [[ "$spec" == @openclaw/discord ]]; then
+      resolved+=("@openclaw/discord@${gw}")
+    else
+      resolved+=("$spec")
+    fi
+  done
+  echo "${resolved[@]}"
+}
+
+# Discord channel plugin must match gateway core (e.g. parseStrictPositiveInteger export drift).
+ensure_discord_plugin_compat() {
+  local id="$1"
+  local container
+  load_env
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+
+  if podman exec "$container" node -e "
+const gw = require('/app/package.json').version;
+let installed = null;
+try {
+  installed = require('/home/node/.openclaw/npm/node_modules/@openclaw/discord/package.json').version;
+} catch {}
+process.exit(installed === gw ? 0 : 1);
+" 2>/dev/null; then
+    return 0
+  fi
+
+  echo "    (${id}: syncing @openclaw/discord to gateway version…)" >&2
+  podman exec "$container" sh -ce '
+    set -euo pipefail
+    gw=$(node -e "process.stdout.write(require(\"/app/package.json\").version)")
+    rm -rf /home/node/.openclaw/npm/node_modules/@openclaw/discord
+    OPENCLAW_STATE_DIR=/home/node/.openclaw node /app/openclaw.mjs plugins install "@openclaw/discord@${gw}" --pin
+  ' >&2
+  return 1
+}
+
+restart_agent_gateway_if_running() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  echo "    (${id}: restarting gateway to load Discord plugin…)" >&2
+  podman restart "$container" >/dev/null
+}
+
+ensure_discord_plugin_compat_and_restart() {
+  local id="$1"
+  ensure_discord_plugin_compat "$id" || restart_agent_gateway_if_running "$id"
 }
 
 detect_himalaya_arch() {
@@ -602,9 +668,75 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|build-image|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-a2a|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Read AGENT_IDS from env.local (used by deploy.yml host prep and deploy-pod.sh).
+deploy_agent_ids_from_env() {
+  local app_dir="${1:-}"
+  local env_file ids line
+  load_env
+  if [[ -n "$app_dir" ]]; then
+    env_file="${app_dir}/env.local"
+  else
+    env_file="$(identyclaw_env_file)"
+  fi
+  ids="${AGENT_IDS:-agent-a agent-b agent-c}"
+  if [[ -f "$env_file" ]]; then
+    line="$(grep -E '^AGENT_IDS=' "$env_file" 2>/dev/null | head -1 || true)"
+    if [[ -n "$line" ]]; then
+      ids="${line#AGENT_IDS=}"
+      ids="${ids%\"}"
+      ids="${ids#\"}"
+      ids="${ids%\'}"
+      ids="${ids#\'}"
+    fi
+  fi
+  echo "$ids"
+}
+
+# Start or restart a pod-managed agent without host-side bootstrap (avoids openclaw.json EACCES).
+start_pod_agent() {
+  local id="$1"
+  local container dir
+  load_env
+  container="$(agent_container "$id")"
+  dir="$(agent_home "$id")"
+
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    echo "==> ${id} already running in pod — restarting gateway"
+    podman restart "$container" >/dev/null
+    ensure_discord_plugin_compat_and_restart "$id"
+    echo "Restarted ${container}"
+    return 0
+  fi
+
+  if podman container exists "$container" 2>/dev/null; then
+    prepare_agent_state_for_gateway_start "$id" pod
+    podman start "$container"
+    ensure_discord_plugin_compat_and_restart "$id"
+    echo "Started ${container} (pod container)"
+    return 0
+  fi
+
+  # No pod container yet — host must have agent state (readable or not) before first deploy.
+  [[ -d "$dir" ]] || {
+    echo "Missing ${dir} — run deploy or ./identyclaw.sh init ${id}" >&2
+    return 1
+  }
+  echo "No pod container for ${id}. Run:" >&2
+  echo "  ./scripts/deploy-local-podman.sh" >&2
+  return 1
+}
+
+sync_deploy_scripts_to_app_dir() {
+  local repo_root="${1:?repo root}"
+  local app_dir="${2:?app dir}"
+  mkdir -p "${app_dir}/repo/scripts"
+  cp -a "${repo_root}/scripts/." "${app_dir}/repo/scripts/"
+  cp -a "${repo_root}/identyclaw.sh" "${repo_root}/env.example" "${app_dir}/repo/"
 }
 
 write_himalaya_config() {
