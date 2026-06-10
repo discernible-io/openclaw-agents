@@ -64,10 +64,13 @@ cmd_build_image() {
   arch="$(detect_himalaya_arch)"
   echo "==> Pulling ${OPENCLAW_BASE_IMAGE}"
   podman pull "$OPENCLAW_BASE_IMAGE"
-  echo "==> Building ${OPENCLAW_LOCAL_IMAGE} (himalaya ${HIMALAYA_VERSION}, arch ${arch})"
+  local bundled_plugins
+  bundled_plugins="$(resolve_openclaw_bundled_plugins)"
+  echo "==> Building ${OPENCLAW_LOCAL_IMAGE} (gateway ${OPENCLAW_GATEWAY_VERSION}, himalaya ${HIMALAYA_VERSION}, arch ${arch})"
   podman build -f "$ROOT/Containerfile.himalaya" -t "$OPENCLAW_LOCAL_IMAGE" "$ROOT" \
     --build-arg "OPENCLAW_BASE_IMAGE=${OPENCLAW_BASE_IMAGE}" \
-    --build-arg "OPENCLAW_BUNDLED_PLUGINS=${OPENCLAW_BUNDLED_PLUGINS}" \
+    --build-arg "OPENCLAW_GATEWAY_VERSION=${OPENCLAW_GATEWAY_VERSION}" \
+    --build-arg "OPENCLAW_BUNDLED_PLUGINS=${bundled_plugins}" \
     --build-arg "HIMALAYA_VERSION=${HIMALAYA_VERSION}" \
     --build-arg "HIMALAYA_ARCH=${arch}"
   podman images "$OPENCLAW_LOCAL_IMAGE"
@@ -164,12 +167,19 @@ start_one() {
   local dir container gw br z rt
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
-  read -r gw br < <(agent_ports "$id")
   z="$(selinux_mount_suffix)"
   rt="$(podman_runtime_args)"
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run $0 init" >&2; exit 1; }
   [[ -f "$dir/openclaw.json" ]] || { echo "Missing config — run $0 init" >&2; exit 1; }
+
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    start_pod_agent "$id" || return 1
+    echo "Full pod redeploy: ./scripts/deploy-local-podman.sh --skip-build"
+    return 0
+  fi
+
+  read -r gw br < <(agent_ports "$id")
   ensure_internal_gateway_port "$dir" "$gw"
   ensure_identyclaw_network
   ensure_agent_bootstrap "$id" "$dir"
@@ -205,20 +215,23 @@ start_one() {
 
   ensure_openclaw_cli_link "$container"
   ensure_agent_packages "$id"
+  ensure_discord_plugin_compat_and_restart "$id"
   echo "Started ${container} → http://${PUBLISH_HOST}:${gw}/"
 }
 
 cmd_start() {
   require_podman
   require_rootless_user
+  load_env
   ensure_agent_persistence
   local target="${1:-all}"
   case "$target" in
     agent-a|agent-b|agent-c) start_one "$target" ;;
     all)
-      start_one agent-a
-      start_one agent-b
-      start_one agent-c
+      local id
+      for id in $AGENT_IDS; do
+        start_one "$id"
+      done
       ;;
     *) echo "Usage: $0 start [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
   esac
@@ -232,13 +245,15 @@ stop_one() {
 
 cmd_stop() {
   require_podman
+  load_env
   local target="${1:-all}"
   case "$target" in
     agent-a|agent-b|agent-c) stop_one "$target" ;;
     all)
-      stop_one agent-a
-      stop_one agent-b
-      stop_one agent-c
+      local id
+      for id in $AGENT_IDS; do
+        stop_one "$id"
+      done
       ;;
     *) echo "Usage: $0 stop [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
   esac
@@ -247,21 +262,21 @@ cmd_stop() {
 cmd_restart() {
   require_podman
   load_env
+  local target="${1:-all}" id
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-    local target="${1:-all}" id
     case "$target" in
-      agent-a|agent-b|agent-c) restart_pod_agent "$target" ;;
+      agent-a|agent-b|agent-c) start_pod_agent "$target" ;;
       all)
         for id in $AGENT_IDS; do
-          restart_pod_agent "$id"
+          start_pod_agent "$id"
         done
         ;;
       *) echo "Usage: $0 restart [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
     esac
     return 0
   fi
-  cmd_stop "${1:-all}"
-  cmd_start "${1:-all}"
+  cmd_stop "$target"
+  cmd_start "$target"
 }
 
 cmd_enable_boot() {

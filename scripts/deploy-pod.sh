@@ -189,24 +189,21 @@ for id in $AGENT_IDS; do
   ensure_agent_runtime "$id"
 done
 
-for id in $AGENT_IDS; do
-  echo "==> Start ${id} in pod"
-  start_agent_in_pod "$id"
-done
-
+# Plugin build/install while host still owns agent state (before chown to container uid).
 if [[ "${SKIP_PLUGIN_UPDATE:-0}" != 1 ]]; then
   for id in $AGENT_IDS; do
     upgrade_agent_plugins "$id"
     ensure_agent_packages "$id"
-    container="$(agent_container "$id")"
-    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
-      echo "    (${id}: restarting gateway to load plugins…)"
-      podman restart "$container" >/dev/null
-    fi
   done
 else
   echo "==> Skip plugin update (SKIP_PLUGIN_UPDATE=1)"
 fi
+
+for id in $AGENT_IDS; do
+  echo "==> Start ${id} in pod"
+  start_agent_in_pod "$id"
+  ensure_discord_plugin_compat_and_restart "$id"
+done
 
 ensure_pod_logs_for_container "$APP_DIR/logs/nginx"
 ensure_tls_certs
@@ -229,3 +226,5 @@ if [[ "$POD_HOST_PORT" == "$POD_LISTEN_PORT" ]]; then
 else
   echo "==> Deploy complete — pod ${POD_NAME} on host port ${POD_HOST_PORT} (container ${POD_LISTEN_PORT})"
 fi
+echo "Restart gateway(s): ${REPO_ROOT}/identyclaw.sh restart all"
+echo "Full redeploy: ./scripts/deploy-local-podman.sh --skip-build"

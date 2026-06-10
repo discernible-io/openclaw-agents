@@ -87,12 +87,16 @@ NGINX_IMAGE="${REGISTRY}/${NGINX_IMAGE_NAME}:${IMAGE_TAG}"
 cd "$REPO_ROOT"
 
 build_images() {
-  local arch
+  local arch bundled_plugins
+  load_env
+  bundled_plugins="$(resolve_openclaw_bundled_plugins)"
   arch="$(uname -m | sed 's/x86_64/x86_64-linux/;s/aarch64/aarch64-linux/')"
-  echo "==> Building ${OPENCLAW_IMAGE}"
+  echo "==> Building ${OPENCLAW_IMAGE} (gateway ${OPENCLAW_GATEWAY_VERSION})"
   podman build -f "$REPO_ROOT/Containerfile.himalaya" -t "$OPENCLAW_IMAGE" "$REPO_ROOT" \
-    --build-arg "OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim" \
-    --build-arg "HIMALAYA_VERSION=v1.2.0" \
+    --build-arg "OPENCLAW_BASE_IMAGE=${OPENCLAW_BASE_IMAGE}" \
+    --build-arg "OPENCLAW_GATEWAY_VERSION=${OPENCLAW_GATEWAY_VERSION}" \
+    --build-arg "OPENCLAW_BUNDLED_PLUGINS=${bundled_plugins}" \
+    --build-arg "HIMALAYA_VERSION=${HIMALAYA_VERSION}" \
     --build-arg "HIMALAYA_ARCH=${arch}"
   echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV}, INGRESS_PORT=${APP_PORT})"
   podman build -f "$REPO_ROOT/nginx.Dockerfile" -t "$NGINX_IMAGE" "$REPO_ROOT" \
@@ -109,6 +113,9 @@ fi
 
 "$REPO_ROOT/scripts/ensure-podman-linger.sh"
 
+echo "==> Sync deploy scripts to ${APP_DIR}/repo (matches CI deploy.yml)"
+sync_deploy_scripts_to_app_dir "$REPO_ROOT" "$APP_DIR"
+
 IDENTYCLAW_APP_DIR="$APP_DIR" \
 APP_DIR="$APP_DIR" \
 OPENCLAW_IMAGE="$OPENCLAW_IMAGE" \
@@ -120,6 +127,8 @@ DEPLOY_TIER="$DEPLOY_TIER" \
 REPO_ROOT="$REPO_ROOT" \
 SKIP_PULL=1 \
 bash "$REPO_ROOT/scripts/deploy-pod.sh"
+
+echo "==> Operator CLI (pod restart / status): ${APP_DIR}/repo/identyclaw.sh"
 
 HEALTH_URL="https://${DOMAIN}:${POD_HOST_PORT}/health"
 echo "==> Health check: ${HEALTH_URL} (tier=${DEPLOY_TIER}, tag=${IMAGE_TAG})"
