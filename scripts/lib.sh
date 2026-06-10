@@ -149,6 +149,7 @@ load_env() {
   IDENTYCLAW_PLUGIN_REPO="${IDENTYCLAW_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-identyclaw-plugin.git}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+  IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
   # https://clawhub.ai/identyclaw/identyclaw
   IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin}"
   IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
@@ -202,19 +203,89 @@ agent_a2a_public_base_url() {
 
 agent_a2a_audience() {
   local id="$1"
+  local config_dir="${2:-}"
+  load_env
+  local explicit=""
+  case "$id" in
+    agent-a) explicit="${AGENT_A_A2A_AUDIENCE:-}" ;;
+    agent-b) explicit="${AGENT_B_A2A_AUDIENCE:-}" ;;
+    agent-c) explicit="${AGENT_C_A2A_AUDIENCE:-}" ;;
+    *) echo ""; return 0 ;;
+  esac
+  if [[ -n "$explicit" ]]; then
+    echo "$explicit"
+    return 0
+  fi
+  if [[ -n "${IDENTYCLAW_A2A_JWT_AUDIENCE:-}" ]]; then
+    echo "$IDENTYCLAW_A2A_JWT_AUDIENCE"
+    return 0
+  fi
+  if [[ -n "$config_dir" ]]; then
+    local probed=""
+    probed="$(probe_rodit_inbound_audience "$config_dir" 2>/dev/null || true)"
+    if [[ -n "$probed" ]]; then
+      echo "$probed"
+      return 0
+    fi
+  fi
   local public_url
   public_url="$(agent_a2a_public_base_url "$id")"
   if [[ -n "$public_url" ]]; then
+    echo "    (${id}: inbound JWT audience falling back to public URL — set AGENT_*_A2A_AUDIENCE or ensure A2A plugin is built for login_server probe)" >&2
     echo "$public_url"
   else
-    load_env
     echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")"
   fi
 }
 
+# Resolve inbound JWT audience from live IdentyClaw login_server (rodit-auth-be mutual-auth contract).
+# Any peer with a valid Passport on the same IdentyClaw deployment can call POST /a2a — no outbound peer list required.
+probe_rodit_inbound_audience() {
+  local config_dir="$1"
+  local cred_file ext_dir cache cache_key cached_key cached_aud probed cred_stat
+  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
+  ext_dir="$config_dir/extensions/a2a"
+  [[ -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]] || return 1
+
+  load_env
+  sync_quiet_plugin_env "$config_dir"
+
+  cache="$config_dir/.rodit-jwt-audience"
+  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  if [[ -n "$cred_stat" && -f "$cache" ]]; then
+    read -r cached_key cached_aud <"$cache" || true
+    if [[ "$cached_key" == "$cred_stat" && -n "$cached_aud" ]]; then
+      echo "$cached_aud"
+      return 0
+    fi
+  fi
+
+  command -v node >/dev/null 2>&1 || return 1
+  probed="$(
+    IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-jwt-audience.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
+      || true
+  )"
+  [[ -n "$probed" ]] || return 1
+
+  if [[ -n "$cred_stat" ]]; then
+    printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
+    chmod 600 "$cache" 2>/dev/null || true
+  fi
+  echo "    (${config_dir##*/}: inbound JWT audience from login_server aud=${probed:0:16}…)" >&2
+  echo "$probed"
+}
+
 agent_agent_card_url() {
   local id="$1"
+  local public_base
   load_env
+  public_base="$(agent_a2a_public_base_url "$id")"
+  if [[ -n "$public_base" ]]; then
+    echo "${public_base%/}/.well-known/agent-card.json"
+    return 0
+  fi
   echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")/.well-known/agent-card.json"
 }
 
@@ -579,7 +650,8 @@ restore_pod_agent_state_for_host() {
     dir="$(agent_home "$id")"
     [[ -d "$dir" ]] || continue
     container="$(agent_container "$id")"
-    if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    # Keep container-namespace ownership while the podman container exists (running or exited).
+    if command -v podman >/dev/null 2>&1 && podman container exists "$container" 2>/dev/null; then
       continue
     fi
     restore_pod_path_for_host "$dir"
@@ -602,7 +674,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|build-image|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-a2a|restart|upgrade-plugins|build-image|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -629,10 +701,11 @@ restart_pod_agent() {
   local id="$1"
   local container
   container="$(agent_container "$id")"
-  podman ps -a --format '{{.Names}}' | grep -qx "$container" || {
+  podman container exists "$container" 2>/dev/null || {
     echo "Container ${container} not found — run ./scripts/deploy-local-podman.sh" >&2
     return 1
   }
+  prepare_agent_state_for_gateway_start "$id" pod
   podman restart "$container" >/dev/null
   echo "Restarted ${container}"
 }
@@ -888,18 +961,26 @@ private_key = creds.get("private_key", "")
 if not account_id or not private_key:
     raise SystemExit(0)
 
+strip_prefixes = (
+    "IDENTYCLAW_ACCOUNT_ID=",
+    "IDENTYCLAW_NEAR_PRIVATE_KEY=",
+    "IDENTYCLAW_BASE_URL=",
+    "RODIT_NEAR_CREDENTIALS_SOURCE=",
+    "NEAR_CREDENTIALS_FILE_PATH=",
+    "NEAR_CREDENTIALS_JSON_B64=",
+)
 lines = []
 if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:
-        lines = [
-            ln for ln in f
-            if not ln.startswith(
-                ("IDENTYCLAW_ACCOUNT_ID=", "IDENTYCLAW_NEAR_PRIVATE_KEY=", "IDENTYCLAW_BASE_URL=")
-            )
-        ]
+        lines = [ln for ln in f if not ln.startswith(strip_prefixes)]
+container_cred_path = (
+    "/home/node/.openclaw/secrets/near-credentials/" + cred_file.name
+)
 lines.append("IDENTYCLAW_BASE_URL=https://api.identyclaw.com\n")
 lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
 lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
+lines.append("RODIT_NEAR_CREDENTIALS_SOURCE=file\n")
+lines.append(f"NEAR_CREDENTIALS_FILE_PATH={container_cred_path}\n")
 with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)
@@ -909,15 +990,18 @@ PY
 sync_quiet_plugin_env() {
   local config_dir="$1"
   local env_file="$config_dir/.env"
-  python3 - "$env_file" <<'PY'
+  load_env
+  python3 - "$env_file" "$IDENTYCLAW_NEAR_CONTRACT_ID" <<'PY'
 import os, sys
 from pathlib import Path
 
 env_file = Path(sys.argv[1])
+near_contract_id = sys.argv[2]
 desired = {
     "LOG_LEVEL": "error",
     "SUPPRESS_NO_CONFIG_WARNING": "true",
     "SUPPRESS_STRICTNESS_CHECK": "true",
+    "NEAR_CONTRACT_ID": near_contract_id,
 }
 lines = []
 if env_file.is_file():
@@ -958,7 +1042,7 @@ This agent uses **two** published integrations. Use the right one for the job:
 - **Skill:** \`identyclaw\` — workflows for JWT login, HOLA create/verify, DID resolution, agent discovery. Read \`SKILL.md\` when handling identity.
 - **Plugin:** \`identyclaw-tools\` — typed tools (\`identyclaw_verify_hola\`, \`identyclaw_list_agents\`, …). Passport signing key stays local; never paste keys into chat.
 - **API base:** \`https://api.identyclaw.com\`
-- **Credentials:** \`secrets/near-credentials/*.json\` → synced to \`.env\` as \`IDENTYCLAW_ACCOUNT_ID\`, \`IDENTYCLAW_NEAR_PRIVATE_KEY\`, \`IDENTYCLAW_BASE_URL\`.
+- **Credentials:** \`secrets/near-credentials/*.json\` → synced to \`.env\` as \`IDENTYCLAW_*\` plus \`RODIT_NEAR_CREDENTIALS_SOURCE=file\` and \`NEAR_CREDENTIALS_FILE_PATH\` for \`@rodit/rodit-auth-be\`.
 
 ### First contact from an unknown agent (HOLA)
 
@@ -1140,9 +1224,13 @@ build_a2a_peer_map() {
   local first=1
   for peer_id in $A2A_PEER_AGENTS; do
     [[ "$peer_id" == "$self_id" ]] && continue
-    local peer_dir
-    peer_dir="$(agent_home "$peer_id")"
-    agent_has_near_credentials "$peer_dir" || continue
+    local public_base
+    public_base="$(agent_a2a_public_base_url "$peer_id")"
+    if [[ -z "$public_base" ]]; then
+      local peer_dir
+      peer_dir="$(agent_home "$peer_id")"
+      agent_has_near_credentials "$peer_dir" || continue
+    fi
     if [[ "$first" -eq 1 ]]; then
       first=0
     else
@@ -1165,7 +1253,7 @@ ensure_a2a_config() {
   sync_identyclaw_env "$config_dir"
 
   local audience display_name public_base_url peers_json
-  audience="$(agent_a2a_audience "$id")"
+  audience="$(agent_a2a_audience "$id" "$config_dir")"
   display_name="$(agent_display_name "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
   peers_json="$(build_a2a_peer_map "$id")"
@@ -1203,7 +1291,7 @@ desired_auth = {
     "provider": "rodit",
     "issuer": issuer,
     "audience": audience,
-    "identityClaim": "token_id",
+    "identityClaim": "rodit_id",
 }
 for key, value in desired_auth.items():
     if auth.get(key) != value:
@@ -1240,6 +1328,10 @@ for key, value in desired_out_auth.items():
     if out_auth.get(key) != value:
         out_auth[key] = value
         changed = True
+
+if outbound.get("tlsSkipVerify") is not True:
+    outbound["tlsSkipVerify"] = True
+    changed = True
 
 if peers:
     existing_agents = outbound.get("agents", {})
@@ -1583,11 +1675,13 @@ ensure_agent_bootstrap() {
   ensure_discord_guild_channels "$config_dir"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir"
+  if agent_has_near_credentials "$config_dir"; then
+    ensure_a2a_plugin_build "$id"
+  fi
   ensure_a2a_config "$id" "$config_dir"
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
   write_agent_browser_doc "$config_dir"
   sync_quiet_plugin_env "$config_dir"
-  ensure_a2a_plugin_build "$id"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     echo "Note: ${id} has no Migadu password yet — run: ./identyclaw.sh set-password ${id}" >&2
   fi
