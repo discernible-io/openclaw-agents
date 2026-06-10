@@ -159,6 +159,7 @@ cmd_set_instagram() {
 
 start_one() {
   local id="$1"
+  abort_if_pod_deploy_start start
   load_env
   local dir container gw br z rt
   dir="$(agent_home "$id")"
@@ -175,11 +176,6 @@ start_one() {
   sync_discord_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
 
-  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-    echo "IDENTYCLAW_DEPLOY_MODE=pod — use scripts/deploy-pod.sh instead of identyclaw.sh start" >&2
-    exit 1
-  fi
-
   podman rm -f "$container" 2>/dev/null || true
   prepare_agent_state_for_gateway_start "$id" standalone
 
@@ -192,6 +188,7 @@ start_one() {
   podman run -d --replace \
     --name "$container" \
     --init \
+    --shm-size=2g \
     --restart always \
     "${network_args[@]}" \
     $rt \
@@ -248,6 +245,21 @@ cmd_stop() {
 }
 
 cmd_restart() {
+  require_podman
+  load_env
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    local target="${1:-all}" id
+    case "$target" in
+      agent-a|agent-b|agent-c) restart_pod_agent "$target" ;;
+      all)
+        for id in $AGENT_IDS; do
+          restart_pod_agent "$id"
+        done
+        ;;
+      *) echo "Usage: $0 restart [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
+    esac
+    return 0
+  fi
   cmd_stop "${1:-all}"
   cmd_start "${1:-all}"
 }

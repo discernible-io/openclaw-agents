@@ -607,6 +607,36 @@ identyclaw_skips_host_restore() {
   esac
 }
 
+# Standalone start/restart touches host-owned openclaw.json; pod deploy uses container-namespace ownership.
+abort_if_pod_deploy_start() {
+  local cmd="${1:-start}"
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  cat >&2 <<EOF
+IDENTYCLAW_DEPLOY_MODE=pod — identyclaw.sh ${cmd} is for standalone dev only.
+
+Pod agents are managed by scripts/deploy-pod.sh (or scripts/deploy-local-podman.sh).
+
+  Redeploy:          ./scripts/deploy-local-podman.sh
+  Restart one agent: podman restart openclaw-agent-<id>
+  Status:            ./identyclaw.sh status
+
+EOF
+  exit 1
+}
+
+restart_pod_agent() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  podman ps -a --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Container ${container} not found — run ./scripts/deploy-local-podman.sh" >&2
+    return 1
+  }
+  podman restart "$container" >/dev/null
+  echo "Restarted ${container}"
+}
+
 write_himalaya_config() {
   local email="$1"
   local display_name="$2"
@@ -1518,6 +1548,31 @@ ensure_instagram_secrets_from_env() {
   fi
 }
 
+write_agent_browser_doc() {
+  local config_dir="$1"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/BROWSER.md" <<'EOF'
+# Browser tool (pod / container deploy)
+
+This gateway runs Chromium **inside the agent container** (host browser). The isolated **sandbox browser** sidecar is **not** enabled here — do not use `target="sandbox"` or `targetId="sandbox"`.
+
+## Correct usage
+
+1. Omit `target` (defaults to host) or set `target="host"`.
+2. Open: `action="open"`, `url="https://…"`, optional `label="my-tab"`.
+3. Snapshot: use `action="tabs"` first, then `action="snapshot"` with `targetId` from the tab list (e.g. `t1`) or the same `label`.
+4. Profile: default managed profile is `openclaw` (cookies under `browser/openclaw/user-data/`).
+
+## If browser times out on first use
+
+Chromium cold-start can take ~30s. Retry `open`, or run inside the container:
+
+`node /app/openclaw.mjs browser doctor`
+
+EOF
+  chmod 644 "$config_dir/workspace/BROWSER.md"
+}
+
 ensure_agent_bootstrap() {
   local id="$1"
   local config_dir="$2"
@@ -1530,6 +1585,7 @@ ensure_agent_bootstrap() {
   ensure_identyclaw_config "$config_dir"
   ensure_a2a_config "$id" "$config_dir"
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
+  write_agent_browser_doc "$config_dir"
   sync_quiet_plugin_env "$config_dir"
   ensure_a2a_plugin_build "$id"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
