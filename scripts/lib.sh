@@ -284,10 +284,73 @@ agent_agent_card_url() {
   echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")/.well-known/agent-card.json"
 }
 
+IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
+
+# In-container path for RODiT file credentials (agent state mounted at /home/node/.openclaw).
+near_credentials_container_path() {
+  local account_id="$1"
+  echo "/home/node/.openclaw/secrets/near-credentials/${account_id}.json"
+}
+
+# Resolve NEAR passport JSON: prefer app secrets, then agent near-credentials (by implicit account id).
+resolve_near_credentials_file() {
+  local config_dir="$1"
+  local app_secrets agent_cred_dir candidate account_id
+  load_env
+  app_secrets="$(identyclaw_app_dir)/secrets"
+  agent_cred_dir="$config_dir/secrets/near-credentials"
+  mkdir -p "$agent_cred_dir" "$app_secrets" 2>/dev/null || true
+
+  for candidate in "$agent_cred_dir"/*.json "$app_secrets"/*.json; do
+    [[ -f "$candidate" ]] || continue
+    account_id="$(python3 - "$candidate" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(data.get("implicit_account_id") or data.get("account_id") or "")
+PY
+)"
+    [[ -n "$account_id" ]] || continue
+    # Canonical filename is <implicit_account_id>.json
+    if [[ -f "$app_secrets/${account_id}.json" ]]; then
+      echo "$app_secrets/${account_id}.json"
+      return 0
+    fi
+    if [[ -f "$agent_cred_dir/${account_id}.json" ]]; then
+      echo "$agent_cred_dir/${account_id}.json"
+      return 0
+    fi
+    echo "$candidate"
+    return 0
+  done
+  return 1
+}
+
+# Ensure agent near-credentials/<implicit_account_id>.json exists (copy from app/secrets if needed).
+ensure_near_credentials_in_agent() {
+  local config_dir="$1"
+  local cred_file app_secrets agent_cred_dir account_id dest
+  cred_file="$(resolve_near_credentials_file "$config_dir")" || return 1
+  agent_cred_dir="$config_dir/secrets/near-credentials"
+  app_secrets="$(identyclaw_app_dir)/secrets"
+  account_id="$(basename "$cred_file" .json)"
+  dest="$agent_cred_dir/${account_id}.json"
+  mkdir -p "$agent_cred_dir"
+  if [[ "$cred_file" != "$dest" ]]; then
+    cp -a "$cred_file" "$dest"
+    chmod 600 "$dest"
+  fi
+  # Mirror into app/secrets when cred only lived under the agent dir.
+  if [[ ! -f "$app_secrets/${account_id}.json" && -f "$dest" ]]; then
+    mkdir -p "$app_secrets"
+    cp -a "$dest" "$app_secrets/${account_id}.json"
+    chmod 600 "$app_secrets/${account_id}.json"
+  fi
+}
+
 agent_has_near_credentials() {
   local config_dir="$1"
-  local cred_dir="$config_dir/secrets/near-credentials"
-  [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]
+  resolve_near_credentials_file "$config_dir" >/dev/null 2>&1
 }
 
 # Legacy layouts used secrets/near/*.json — bootstrap expects secrets/near-credentials/.
@@ -973,26 +1036,24 @@ PY
 
 sync_identyclaw_env() {
   local config_dir="$1"
-  local cred_dir="$config_dir/secrets/near-credentials"
   local env_file="$config_dir/.env"
-  local cred_file=""
-  [[ -d "$cred_dir" ]] || return 0
-  cred_file="$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
-  [[ -n "$cred_file" && -f "$cred_file" ]] || return 0
-  python3 - "$cred_file" "$env_file" <<'PY'
+  local cred_file contract_id container_cred_path
+  load_env
+  contract_id="${IDENTYCLAW_NEAR_CONTRACT_ID}"
+  ensure_near_credentials_in_agent "$config_dir" || return 0
+  cred_file="$(resolve_near_credentials_file "$config_dir")" || return 0
+  python3 - "$cred_file" "$env_file" "$contract_id" <<'PY'
 import json, os, sys
 from pathlib import Path
 
-cred_file, env_file = Path(sys.argv[1]), Path(sys.argv[2])
+cred_file, env_file, contract_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 creds = json.loads(cred_file.read_text(encoding="utf-8"))
 account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
 private_key = creds.get("private_key", "")
 if not account_id or not private_key:
     raise SystemExit(0)
 
-# Container path (agent state is mounted at /home/node/.openclaw).
-cred_basename = cred_file.name
-container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{cred_basename}"
+container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
 
 strip_prefixes = (
     "IDENTYCLAW_ACCOUNT_ID=",
@@ -1010,7 +1071,7 @@ if env_file.is_file():
 lines.append("IDENTYCLAW_BASE_URL=https://api.identyclaw.com\n")
 lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
 lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
-lines.append("NEAR_CONTRACT_ID=genaaaa-identyclaw-com.near\n")
+lines.append(f"NEAR_CONTRACT_ID={contract_id}\n")
 lines.append("RODIT_NEAR_CREDENTIALS_SOURCE=file\n")
 lines.append(f"NEAR_CREDENTIALS_FILE_PATH={container_cred_path}\n")
 with open(env_file, "w", encoding="utf-8") as f:
