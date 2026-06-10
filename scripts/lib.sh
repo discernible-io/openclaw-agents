@@ -349,6 +349,80 @@ probe_rodit_inbound_audience() {
   echo "$probed"
 }
 
+# Inbound P2P JWT aud = this agent's own RODiT owner_id (distinct from mediated login_server aud).
+probe_rodit_p2p_audience() {
+  local config_dir="$1"
+  local cred_file ext_dir cache cache_key cached_key cached_aud probed cred_stat
+  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
+  ext_dir="$config_dir/extensions/a2a"
+  [[ -f "$ext_dir/dist/auth/rodit-own-config.js" ]] || return 1
+
+  load_env
+  sync_quiet_plugin_env "$config_dir"
+
+  cache="$config_dir/.rodit-p2p-audience"
+  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  if [[ -n "$cred_stat" && -f "$cache" ]]; then
+    read -r cached_key cached_aud <"$cache" || true
+    if [[ "$cached_key" == "$cred_stat" && -n "$cached_aud" ]]; then
+      echo "$cached_aud"
+      return 0
+    fi
+  fi
+
+  command -v node >/dev/null 2>&1 || return 1
+  probed="$(
+    NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-p2p-audience.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
+      || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  [[ -n "$probed" ]] || return 1
+  if [[ "$probed" == *"{"* ]] || [[ "$probed" == *"}"* ]] || [[ ${#probed} -gt 256 ]]; then
+    return 1
+  fi
+
+  if [[ -n "$cred_stat" ]]; then
+    printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
+    chmod 600 "$cache" 2>/dev/null || true
+  fi
+  echo "    (${config_dir##*/}: inbound P2P audience from own_rodit.owner_id=${probed:0:16}…)" >&2
+  echo "$probed"
+}
+
+agent_a2a_p2p_audience() {
+  local id="$1"
+  local config_dir="${2:-}"
+  load_env
+  local explicit=""
+  case "$id" in
+    agent-a) explicit="${AGENT_A_A2P_AUDIENCE:-${AGENT_A_P2P_AUDIENCE:-}}" ;;
+    agent-b) explicit="${AGENT_B_A2P_AUDIENCE:-${AGENT_B_P2P_AUDIENCE:-}}" ;;
+    agent-c) explicit="${AGENT_C_A2P_AUDIENCE:-${AGENT_C_P2P_AUDIENCE:-}}" ;;
+    *) echo ""; return 0 ;;
+  esac
+  if [[ -n "$explicit" ]]; then
+    echo "$explicit"
+    return 0
+  fi
+  if [[ -n "${IDENTYCLAW_A2P_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-}}" ]]; then
+    echo "${IDENTYCLAW_A2P_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-}}"
+    return 0
+  fi
+  if [[ -n "$config_dir" ]]; then
+    local probed=""
+    probed="$(probe_rodit_p2p_audience "$config_dir" 2>/dev/null || true)"
+    if [[ -n "$probed" ]]; then
+      echo "$probed"
+      return 0
+    fi
+  fi
+  echo ""
+}
+
 agent_agent_card_url() {
   local id="$1"
   local public_base
@@ -1408,7 +1482,13 @@ build_a2a_peer_map() {
     else
       peers_json+=","
     fi
-    peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\"}"
+    local card_url peer_entry
+    card_url="$(agent_agent_card_url "$peer_id")"
+    peer_entry="\"url\":\"${card_url}\""
+    if [[ -n "$public_base" ]]; then
+      peer_entry+=",\"loginBaseUrl\":\"${public_base%/}\""
+    fi
+    peers_json+="\"${peer_id}\":{${peer_entry}}"
   done
   peers_json+="}"
   echo "$peers_json"
@@ -1424,22 +1504,24 @@ ensure_a2a_config() {
   load_env
   sync_identyclaw_env "$config_dir"
 
-  local audience display_name public_base_url peers_json
+  local audience p2p_audience display_name public_base_url peers_json
   audience="$(agent_a2a_audience "$id" "$config_dir")"
+  p2p_audience="$(agent_a2a_p2p_audience "$id" "$config_dir")"
   display_name="$(agent_display_name "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
   peers_json="$(build_a2a_peer_map "$id")"
 
-  python3 - "$config" "$audience" "$display_name" "$public_base_url" "$peers_json" "$IDENTYCLAW_API_BASE_URL" <<'PY'
+  python3 - "$config" "$audience" "$p2p_audience" "$display_name" "$public_base_url" "$peers_json" "$IDENTYCLAW_API_BASE_URL" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 audience = sys.argv[2]
-display_name = sys.argv[3]
-public_base_url = sys.argv[4]
-peers = json.loads(sys.argv[5])
-issuer = sys.argv[6]
+p2p_audience = sys.argv[3]
+display_name = sys.argv[4]
+public_base_url = sys.argv[5]
+peers = json.loads(sys.argv[6])
+issuer = sys.argv[7]
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -1470,6 +1552,14 @@ for key, value in desired_auth.items():
     if auth.get(key) != value:
         auth[key] = value
         changed = True
+
+if p2p_audience:
+    if auth.get("p2pAudience") != p2p_audience:
+        auth["p2pAudience"] = p2p_audience
+        changed = True
+elif "p2pAudience" in auth:
+    del auth["p2pAudience"]
+    changed = True
 
 rodit_login = inbound.setdefault("roditLogin", {})
 desired_rodit_login = {
@@ -1553,9 +1643,10 @@ copy_openclaw_plugin_tree() {
   shift 2
   local item
 
-  rm -rf "$ext_dir"
+  rm -rf "$ext_dir" 2>/dev/null || true
   mkdir -p "$ext_dir"
   for item in "$@"; do
+    rm -rf "$ext_dir/$item" 2>/dev/null || true
     cp -a "$build_dir/$item" "$ext_dir/"
   done
   rm -rf "$ext_dir/node_modules/openclaw"
@@ -1603,6 +1694,7 @@ install_a2a_idc_plugin() {
     return 1
   }
 
+  patch_a2a_plugin_build "$build_dir"
   copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json node_modules
 }
 
@@ -1665,6 +1757,80 @@ path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 }
 
+# Dual inbound: mediated validate_jwt_token_be may throw on aud mismatch — still try P2P profile.
+patch_a2a_rodit_dual_profile_try_catch() {
+  local rodit_inbound="$1/dist/auth/rodit-inbound.js"
+  [[ -f "$rodit_inbound" ]] || return 0
+  grep -q 'profileTryCatch' "$rodit_inbound" && return 0
+  python3 - "$rodit_inbound" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = """async function validateJwtWithProfiles(token, config, validateJwt) {
+    for (const profile of resolveInboundAudienceProfiles(config)) {
+        const result = await validateJwt(token, {
+            ...config,
+            issuer: profile.issuer,
+            audience: profile.audience,
+        });
+        if (result?.valid && result.payload) {
+            return result;
+        }
+    }
+    return null;
+}"""
+new = """async function validateJwtWithProfiles(token, config, validateJwt) {
+    for (const profile of resolveInboundAudienceProfiles(config)) {
+        try {
+            const result = await validateJwt(token, {
+                ...config,
+                issuer: profile.issuer,
+                audience: profile.audience,
+            });
+            if (result?.valid && result.payload) {
+                return result;
+            }
+        }
+        catch {
+            /* profileTryCatch: mediated aud mismatch — try next profile (P2P) */
+        }
+    }
+    return null;
+}"""
+if old not in text:
+    sys.exit(0)
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+}
+
+# P2P outbound: Agent Card url may be the JSON-RPC endpoint (…/a2a), not the gateway base.
+patch_a2a_rodit_url_login_base() {
+  local rodit_url="$1/dist/auth/rodit-url.js"
+  [[ -f "$rodit_url" ]] || return 0
+  grep -q '/\\/a2a' "$rodit_url" && return 0
+  python3 - "$rodit_url" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = 'parsed.pathname = parsed.pathname.replace(/\\/\\.well-known\\/agent-card\\.json\\/?$/i, "") || "/";'
+new = 'parsed.pathname = parsed.pathname.replace(/\\/\\.well-known\\/agent-card\\.json\\/?$/i, "").replace(/\\/a2a\\/?$/i, "") || "/";'
+if old not in text:
+    sys.exit(0)
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+}
+
+patch_a2a_plugin_build() {
+  local build_dir="$1"
+  patch_a2a_rodit_inbound_server_warmup "$build_dir"
+  patch_a2a_rodit_dual_profile_try_catch "$build_dir"
+  patch_a2a_rodit_url_login_base "$build_dir"
+}
+
 install_plugin_tree_in_container() {
   local container="$1"
   local ext_name="$2"
@@ -1702,6 +1868,10 @@ upgrade_agent_plugins() {
   load_env
   config_dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
+  prepare_pod_deploy_host_paths
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" && -d "$config_dir" ]]; then
+    restore_pod_path_for_host "$config_dir"
+  fi
   a2a_build="$(mktemp -d /tmp/openclaw-a2a-plugin.XXXXXX)"
   idc_build="$(mktemp -d /tmp/openclaw-idc-plugin.XXXXXX)"
 
@@ -1720,20 +1890,25 @@ upgrade_agent_plugins() {
     return 1
   }
 
+  patch_a2a_plugin_build "$a2a_build"
+
+  # Host copy for bootstrap probes; restore ownership when container still exists (uid 1000).
+  for ext in a2a identyclaw-tools; do
+    [[ -d "$config_dir/extensions/$ext" ]] && restore_pod_path_for_host "$config_dir/extensions/$ext"
+  done
+  copy_openclaw_plugin_tree "$a2a_build" "$config_dir/extensions/a2a" dist openclaw.plugin.json package.json node_modules
+  copy_openclaw_plugin_tree "$idc_build" "$config_dir/extensions/identyclaw-tools" dist openclaw.plugin.json package.json node_modules hola-client
+
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    patch_a2a_rodit_inbound_server_warmup "$a2a_build"
     install_plugin_tree_in_container "$container" a2a "$a2a_build" dist openclaw.plugin.json package.json node_modules
     install_plugin_tree_in_container "$container" identyclaw-tools "$idc_build" dist openclaw.plugin.json package.json node_modules hola-client
     ensure_openclaw_cli_link "$container"
     podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
-  else
-    patch_a2a_rodit_inbound_server_warmup "$a2a_build"
-    copy_openclaw_plugin_tree "$a2a_build" "$config_dir/extensions/a2a" dist openclaw.plugin.json package.json node_modules
-    copy_openclaw_plugin_tree "$idc_build" "$config_dir/extensions/identyclaw-tools" dist openclaw.plugin.json package.json node_modules hola-client
   fi
 
   rm -rf "$a2a_build" "$idc_build"
 
+  prepare_agent_state_for_gateway_start "$id" pod
   if [[ -w "$config_dir/openclaw.json" ]]; then
     ensure_identyclaw_config "$config_dir"
     agent_has_near_credentials "$config_dir" && ensure_a2a_config "$id" "$config_dir" || true
