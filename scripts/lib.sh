@@ -1461,6 +1461,7 @@ if inbound.get("allowUnauthenticated") is not False:
 auth = inbound.setdefault("auth", {})
 desired_auth = {
     "provider": "rodit",
+    "mode": "dual",
     "issuer": issuer,
     "audience": audience,
     "identityClaim": "rodit_id",
@@ -1468,6 +1469,16 @@ desired_auth = {
 for key, value in desired_auth.items():
     if auth.get(key) != value:
         auth[key] = value
+        changed = True
+
+rodit_login = inbound.setdefault("roditLogin", {})
+desired_rodit_login = {
+    "enabled": True,
+    "loginMode": "promiscuous",
+}
+for key, value in desired_rodit_login.items():
+    if rodit_login.get(key) != value:
+        rodit_login[key] = value
         changed = True
 
 card = inbound.setdefault("agentCard", {})
@@ -1489,6 +1500,7 @@ elif "publicBaseUrl" in inbound:
 out_auth = outbound.setdefault("auth", {})
 desired_out_auth = {
     "provider": "rodit",
+    "mode": "auto",
     "credentialsEnv": {
         "accountId": "IDENTYCLAW_ACCOUNT_ID",
         "privateKey": "IDENTYCLAW_NEAR_PRIVATE_KEY",
