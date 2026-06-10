@@ -283,6 +283,80 @@ probe_rodit_inbound_audience() {
   echo "$probed"
 }
 
+# Own passport owner_id — inbound P2P JWT audience (Phase 9).
+probe_rodit_own_owner_id() {
+  local config_dir="$1"
+  local cred_file ext_dir cache cache_key cached_key cached_id probed cred_stat
+  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
+  ext_dir="$config_dir/extensions/a2a"
+  [[ -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]] || return 1
+
+  load_env
+  sync_quiet_plugin_env "$config_dir"
+
+  cache="$config_dir/.rodit-own-owner-id"
+  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  if [[ -n "$cred_stat" && -f "$cache" ]]; then
+    read -r cached_key cached_id <"$cache" || true
+    if [[ "$cached_key" == "$cred_stat" && -n "$cached_id" ]]; then
+      echo "$cached_id"
+      return 0
+    fi
+  fi
+
+  command -v node >/dev/null 2>&1 || return 1
+  probed="$(
+    NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-owner-id.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
+      || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  [[ -n "$probed" ]] || return 1
+  if [[ "$probed" == *"{"* ]] || [[ "$probed" == *"}"* ]] || [[ ${#probed} -gt 256 ]]; then
+    return 1
+  fi
+
+  if [[ -n "$cred_stat" ]]; then
+    printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
+    chmod 600 "$cache" 2>/dev/null || true
+  fi
+  echo "    (${config_dir##*/}: P2P inbound audience from own_rodit.owner_id=${probed:0:16}…)" >&2
+  echo "$probed"
+}
+
+agent_a2a_inbound_auth_mode() {
+  load_env
+  local id="$1" explicit=""
+  case "$id" in
+    agent-a) explicit="${AGENT_A_A2A_INBOUND_AUTH_MODE:-}" ;;
+    agent-b) explicit="${AGENT_B_A2A_INBOUND_AUTH_MODE:-}" ;;
+    agent-c) explicit="${AGENT_C_A2A_INBOUND_AUTH_MODE:-}" ;;
+  esac
+  if [[ -n "$explicit" ]]; then
+    echo "$explicit"
+    return 0
+  fi
+  echo "${IDENTYCLAW_A2A_INBOUND_AUTH_MODE:-mediated}"
+}
+
+agent_a2a_outbound_auth_mode() {
+  load_env
+  local id="$1" explicit=""
+  case "$id" in
+    agent-a) explicit="${AGENT_A_A2A_OUTBOUND_AUTH_MODE:-}" ;;
+    agent-b) explicit="${AGENT_B_A2A_OUTBOUND_AUTH_MODE:-}" ;;
+    agent-c) explicit="${AGENT_C_A2A_OUTBOUND_AUTH_MODE:-}" ;;
+  esac
+  if [[ -n "$explicit" ]]; then
+    echo "$explicit"
+    return 0
+  fi
+  echo "${IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE:-mediated}"
+}
+
 agent_agent_card_url() {
   local id="$1"
   local public_base
@@ -1258,13 +1332,21 @@ ensure_a2a_config() {
   load_env
   sync_identyclaw_env "$config_dir"
 
-  local audience display_name public_base_url peers_json
+  local audience display_name public_base_url peers_json inbound_auth_mode outbound_auth_mode p2p_audience
   audience="$(agent_a2a_audience "$id" "$config_dir")"
   display_name="$(agent_display_name "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
   peers_json="$(build_a2a_peer_map "$id")"
+  inbound_auth_mode="$(agent_a2a_inbound_auth_mode "$id")"
+  outbound_auth_mode="$(agent_a2a_outbound_auth_mode "$id")"
+  p2p_audience=""
+  case "$inbound_auth_mode" in
+    p2p|dual)
+      p2p_audience="$(probe_rodit_own_owner_id "$config_dir" 2>/dev/null || true)"
+      ;;
+  esac
 
-  python3 - "$config" "$audience" "$display_name" "$public_base_url" "$peers_json" "$IDENTYCLAW_API_BASE_URL" <<'PY'
+  python3 - "$config" "$audience" "$display_name" "$public_base_url" "$peers_json" "$IDENTYCLAW_API_BASE_URL" "$inbound_auth_mode" "$outbound_auth_mode" "$p2p_audience" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -1274,6 +1356,9 @@ display_name = sys.argv[3]
 public_base_url = sys.argv[4]
 peers = json.loads(sys.argv[5])
 issuer = sys.argv[6]
+inbound_auth_mode = sys.argv[7] or "mediated"
+outbound_auth_mode = sys.argv[8] or "mediated"
+p2p_audience = sys.argv[9] or ""
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -1295,14 +1380,30 @@ if inbound.get("allowUnauthenticated") is not False:
 auth = inbound.setdefault("auth", {})
 desired_auth = {
     "provider": "rodit",
+    "mode": inbound_auth_mode,
     "issuer": issuer,
     "audience": audience,
     "identityClaim": "rodit_id",
 }
+if p2p_audience and inbound_auth_mode in ("p2p", "dual"):
+    desired_auth["p2pAudience"] = p2p_audience
+    if public_base_url:
+        desired_auth["p2pIssuer"] = public_base_url.rstrip("/")
 for key, value in desired_auth.items():
     if auth.get(key) != value:
         auth[key] = value
         changed = True
+
+if inbound_auth_mode in ("p2p", "dual"):
+    rodit_login = inbound.setdefault("roditLogin", {})
+    desired_login = {"enabled": True, "loginMode": "p2p"}
+    for key, value in desired_login.items():
+        if rodit_login.get(key) != value:
+            rodit_login[key] = value
+            changed = True
+elif "roditLogin" in inbound:
+    del inbound["roditLogin"]
+    changed = True
 
 card = inbound.setdefault("agentCard", {})
 if card.get("name") != display_name:
@@ -1323,6 +1424,7 @@ elif "publicBaseUrl" in inbound:
 out_auth = outbound.setdefault("auth", {})
 desired_out_auth = {
     "provider": "rodit",
+    "mode": outbound_auth_mode,
     "credentialsEnv": {
         "accountId": "IDENTYCLAW_ACCOUNT_ID",
         "privateKey": "IDENTYCLAW_NEAR_PRIVATE_KEY",
