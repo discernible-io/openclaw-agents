@@ -1630,6 +1630,14 @@ build_git_plugin() {
   ) || true
 }
 
+patch_a2a_dual_inbound() {
+  local ext_dir="$1"
+  local inbound="$ext_dir/dist/auth/rodit-inbound.js"
+  local patch="${IDENTYCLAW_ROOT}/scripts/patch-a2a-dual-inbound.sh"
+  [[ -f "$inbound" && -f "$patch" ]] || return 0
+  bash "$patch" "$inbound"
+}
+
 install_a2a_idc_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
@@ -1638,6 +1646,7 @@ install_a2a_idc_plugin() {
   load_env
 
   if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
+    patch_a2a_dual_inbound "$ext_dir"
     return 0
   fi
 
@@ -1649,6 +1658,7 @@ install_a2a_idc_plugin() {
   }
 
   copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json node_modules
+  patch_a2a_dual_inbound "$ext_dir"
 }
 
 install_identyclaw_plugin() {
