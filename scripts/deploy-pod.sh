@@ -149,6 +149,7 @@ start_agent_in_pod() {
     --name "$container" \
     --init \
     --replace \
+    --shm-size=2g \
     --restart unless-stopped \
     -e HOME=/home/node \
     -e OPENCLAW_NO_RESPAWN=1 \

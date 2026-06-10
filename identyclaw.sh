@@ -162,6 +162,7 @@ cmd_set_instagram() {
 
 start_one() {
   local id="$1"
+  abort_if_pod_deploy_start start
   load_env
   local dir container gw br z rt
   dir="$(agent_home "$id")"
@@ -197,6 +198,7 @@ start_one() {
   podman run -d --replace \
     --name "$container" \
     --init \
+    --shm-size=2g \
     --restart always \
     "${network_args[@]}" \
     $rt \
@@ -462,9 +464,21 @@ cmd_token() {
 require_agent_running() {
   local id="$1"
   local container
+  load_env
   container="$(agent_container "$id")"
   podman ps --format '{{.Names}}' | grep -qx "$container" || {
-    echo "Start ${container} first: $0 start ${id}" >&2
+    if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+      cat >&2 <<EOF
+${container} is not running.
+
+  ./identyclaw.sh restart ${id}
+  podman start ${container}
+  ./scripts/deploy-local-podman.sh   # full pod redeploy
+
+EOF
+    else
+      echo "Start ${container} first: $0 start ${id}" >&2
+    fi
     exit 1
   }
   ensure_agent_state_for_container_exec "$id"
@@ -565,11 +579,7 @@ cmd_configure() {
   require_podman
   local container
   container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || {
-    echo "Start ${container} first: $0 start ${id}" >&2
-    exit 1
-  }
-  ensure_openclaw_cli_link "$container"
+  require_agent_running "$id"
   podman exec -it "$container" node dist/index.js configure "$@"
 }
 
