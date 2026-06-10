@@ -30,6 +30,10 @@ process.env.NEAR_CREDENTIALS_FILE_PATH = credPath;
 process.env.IDENTYCLAW_ACCOUNT_ID = accountId;
 process.env.IDENTYCLAW_NEAR_PRIVATE_KEY = privateKey;
 process.env.IDENTYCLAW_BASE_URL = process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
+process.env.NEAR_CONTRACT_ID =
+    process.env.NEAR_CONTRACT_ID ||
+    process.env.IDENTYCLAW_NEAR_CONTRACT_ID ||
+    "genaaaa-identyclaw-com.near";
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
 process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
 process.env.SUPPRESS_STRICTNESS_CHECK = "true";

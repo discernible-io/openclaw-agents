@@ -263,11 +263,17 @@ probe_rodit_inbound_audience() {
 
   command -v node >/dev/null 2>&1 || return 1
   probed="$(
-    IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+    NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
       node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-jwt-audience.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
       || true
   )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
   [[ -n "$probed" ]] || return 1
+  if [[ "$probed" == *"{"* ]] || [[ "$probed" == *"}"* ]] || [[ ${#probed} -gt 256 ]]; then
+    return 1
+  fi
 
   if [[ -n "$cred_stat" ]]; then
     printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
