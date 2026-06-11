@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 /**
  * A2A P2P + mediated auth test suite (positive and negative cases).
+ * Includes a P2P webhook section: local creds sign → peer /hooks/wake (+ optional reply).
  *
  * Usage:
  *   node scripts/test-a2a-p2p-suite.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/a2a \
  *     --creds /path/to/near-credentials.json \
  *     --local https://agent-b.dihola.io:4443 \
- *     --peer https://agent-a.dihola.io:9443
+ *     --peer https://agent-a.dihola.io:9443 \
+ *     [--peer-creds /path/to/peer-near.json] \
+ *     [--skip-webhooks]
  */
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join, resolve } from "node:path";
+import { fetchJson, loadNearCreds, runP2pWebhookSend } from "./lib-rodit-webhook-test.mjs";
 
 function arg(name, fallback = "") {
     const i = process.argv.indexOf(name);
@@ -23,10 +27,13 @@ const extDir = resolve(arg("--ext-dir", ""));
 const credPath = resolve(arg("--creds", ""));
 const localBase = (arg("--local", "") || "").replace(/\/$/, "");
 const peerBase = (arg("--peer", "") || "").replace(/\/$/, "");
+const peerCredsPath = arg("--peer-creds", "") ? resolve(arg("--peer-creds", "")) : "";
+const skipWebhooks = process.argv.includes("--skip-webhooks");
 
 if (!extDir || !credPath || !localBase) {
     process.stderr.write(
-        "usage: test-a2a-p2p-suite.mjs --ext-dir <a2a> --creds <near.json> --local <base-url> [--peer <base-url>]\n",
+        "usage: test-a2a-p2p-suite.mjs --ext-dir <a2a> --creds <near.json> --local <base-url> " +
+            "[--peer <base-url>] [--peer-creds <peer.json>] [--skip-webhooks]\n",
     );
     process.exit(2);
 }
@@ -66,6 +73,7 @@ const A2A_BODY = JSON.stringify({
 const results = [];
 let pass = 0;
 let fail = 0;
+let skip = 0;
 
 function record(category, name, ok, detail = "") {
     results.push({ category, name, ok, detail });
@@ -73,6 +81,12 @@ function record(category, name, ok, detail = "") {
     else fail++;
     const mark = ok ? "PASS" : "FAIL";
     const line = detail ? `${mark}  [${category}] ${name} — ${detail}` : `${mark}  [${category}] ${name}`;
+    process.stdout.write(`${line}\n`);
+}
+
+function recordSkip(category, name, detail = "") {
+    skip++;
+    const line = detail ? `SKIP  [${category}] ${name} — ${detail}` : `SKIP  [${category}] ${name}`;
     process.stdout.write(`${line}\n`);
 }
 
@@ -180,6 +194,131 @@ async function runNegative(base, label, name, jwtOrFn, expectUnauthorized = true
     }
 }
 
+async function runWebhookNegative(base, label) {
+    const hook = await fetchStatus(`${base}/hooks/wake`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "suite-smoke" }),
+    });
+    if (hook.status === 404) {
+        record(
+            "webhook",
+            `${label}: POST /hooks/wake without RODiT signature`,
+            true,
+            "HTTP 404 (route not exposed — treated as blocked)",
+        );
+        return;
+    }
+    record(
+        "webhook",
+        `${label}: POST /hooks/wake without RODiT signature`,
+        hook.status === 400 || hook.status === 401,
+        `HTTP ${hook.status}`,
+    );
+}
+
+async function runWebhookInvalidSignature(base, label, credsPath) {
+    try {
+        const signer = loadNearCreds(credsPath);
+        const payload = JSON.stringify({ text: "invalid-sig-smoke", mode: "now" });
+        const { status } = await fetchJson(`${base.replace(/\/$/, "")}/hooks/wake`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "x-signature": "deadbeef",
+                "x-timestamp": Date.now().toString(),
+                "x-rodit-token-id": signer.accountId,
+            },
+            body: payload,
+        });
+        record("webhook", `${label}: invalid signature rejected`, status === 401, `HTTP ${status}`);
+    } catch (e) {
+        record("webhook", `${label}: invalid signature rejected`, false, e.message);
+    }
+}
+
+async function runWebhookSection() {
+    if (skipWebhooks) {
+        recordSkip("webhook", "section", "--skip-webhooks");
+        return;
+    }
+
+    process.stdout.write("\n--- P2P webhooks ---\n");
+
+    await runWebhookNegative(localBase, "local");
+    if (peerBase) {
+        await runWebhookNegative(peerBase, "peer");
+    }
+
+    await runWebhookInvalidSignature(localBase, "local", credPath);
+
+    if (peerBase) {
+        await runWebhookInvalidSignature(peerBase, "peer", credPath);
+
+        try {
+            const outbound = await runP2pWebhookSend({
+                extDir,
+                signerCredsPath: credPath,
+                receiverBase: peerBase,
+                markerPrefix: "a2a-suite-webhook",
+                senderLabel: "local",
+                receiverLabel: "peer",
+            });
+            record(
+                "webhook",
+                "local → peer: P2P signed POST /hooks/wake",
+                outbound.postOk,
+                outbound.postDetail,
+            );
+            record(
+                "webhook",
+                "local → peer: receiver recorded webhook",
+                outbound.receiptOk,
+                outbound.receiptDetail,
+            );
+        } catch (e) {
+            record("webhook", "local → peer: P2P signed POST /hooks/wake", false, e.message);
+            record("webhook", "local → peer: receiver recorded webhook", false, "skipped after send failure");
+        }
+
+        if (peerCredsPath) {
+            try {
+                const inbound = await runP2pWebhookSend({
+                    extDir,
+                    signerCredsPath: peerCredsPath,
+                    receiverBase: localBase,
+                    markerPrefix: "a2a-suite-webhook",
+                    senderLabel: "peer",
+                    receiverLabel: "local",
+                });
+                record(
+                    "webhook",
+                    "peer → local: P2P signed POST /hooks/wake (reply)",
+                    inbound.postOk,
+                    inbound.postDetail,
+                );
+                record(
+                    "webhook",
+                    "peer → local: receiver recorded webhook",
+                    inbound.receiptOk,
+                    inbound.receiptDetail,
+                );
+            } catch (e) {
+                record("webhook", "peer → local: P2P signed POST /hooks/wake (reply)", false, e.message);
+                record("webhook", "peer → local: receiver recorded webhook", false, "skipped after send failure");
+            }
+        } else {
+            recordSkip(
+                "webhook",
+                "peer → local P2P signed POST /hooks/wake (reply)",
+                "no --peer-creds (place at secrets/peer-credentials/<peer>/*.json)",
+            );
+        }
+    } else {
+        recordSkip("webhook", "local → peer P2P signed POST", "no --peer base URL");
+    }
+}
+
 async function main() {
     process.stdout.write(`\nA2A P2P test suite\n`);
     process.stdout.write(`  caller creds: ${accountId}\n`);
@@ -260,29 +399,9 @@ async function main() {
         );
     }
 
-    // Webhook negative (RODiT signature required) — skip when route not exposed
-    const hook = await fetchStatus(`${localBase}/hooks/wake`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: "suite-smoke" }),
-    });
-    if (hook.status === 404) {
-        record(
-            "negative",
-            "local: POST /hooks/wake without RODiT signature",
-            true,
-            "HTTP 404 (webhook route not exposed — treated as blocked)",
-        );
-    } else {
-        record(
-            "negative",
-            "local: POST /hooks/wake without RODiT signature",
-            hook.status === 400 || hook.status === 401,
-            `HTTP ${hook.status}`,
-        );
-    }
+    await runWebhookSection();
 
-    process.stdout.write(`\n--- Summary: ${pass} passed, ${fail} failed ---\n`);
+    process.stdout.write(`\n--- Summary: ${pass} passed, ${fail} failed${skip ? `, ${skip} skipped` : ""} ---\n`);
     process.exit(fail > 0 ? 1 : 0);
 }
 

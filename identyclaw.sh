@@ -527,6 +527,7 @@ cmd_test_webhook_p2p() {
 
   peer_creds="$(peer_near_credentials_path "$receiver")"
   ext_dir="/home/node/.openclaw/extensions/a2a"
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$sender_container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-p2p-suite.mjs" "$sender_container:/tmp/test-webhooks-p2p-suite.mjs" >/dev/null
 
   local -a exec_args=(

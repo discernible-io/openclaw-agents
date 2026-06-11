@@ -19,11 +19,8 @@
  *     --reverse-signer-creds /path/to/receiver-near.json \
  *     --reverse-receiver-base https://agent-b...
  */
-import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
+import { runP2pWebhookSend } from "./lib-rodit-webhook-test.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -48,50 +45,6 @@ if (!signerCredsPath || !receiverBase || !extDir) {
   process.exit(2);
 }
 
-const require = createRequire(pathToFileURL(join(extDir, "package.json")));
-const nacl = require("tweetnacl");
-
-function loadNearCreds(path) {
-  const data = JSON.parse(readFileSync(path, "utf8"));
-  const accountId = data.implicit_account_id || data.account_id || data.accountId;
-  const privateKey = data.private_key || data.privateKey;
-  if (!accountId || !privateKey) {
-    throw new Error(`Missing account_id/private_key in ${path}`);
-  }
-  return { accountId: String(accountId).trim(), privateKey: String(privateKey).trim() };
-}
-
-function privateKeyBytes(nearPrivateKey) {
-  const bs58 = require("bs58");
-  const body = nearPrivateKey.replace(/^ed25519:/, "").trim();
-  const decoded = bs58.decode(body);
-  if (decoded.length !== 64 && decoded.length < 32) throw new Error("Invalid NEAR private key");
-  return new Uint8Array(decoded);
-}
-
-function signWebhookPayload(payload, privateKey) {
-  const timestamp = Date.now().toString();
-  const payloadWithTimestamp = payload + timestamp;
-  const hash = createHash("sha256").update(payloadWithTimestamp).digest();
-  const signature = nacl.sign.detached(new Uint8Array(hash), privateKey);
-  return {
-    timestamp,
-    signatureHex: Buffer.from(signature).toString("hex"),
-  };
-}
-
-async function fetchJson(url, init = {}) {
-  const res = await fetch(url, init);
-  const text = await res.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = { raw: text };
-  }
-  return { status: res.status, json, text };
-}
-
 function record(label, ok, detail = "") {
   const mark = ok ? "PASS" : "FAIL";
   const line = detail ? `${mark}  ${label} — ${detail}` : `${mark}  ${label}`;
@@ -99,74 +52,20 @@ function record(label, ok, detail = "") {
   return ok;
 }
 
-async function clearReceipts(receiverBase) {
-  const url = `${receiverBase}/hooks/_receipts`;
-  await fetchJson(url, { method: "DELETE" });
-}
-
-async function getReceipts(receiverBase) {
-  const url = `${receiverBase}/hooks/_receipts`;
-  const { status, json, text } = await fetchJson(url);
-  if (status !== 200 || !json?.ok) {
-    const hint = text?.includes("<!DOCTYPE") ? " (got HTML — check receiver port/host)" : "";
-    throw new Error(`GET ${url} failed: HTTP ${status}${hint}`);
-  }
-  return json.receipts ?? [];
-}
-
-async function runDirection(opts) {
-  const {
-    directionLabel,
+async function runDirection(directionLabel, credsPath, recvBase, senderLabel, receiverLabel) {
+  process.stdout.write(`\n==> ${directionLabel}\n`);
+  const result = await runP2pWebhookSend({
+    extDir,
     signerCredsPath: credsPath,
     receiverBase: recvBase,
-    hookPath: path,
+    hookPath,
     senderLabel,
     receiverLabel,
-  } = opts;
-
-  const signer = loadNearCreds(credsPath);
-  const signerKey = privateKeyBytes(signer.privateKey);
-  const marker = `p2p-webhook-${senderLabel}-to-${receiverLabel}-${Date.now()}`;
-  const payload = JSON.stringify({ text: marker, mode: "now", p2p: true, requestId: marker });
-  const hookUrl = `${recvBase}/${path}`;
-
-  process.stdout.write(`\n==> ${directionLabel}\n`);
-  process.stdout.write(`    signer:   ${signer.accountId.slice(0, 12)}… (${senderLabel})\n`);
-  process.stdout.write(`    receiver: ${hookUrl} (${receiverLabel})\n`);
-
-  await clearReceipts(recvBase);
-
-  const signed = signWebhookPayload(payload, signerKey);
-  const post = await fetchJson(hookUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-signature": signed.signatureHex,
-      "x-timestamp": signed.timestamp,
-      "x-rodit-token-id": signer.accountId,
-    },
-    body: payload,
   });
-
-  let ok = record(
-    `${directionLabel}: signed POST accepted`,
-    post.status === 200 && post.json?.ok === true,
-    `HTTP ${post.status}${post.json?.ok === true ? "" : ` ${JSON.stringify(post.json)}`}`,
-  );
-
-  const receipts = await getReceipts(recvBase);
-  const hit = receipts.find(
-    (r) =>
-      r.requestId === marker &&
-      (r.path === `/${path}` || r.path === path || String(r.path || "").endsWith(path)),
-  );
-  ok =
-    record(
-      `${directionLabel}: receiver recorded webhook`,
-      Boolean(hit),
-      hit ? `receipt requestId=${marker} at ${hit.timestamp || "?"}` : `no matching receipt (${receipts.length} total)`,
-    ) && ok;
-
+  process.stdout.write(`    signer:   ${result.signerId.slice(0, 12)}… (${senderLabel})\n`);
+  process.stdout.write(`    receiver: ${recvBase}/${hookPath} (${receiverLabel})\n`);
+  let ok = record(`${directionLabel}: signed POST accepted`, result.postOk, result.postDetail);
+  ok = record(`${directionLabel}: receiver recorded webhook`, result.receiptOk, result.receiptDetail) && ok;
   return ok;
 }
 
@@ -183,31 +82,17 @@ function tally(result) {
 process.stdout.write("P2P webhook suite\n");
 process.stdout.write(`  ext-dir: ${extDir}\n`);
 
-tally(
-  (await runDirection({
-    directionLabel: `P2P webhook ${senderId} → ${receiverId}`,
-    signerCredsPath,
-    receiverBase,
-    hookPath,
-    senderLabel: senderId,
-    receiverLabel: receiverId,
-  }))
-    ? true
-    : false,
-);
+tally(await runDirection(`P2P webhook ${senderId} → ${receiverId}`, signerCredsPath, receiverBase, senderId, receiverId));
 
 if (reverseSignerCreds && reverseReceiverBase) {
   tally(
-    (await runDirection({
-      directionLabel: `P2P webhook ${receiverId} → ${senderId} (reply)`,
-      signerCredsPath: reverseSignerCreds,
-      receiverBase: reverseReceiverBase,
-      hookPath,
-      senderLabel: receiverId,
-      receiverLabel: senderId,
-    }))
-      ? true
-      : false,
+    await runDirection(
+      `P2P webhook ${receiverId} → ${senderId} (reply)`,
+      reverseSignerCreds,
+      reverseReceiverBase,
+      receiverId,
+      senderId,
+    ),
   );
 } else {
   process.stdout.write(
