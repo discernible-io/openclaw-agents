@@ -262,11 +262,12 @@ cmd_stop() {
 cmd_restart() {
   require_podman
   load_env
-  local target="${1:-all}" id
+  local target="${1:-all}"
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     case "$target" in
       agent-a|agent-b|agent-c) start_pod_agent "$target" ;;
       all)
+        local id
         for id in $AGENT_IDS; do
           start_pod_agent "$id"
         done
