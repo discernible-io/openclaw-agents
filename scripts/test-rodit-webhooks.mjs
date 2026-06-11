@@ -116,6 +116,7 @@ tally(record("unsigned POST rejected", unsigned.status === 400 || unsigned.statu
 const garbage = await postWebhook(JSON.stringify({ text: "garbage-sig", mode: "now" }), {
   "x-signature": "deadbeef",
   "x-timestamp": Date.now().toString(),
+  "x-rodit-token-id": signer.accountId,
 });
 tally(record("invalid signature rejected", garbage.status === 401, `HTTP ${garbage.status}`));
 

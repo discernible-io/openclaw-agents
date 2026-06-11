@@ -423,6 +423,35 @@ agent_a2a_outbound_auth_mode() {
   echo "${IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE:-mediated}"
 }
 
+# Inbound P2P JWT aud = own RODiT owner_id (override via AGENT_*_P2P_AUDIENCE).
+agent_a2a_p2p_audience() {
+  local id="$1"
+  local config_dir="${2:-}"
+  load_env
+  local explicit=""
+  case "$id" in
+    agent-a) explicit="${AGENT_A_A2P_AUDIENCE:-${AGENT_A_P2P_AUDIENCE:-}}" ;;
+    agent-b) explicit="${AGENT_B_A2P_AUDIENCE:-${AGENT_B_P2P_AUDIENCE:-}}" ;;
+    agent-c) explicit="${AGENT_C_A2P_AUDIENCE:-${AGENT_C_P2P_AUDIENCE:-}}" ;;
+    *) echo ""; return 0 ;;
+  esac
+  if [[ -n "$explicit" ]]; then
+    echo "$explicit"
+    return 0
+  fi
+  if [[ -n "${IDENTYCLAW_A2P_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-}}" ]]; then
+    echo "${IDENTYCLAW_A2P_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-}}"
+    return 0
+  fi
+  if [[ -n "$config_dir" ]]; then
+    local probed=""
+    probed="$(probe_rodit_own_owner_id "$config_dir" 2>/dev/null || true)"
+    if [[ -n "$probed" ]]; then
+      echo "$probed"
+    fi
+  fi
+}
+
 agent_agent_card_url() {
   local id="$1"
   local public_base
@@ -435,10 +464,69 @@ agent_agent_card_url() {
   echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")/.well-known/agent-card.json"
 }
 
+# In-container path for RODiT file credentials (agent state mounted at /home/node/.openclaw).
+near_credentials_container_path() {
+  local account_id="$1"
+  echo "/home/node/.openclaw/secrets/near-credentials/${account_id}.json"
+}
+
+# Resolve NEAR passport JSON: prefer app secrets, then agent near-credentials (by implicit account id).
+resolve_near_credentials_file() {
+  local config_dir="$1"
+  local app_secrets agent_cred_dir candidate account_id
+  load_env
+  app_secrets="$(identyclaw_app_dir)/secrets"
+  agent_cred_dir="$config_dir/secrets/near-credentials"
+  mkdir -p "$agent_cred_dir" "$app_secrets" 2>/dev/null || true
+
+  for candidate in "$agent_cred_dir"/*.json "$app_secrets"/*.json; do
+    [[ -f "$candidate" ]] || continue
+    account_id="$(python3 - "$candidate" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(data.get("implicit_account_id") or data.get("account_id") or "")
+PY
+)"
+    [[ -n "$account_id" ]] || continue
+    if [[ -f "$app_secrets/${account_id}.json" ]]; then
+      echo "$app_secrets/${account_id}.json"
+      return 0
+    fi
+    if [[ -f "$agent_cred_dir/${account_id}.json" ]]; then
+      echo "$agent_cred_dir/${account_id}.json"
+      return 0
+    fi
+    echo "$candidate"
+    return 0
+  done
+  return 1
+}
+
+# Ensure agent near-credentials/<implicit_account_id>.json exists (copy from app/secrets if needed).
+ensure_near_credentials_in_agent() {
+  local config_dir="$1"
+  local cred_file app_secrets agent_cred_dir account_id dest
+  cred_file="$(resolve_near_credentials_file "$config_dir")" || return 1
+  agent_cred_dir="$config_dir/secrets/near-credentials"
+  app_secrets="$(identyclaw_app_dir)/secrets"
+  account_id="$(basename "$cred_file" .json)"
+  dest="$agent_cred_dir/${account_id}.json"
+  mkdir -p "$agent_cred_dir"
+  if [[ "$cred_file" != "$dest" ]]; then
+    cp -a "$cred_file" "$dest"
+    chmod 600 "$dest"
+  fi
+  if [[ ! -f "$app_secrets/${account_id}.json" && -f "$dest" ]]; then
+    mkdir -p "$app_secrets"
+    cp -a "$dest" "$app_secrets/${account_id}.json"
+    chmod 600 "$app_secrets/${account_id}.json"
+  fi
+}
+
 agent_has_near_credentials() {
   local config_dir="$1"
-  local cred_dir="$config_dir/secrets/near-credentials"
-  [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]
+  resolve_near_credentials_file "$config_dir" >/dev/null 2>&1
 }
 
 # Legacy layouts used secrets/near/*.json — bootstrap expects secrets/near-credentials/.
@@ -572,6 +660,22 @@ agent_public_base_url() {
 # HTTPS ingress base for A2A + OpenClaw webhooks (pod mode). Same as agent_public_base_url.
 agent_ingress_base_url() {
   agent_public_base_url "$1"
+}
+
+# HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 4443).
+agent_container_ingress_base_url() {
+  local id="$1"
+  load_env
+  local host tier port
+  host="$(agent_public_host "$id")"
+  [[ -n "$host" ]] || return 0
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    tier="$(resolve_deploy_tier "${IDENTYCLAW_ROOT:-}")"
+    port="$(deploy_tier_app_port "$tier" 2>/dev/null || echo 4443)"
+    echo "https://${host}:${port}"
+    return 0
+  fi
+  agent_ingress_base_url "$id"
 }
 
 # Operator-facing Control UI / API base URL (HTTPS ingress in pod mode, loopback in standalone).
@@ -1173,27 +1277,30 @@ PY
 
 sync_identyclaw_env() {
   local config_dir="$1"
-  local cred_dir="$config_dir/secrets/near-credentials"
   local env_file="$config_dir/.env"
-  local cred_file=""
-  [[ -d "$cred_dir" ]] || return 0
-  cred_file="$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
-  [[ -n "$cred_file" && -f "$cred_file" ]] || return 0
-  python3 - "$cred_file" "$env_file" <<'PY'
+  local cred_file contract_id
+  load_env
+  contract_id="${IDENTYCLAW_NEAR_CONTRACT_ID}"
+  ensure_near_credentials_in_agent "$config_dir" || return 0
+  cred_file="$(resolve_near_credentials_file "$config_dir")" || return 0
+  python3 - "$cred_file" "$env_file" "$contract_id" <<'PY'
 import json, os, sys
 from pathlib import Path
 
-cred_file, env_file = Path(sys.argv[1]), Path(sys.argv[2])
+cred_file, env_file, contract_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 creds = json.loads(cred_file.read_text(encoding="utf-8"))
 account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
 private_key = creds.get("private_key", "")
 if not account_id or not private_key:
     raise SystemExit(0)
 
+container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
+
 strip_prefixes = (
     "IDENTYCLAW_ACCOUNT_ID=",
     "IDENTYCLAW_NEAR_PRIVATE_KEY=",
     "IDENTYCLAW_BASE_URL=",
+    "NEAR_CONTRACT_ID=",
     "RODIT_NEAR_CREDENTIALS_SOURCE=",
     "NEAR_CREDENTIALS_FILE_PATH=",
     "NEAR_CREDENTIALS_JSON_B64=",
@@ -1202,12 +1309,11 @@ lines = []
 if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:
         lines = [ln for ln in f if not ln.startswith(strip_prefixes)]
-container_cred_path = (
-    "/home/node/.openclaw/secrets/near-credentials/" + cred_file.name
-)
+
 lines.append("IDENTYCLAW_BASE_URL=https://api.identyclaw.com\n")
 lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
 lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
+lines.append(f"NEAR_CONTRACT_ID={contract_id}\n")
 lines.append("RODIT_NEAR_CREDENTIALS_SOURCE=file\n")
 lines.append(f"NEAR_CREDENTIALS_FILE_PATH={container_cred_path}\n")
 with open(env_file, "w", encoding="utf-8") as f:
@@ -1432,7 +1538,7 @@ ensure_a2a_plugin_build() {
   config_dir="$(agent_home "$id")"
   agent_has_near_credentials "$config_dir" || return 0
   install_a2a_idc_plugin "$config_dir"
-  install_rodit_webhooks_plugin "$config_dir"
+  install_rodit_webhooks_plugin "$config_dir" || true
   ensure_webhooks_plugin_config "$config_dir"
 }
 
@@ -1493,7 +1599,7 @@ ensure_a2a_config() {
   p2p_audience=""
   case "$inbound_auth_mode" in
     p2p|dual)
-      p2p_audience="$(probe_rodit_own_owner_id "$config_dir" 2>/dev/null || true)"
+      p2p_audience="$(agent_a2a_p2p_audience "$id" "$config_dir")"
       ;;
   esac
 
@@ -1670,6 +1776,14 @@ patch_a2a_dual_inbound() {
   bash "$patch" "$inbound"
 }
 
+# Fingerprint repo plugin sources so every agent installs the same build.
+rodit_webhooks_plugin_source_stamp() {
+  local src="${IDENTYCLAW_ROOT}/openclaw-rodit-webhooks-plugin"
+  [[ -f "$src/index.ts" && -f "$src/openclaw.plugin.json" && -f "$src/package.json" ]] || return 1
+  sha256sum "$src/index.ts" "$src/openclaw.plugin.json" "$src/package.json" 2>/dev/null \
+    | sha256sum | awk '{print $1}'
+}
+
 build_local_rodit_webhooks_plugin() {
   local build_dir="$1"
   local src="${IDENTYCLAW_ROOT}/openclaw-rodit-webhooks-plugin"
@@ -1702,16 +1816,27 @@ install_rodit_webhooks_plugin() {
   local force="${2:-0}"
   local ext_dir="$config_dir/extensions/rodit-webhooks"
   local build_dir="$config_dir/.rodit-webhooks-plugin-build"
+  local stamp installed_stamp
 
   agent_has_near_credentials "$config_dir" || return 0
 
-  if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
+  stamp="$(rodit_webhooks_plugin_source_stamp 2>/dev/null || true)"
+  installed_stamp=""
+  [[ -f "$ext_dir/.source-stamp" ]] && installed_stamp="$(tr -d '\n' <"$ext_dir/.source-stamp")"
+
+  if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" \
+    && -n "$stamp" && "$stamp" == "$installed_stamp" ]]; then
+    link_rodit_webhooks_plugin_deps "$ext_dir"
     return 0
   fi
 
   echo "    (building RODiT webhooks plugin from ${IDENTYCLAW_ROOT}/openclaw-rodit-webhooks-plugin…)" >&2
   build_local_rodit_webhooks_plugin "$build_dir" || return 1
   copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json
+  if [[ -n "$stamp" ]]; then
+    printf '%s\n' "$stamp" >"$ext_dir/.source-stamp"
+    chmod 600 "$ext_dir/.source-stamp" 2>/dev/null || true
+  fi
   link_rodit_webhooks_plugin_deps "$ext_dir"
 }
 
@@ -1884,6 +2009,10 @@ upgrade_agent_plugins() {
     if [[ -n "$rw_build" && -f "$rw_build/dist/index.js" ]]; then
       install_plugin_tree_in_container "$container" rodit-webhooks "$rw_build" dist openclaw.plugin.json package.json
       link_rodit_webhooks_plugin_deps_in_container "$container"
+      stamp="$(rodit_webhooks_plugin_source_stamp 2>/dev/null || true)"
+      if [[ -n "$stamp" ]]; then
+        podman exec "$container" bash -c "printf '%s\n' '$stamp' > /home/node/.openclaw/extensions/rodit-webhooks/.source-stamp"
+      fi
     fi
     ensure_openclaw_cli_link "$container"
     podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
@@ -1893,6 +2022,8 @@ upgrade_agent_plugins() {
     if [[ -n "$rw_build" && -f "$rw_build/dist/index.js" ]]; then
       copy_openclaw_plugin_tree "$rw_build" "$config_dir/extensions/rodit-webhooks" dist openclaw.plugin.json package.json
       link_rodit_webhooks_plugin_deps "$config_dir/extensions/rodit-webhooks"
+      stamp="$(rodit_webhooks_plugin_source_stamp 2>/dev/null || true)"
+      [[ -n "$stamp" ]] && printf '%s\n' "$stamp" >"$config_dir/extensions/rodit-webhooks/.source-stamp"
     fi
   fi
 
