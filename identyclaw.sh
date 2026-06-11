@@ -454,7 +454,7 @@ cmd_test_webhook() {
       ;;
   esac
 
-  creds="$(find "$(agent_home "$id")/secrets/near-credentials" -name '*.json' 2>/dev/null | head -1)"
+  creds="$(find "$(agent_home "$id")/secrets/near-credentials" -name '*.json' 2>/dev/null | head -1 || true)"
   if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
     [[ -n "$creds" ]] || {
       echo "WARN: agent not running and no near-credentials — skipping signed webhook tests" >&2
@@ -473,7 +473,7 @@ cmd_test_webhook() {
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-rodit-webhooks.mjs \
       --ext-dir "$ext_dir" \
       --creds "$container_creds" \
-      --target "$(agent_ingress_base_url "$id")" \
+      --target "$(agent_container_ingress_base_url "$id")" \
       --path hooks/wake
   fi
 
@@ -489,7 +489,7 @@ cmd_test_webhook() {
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-webhooks-testhola.mjs \
       --ext-dir "$ext_dir" \
       --creds "$container_creds" \
-      --agent-base "$(agent_ingress_base_url "$id")" \
+      --agent-base "$(agent_container_ingress_base_url "$id")" \
       --api-base "${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
   elif [[ -n "$creds" ]]; then
     NODE_TLS_REJECT_UNAUTHORIZED=0 node "${IDENTYCLAW_ROOT}/scripts/test-webhooks-testhola.mjs" \

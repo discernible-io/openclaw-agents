@@ -607,6 +607,22 @@ agent_ingress_base_url() {
   agent_public_base_url "$1"
 }
 
+# HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 4443).
+agent_container_ingress_base_url() {
+  local id="$1"
+  load_env
+  local host tier port
+  host="$(agent_public_host "$id")"
+  [[ -n "$host" ]] || return 0
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    tier="$(resolve_deploy_tier "${IDENTYCLAW_ROOT:-}")"
+    port="$(deploy_tier_app_port "$tier" 2>/dev/null || echo 4443)"
+    echo "https://${host}:${port}"
+    return 0
+  fi
+  agent_ingress_base_url "$id"
+}
+
 # Operator-facing Control UI / API base URL (HTTPS ingress in pod mode, loopback in standalone).
 agent_ui_base_url() {
   local id="$1"
