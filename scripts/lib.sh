@@ -1741,6 +1741,7 @@ copy_openclaw_plugin_tree() {
   for item in "$@"; do
     cp -a "$build_dir/$item" "$ext_dir/"
   done
+  mkdir -p "$ext_dir/node_modules"
   rm -rf "$ext_dir/node_modules/openclaw"
   ln -sf /app "$ext_dir/node_modules/openclaw"
 }
@@ -1966,6 +1967,7 @@ install_plugin_tree_in_container() {
     for item in${copy_items}; do
       cp -a \"\$build_dir/\$item\" \"\$ext_dir/\"
     done
+    mkdir -p \"\$ext_dir/node_modules\"
     rm -rf \"\$ext_dir/node_modules/openclaw\"
     ln -sf /app \"\$ext_dir/node_modules/openclaw\"
     rm -rf \"\$build_dir\"
