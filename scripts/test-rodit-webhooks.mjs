@@ -9,10 +9,9 @@
  *     [--signer-creds /other/agent/creds.json]
  */
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { loadNearCreds } from "./lib-rodit-webhook-test.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -35,40 +34,33 @@ if (!credsPath || !target || !extDir) {
 const base = target.replace(/\/+$/, "");
 const url = `${base}/${agentPath.replace(/^\/+/, "")}`;
 
-const require = createRequire(pathToFileURL(join(extDir, "package.json")));
-const nacl = require("tweetnacl");
-
-function loadNearCreds(path) {
-  const data = JSON.parse(readFileSync(path, "utf8"));
-  const accountId = data.implicit_account_id || data.account_id || data.accountId;
-  const privateKey = data.private_key || data.privateKey;
-  if (!accountId || !privateKey) {
-    throw new Error(`Missing account_id/private_key in ${path}`);
+function applyRoditEmbedEnv() {
+  if (!process.env.LOG_LEVEL) process.env.LOG_LEVEL = "error";
+  if (process.env.SUPPRESS_NO_CONFIG_WARNING === undefined) {
+    process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
   }
-  return { accountId: String(accountId).trim(), privateKey: String(privateKey).trim() };
+  if (process.env.SUPPRESS_STRICTNESS_CHECK === undefined) {
+    process.env.SUPPRESS_STRICTNESS_CHECK = "true";
+  }
 }
 
-function privateKeyBytes(nearPrivateKey) {
-  const bs58 = require("bs58");
-  const body = nearPrivateKey.replace(/^ed25519:/, "").trim();
-  const decoded = bs58.decode(body);
-  if (decoded.length !== 64 && decoded.length < 32) throw new Error("Invalid NEAR private key");
-  return new Uint8Array(decoded);
-}
-
-function signerPublicKeyBase64url(tokenId) {
-  return Buffer.from(tokenId.trim().toLowerCase(), "hex").toString("base64url");
-}
-
-function signWebhookPayload(payload, privateKey) {
-  const timestamp = Date.now().toString();
-  const payloadWithTimestamp = payload + timestamp;
-  const hash = createHash("sha256").update(payloadWithTimestamp).digest();
-  const signature = nacl.sign.detached(new Uint8Array(hash), privateKey);
-  return {
-    timestamp,
-    signatureHex: Buffer.from(signature).toString("hex"),
+async function sendSignedWebhookViaRodit(signerCredsPath, receiverBase, hookPath, eventText) {
+  process.env.NEAR_CREDENTIALS_FILE_PATH = signerCredsPath;
+  applyRoditEmbedEnv();
+  const require = createRequire(pathToFileURL(join(extDir, "package.json")));
+  const { RoditClient } = require("@rodit/rodit-auth-be");
+  const client = await RoditClient.create({ role: "client" });
+  const signer = loadNearCreds(signerCredsPath);
+  const webhookUrl = receiverBase.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  const endpoint = `/${hookPath.replace(/^\/+/, "")}`;
+  const peerReq = { user: { rodit_webhookurl: webhookUrl } };
+  const payload = {
+    event: eventText,
+    data: { mode: "now", token_id: signer.accountId, peerTokenId: signer.accountId },
   };
+  return endpoint === "/hooks/wake"
+    ? client.sendWakeHook(payload, peerReq)
+    : client.sendWebhookToEndpoint(payload, endpoint, peerReq);
 }
 
 async function postWebhook(body, headers = {}) {
@@ -95,7 +87,6 @@ function record(label, ok, detail) {
 
 const receiver = loadNearCreds(credsPath);
 const signer = loadNearCreds(signerCredsPath);
-const signerKey = privateKeyBytes(signer.privateKey);
 
 let passed = 0;
 let failed = 0;
@@ -120,20 +111,21 @@ const garbage = await postWebhook(JSON.stringify({ text: "garbage-sig", mode: "n
 });
 tally(record("invalid signature rejected", garbage.status === 401, `HTTP ${garbage.status}`));
 
-const wakePayload = JSON.stringify({ text: "identyclaw rodit webhook smoke", mode: "now" });
-const signed = signWebhookPayload(wakePayload, signerKey);
-const ok = await postWebhook(wakePayload, {
-  "x-signature": signed.signatureHex,
-  "x-timestamp": signed.timestamp,
-  "x-rodit-token-id": signer.accountId,
-});
-tally(
-  record(
-    "signed POST accepted",
-    ok.status === 200 && ok.json?.ok === true,
-    `HTTP ${ok.status} ${ok.json?.ok === true ? "" : JSON.stringify(ok.json)}`,
-  ),
-);
+let sdkOk = false;
+let sdkDetail = "";
+try {
+  const sdkResult = await sendSignedWebhookViaRodit(
+    signerCredsPath,
+    base,
+    agentPath,
+    "identyclaw rodit webhook smoke",
+  );
+  sdkOk = sdkResult?.isValid === true;
+  sdkDetail = sdkOk ? `requestId=${sdkResult.requestId || "?"}` : JSON.stringify(sdkResult?.error || sdkResult);
+} catch (err) {
+  sdkDetail = err instanceof Error ? err.message : String(err);
+}
+tally(record("signed POST via rodit-auth-be", sdkOk, sdkDetail));
 
 console.log("");
 console.log(`Results: ${passed} passed, ${failed} failed`);

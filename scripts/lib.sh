@@ -975,7 +975,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|upgrade-plugins|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1427,8 +1427,9 @@ EOF
 | \`a2a_send_message\` | Send message/files to a peer; returns \`context_id\` / \`task_id\` |
 | \`a2a_get_task\` | Poll long-running peer tasks |
 | \`a2a_update_agent_card\` | Update this agent’s public Agent Card |
+| \`send_rodit_webhook\` | After a delay (default 10s), sign and POST \`/hooks/wake\` to a peer from \`outbound.agents\` |
 
-Prefer A2A for ongoing work with known peers (agent-a ↔ agent-b). Use IdentyClaw HOLA when verifying identity of an unknown sender or proving your Passport to a human-facing channel.
+Prefer A2A for ongoing work with known peers (agent-a ↔ agent-b). Use \`send_rodit_webhook\` to wake a peer via RODiT-signed webhook (not A2A). Use IdentyClaw HOLA when verifying identity of an unknown sender or proving your Passport to a human-facing channel.
 EOF
   else
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<'EOF'
@@ -1827,6 +1828,8 @@ build_local_rodit_webhooks_plugin() {
     npm install >&2
     npm run build >&2
   ) || return 1
+  # node_modules is not installed in-container (deps symlink from a2a); omit to avoid podman cp symlink errors.
+  rm -rf "$build_dir/node_modules"
   [[ -f "$build_dir/dist/index.js" ]] || {
     echo "    (rodit-webhooks: build failed — dist/index.js missing)" >&2
     return 1
@@ -1890,6 +1893,11 @@ for key, value in desired.items():
     if cfg.get(key) != value:
         cfg[key] = value
         changed = True
+
+allow = data.setdefault("tools", {}).setdefault("allow", [])
+if "send_rodit_webhook" not in allow:
+    allow.append("send_rodit_webhook")
+    changed = True
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

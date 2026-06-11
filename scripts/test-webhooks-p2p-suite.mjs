@@ -1,46 +1,45 @@
 #!/usr/bin/env node
 /**
- * P2P webhook suite: peer signs at origin with their NEAR key, remote agent verifies.
+ * Bidirectional P2P webhook suite via send_rodit_webhook (same path peers use in production).
  *
- * Verifies delivery via GET /hooks/_receipts on the receiver (rodit-webhooks test helper).
+ * Outbound — we deliver webhooks to the peer; verify peer /hooks/_receipts.
+ * Inbound  — peer delivers webhooks to us; verify our /hooks/_receipts.
  *
  * Usage:
  *   node scripts/test-webhooks-p2p-suite.mjs \
- *     --sender agent-b \
- *     --receiver agent-a \
- *     --signer-creds /path/to/sender-near.json \
- *     --receiver-base https://agent-a.dihola.io:9443 \
- *     [--path hooks/wake]
- *
- * Bidirectional (when peer creds are available for the return path):
- *   node scripts/test-webhooks-p2p-suite.mjs \
- *     --sender agent-b --receiver agent-a \
- *     --signer-creds ... --receiver-base https://agent-a... \
- *     --reverse-signer-creds /path/to/receiver-near.json \
- *     --reverse-receiver-base https://agent-b...
+ *     --local agent-b --peer agent-a \
+ *     --local-creds /path/to/local-near.json \
+ *     --local-base https://agent-b.dihola.io:4443 \
+ *     --peer-base https://agent-a.dihola.io:9443 \
+ *     [--peer-creds /path/to/peer-near.json] \
+ *     [--skip-inbound] [--require-inbound]
  */
 import { resolve } from "node:path";
-import { runP2pWebhookSend } from "./lib-rodit-webhook-test.mjs";
+import { runInboundWebhookFromPeer, runOutboundWebhookToPeer } from "./lib-rodit-webhook-test.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : fallback;
 }
 
-const extDir = resolve(arg("--ext-dir", ""));
-const senderId = arg("--sender", "sender");
-const receiverId = arg("--receiver", "receiver");
-const signerCredsPath = arg("--signer-creds");
-const receiverBase = (arg("--receiver-base", "") || "").replace(/\/+$/, "");
+const configPath = resolve(arg("--config", process.env.OPENCLAW_CONFIG || "/home/node/.openclaw/openclaw.json"));
+const pluginDir = resolve(arg("--plugin-dir", "/home/node/.openclaw/extensions/rodit-webhooks/dist"));
+const localId = arg("--local", arg("--sender", "local"));
+const peerId = arg("--peer", arg("--receiver", "peer"));
+const localCredsPath = arg("--local-creds", arg("--signer-creds", ""));
+const peerCredsPath = arg("--peer-creds", arg("--reverse-signer-creds", ""));
+const localBase = (arg("--local-base", arg("--reverse-receiver-base", "")) || "").replace(/\/+$/, "");
+const peerBase = (arg("--peer-base", arg("--receiver-base", "")) || "").replace(/\/+$/, "");
 const hookPath = arg("--path", "hooks/wake").replace(/^\/+/, "");
-const reverseSignerCreds = arg("--reverse-signer-creds", "");
-const reverseReceiverBase = (arg("--reverse-receiver-base", "") || "").replace(/\/+$/, "");
+const skipInbound = process.argv.includes("--skip-inbound");
+const requireInbound = process.argv.includes("--require-inbound");
 
-if (!signerCredsPath || !receiverBase || !extDir) {
+if (!localCredsPath || !peerBase || !peerId) {
   process.stderr.write(
-    "usage: test-webhooks-p2p-suite.mjs --ext-dir <a2a> --signer-creds <near.json> " +
-      "--receiver-base <https://peer-host:port> [--sender id] [--receiver id] " +
-      "[--reverse-signer-creds <peer.json> --reverse-receiver-base <local-url>]\n",
+    "usage: test-webhooks-p2p-suite.mjs --local <id> --peer <id> " +
+      "--local-creds <near.json> --peer-base <https://peer:port> " +
+      "[--local-base <https://local:port>] [--peer-creds <peer.json>] " +
+      "[--config openclaw.json] [--skip-inbound] [--require-inbound]\n",
   );
   process.exit(2);
 }
@@ -49,23 +48,6 @@ function record(label, ok, detail = "") {
   const mark = ok ? "PASS" : "FAIL";
   const line = detail ? `${mark}  ${label} — ${detail}` : `${mark}  ${label}`;
   process.stdout.write(`${line}\n`);
-  return ok;
-}
-
-async function runDirection(directionLabel, credsPath, recvBase, senderLabel, receiverLabel) {
-  process.stdout.write(`\n==> ${directionLabel}\n`);
-  const result = await runP2pWebhookSend({
-    extDir,
-    signerCredsPath: credsPath,
-    receiverBase: recvBase,
-    hookPath,
-    senderLabel,
-    receiverLabel,
-  });
-  process.stdout.write(`    signer:   ${result.signerId.slice(0, 12)}… (${senderLabel})\n`);
-  process.stdout.write(`    receiver: ${recvBase}/${hookPath} (${receiverLabel})\n`);
-  let ok = record(`${directionLabel}: signed POST accepted`, result.postOk, result.postDetail);
-  ok = record(`${directionLabel}: receiver recorded webhook`, result.receiptOk, result.receiptDetail) && ok;
   return ok;
 }
 
@@ -79,28 +61,70 @@ function tally(result) {
   else failed += 1;
 }
 
-process.stdout.write("P2P webhook suite\n");
-process.stdout.write(`  ext-dir: ${extDir}\n`);
+process.stdout.write("P2P webhook suite (send_rodit_webhook)\n");
+process.stdout.write(`  local:  ${localId} (${localBase || "n/a"})\n`);
+process.stdout.write(`  peer:   ${peerId} (${peerBase})\n`);
+process.stdout.write(`  config: ${configPath}\n`);
 
-tally(await runDirection(`P2P webhook ${senderId} → ${receiverId}`, signerCredsPath, receiverBase, senderId, receiverId));
+process.stdout.write("\n--- Outbound: we deliver webhooks to peer ---\n");
+try {
+  const outbound = await runOutboundWebhookToPeer({
+    configPath,
+    pluginDir,
+    localId,
+    peerId,
+    localCredsPath,
+    peerBase,
+    hookPath,
+    delaySeconds: 0,
+  });
+  process.stdout.write(`    POST ${outbound.hookUrl}\n`);
+  let ok = record("outbound: we sent send_rodit_webhook to peer", outbound.deliveredOk, outbound.deliveredDetail);
+  ok = record("outbound: peer recorded our webhook", outbound.peerReceivedOk, outbound.peerReceivedDetail) && ok;
+  tally(ok);
+} catch (err) {
+  record("outbound: we sent send_rodit_webhook to peer", false, err.message);
+  record("outbound: peer recorded our webhook", false, "skipped after send failure");
+  tally(false);
+}
 
-if (reverseSignerCreds && reverseReceiverBase) {
-  tally(
-    await runDirection(
-      `P2P webhook ${receiverId} → ${senderId} (reply)`,
-      reverseSignerCreds,
-      reverseReceiverBase,
-      receiverId,
-      senderId,
-    ),
-  );
-} else {
-  process.stdout.write(
-    `\nSKIP  reverse direction (${receiverId} → ${senderId}) — no --reverse-signer-creds / --reverse-receiver-base\n` +
-      `      Place peer NEAR creds at ~/identyclaw-agents-app/secrets/peer-credentials/${receiverId}/*.json\n` +
-      `      or pass --reverse-signer-creds explicitly.\n`,
-  );
+process.stdout.write("\n--- Inbound: we receive webhooks from peer ---\n");
+if (skipInbound) {
+  process.stdout.write("SKIP  inbound section — --skip-inbound\n");
   tally("skip");
+} else if (!peerCredsPath || !localBase) {
+  const why = !peerCredsPath
+    ? "no --peer-creds (peer NEAR key for send_rodit_webhook on peer side)"
+    : "no --local-base (our ingress URL for receipt check)";
+  process.stdout.write(`SKIP  inbound section — ${why}\n`);
+  if (requireInbound) {
+    record("inbound: peer sent send_rodit_webhook to us", false, why);
+    record("inbound: we recorded peer webhook", false, "required but not run");
+    tally(false);
+  } else {
+    tally("skip");
+  }
+} else {
+  try {
+    const inbound = await runInboundWebhookFromPeer({
+      configPath,
+      pluginDir,
+      localId,
+      peerId,
+      peerCredsPath,
+      localBase,
+      hookPath,
+      delaySeconds: 0,
+    });
+    process.stdout.write(`    POST ${inbound.hookUrl}\n`);
+    let ok = record("inbound: peer sent send_rodit_webhook to us", inbound.peerDeliveredOk, inbound.peerDeliveredDetail);
+    ok = record("inbound: we recorded peer webhook", inbound.weReceivedOk, inbound.weReceivedDetail) && ok;
+    tally(ok);
+  } catch (err) {
+    record("inbound: peer sent send_rodit_webhook to us", false, err.message);
+    record("inbound: we recorded peer webhook", false, "skipped after send failure");
+    tally(false);
+  }
 }
 
 process.stdout.write(`\n--- Summary: ${passed} passed, ${failed} failed, ${skipped} skipped ---\n`);

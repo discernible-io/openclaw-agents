@@ -1,26 +1,14 @@
-import { createRequire } from "node:module";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-
-type RoditAuth = {
-  authenticate_webhook: (
-    payload: string,
-    signatureHex: string,
-    timestamp: string,
-    publicKeyBase64url: string,
-  ) => Promise<{ isValid: boolean; error?: { code?: string; message?: string } }>;
-};
+import { sendRoditWebhook } from "./send-rodit-webhook.js";
+import { getRoditAuth, getRoditClient } from "./rodit-runtime.js";
 
 type RoditStateManager = {
   getOwnBase64urlJwkPublicKey: () => string | null | undefined;
   getPeerBase64urlJwkPublicKey: () => string | null | undefined;
-};
-
-type RoditClientLike = {
-  getStateManager: () => RoditStateManager;
 };
 
 const DEFAULT_ENDPOINTS = ["/hooks/wake", "/hooks/agent"];
@@ -76,53 +64,6 @@ function recordReceipt(path: string, rawPayload: string, requestIdHeader: string
     webhookReceipts.splice(0, webhookReceipts.length - MAX_RECEIPTS);
   }
   persistReceipts();
-}
-
-let roditClientPromise: Promise<RoditClientLike> | null = null;
-let roditAuthPromise: Promise<RoditAuth> | null = null;
-
-function applyRoditEmbedEnv(logLevel?: string) {
-  if (!process.env.LOG_LEVEL) {
-    process.env.LOG_LEVEL = logLevel ?? "error";
-  }
-  if (process.env.SUPPRESS_NO_CONFIG_WARNING === undefined) {
-    process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
-  }
-  if (process.env.SUPPRESS_STRICTNESS_CHECK === undefined) {
-    process.env.SUPPRESS_STRICTNESS_CHECK = "true";
-  }
-}
-
-function loadRoditAuth(logLevel?: string): RoditAuth {
-  applyRoditEmbedEnv(logLevel);
-  const require = createRequire(import.meta.url);
-  const pkgRoot = dirname(require.resolve("@rodit/rodit-auth-be"));
-  return require(join(pkgRoot, "lib/auth/authentication.js")) as RoditAuth;
-}
-
-async function getRoditAuth(logLevel?: string): Promise<RoditAuth> {
-  if (!roditAuthPromise) {
-    roditAuthPromise = Promise.resolve(loadRoditAuth(logLevel));
-  }
-  return roditAuthPromise;
-}
-
-async function getRoditClient(logLevel?: string): Promise<RoditClientLike> {
-  applyRoditEmbedEnv(logLevel);
-  if (!roditClientPromise) {
-    const require = createRequire(import.meta.url);
-    const { RoditClient } = require("@rodit/rodit-auth-be") as {
-      RoditClient: { create: (opts: { role: string }) => Promise<RoditClientLike> };
-    };
-    if (
-      !process.env.NEAR_CREDENTIALS_FILE_PATH?.trim() &&
-      !process.env.RODIT_NEAR_CREDENTIALS_SOURCE?.trim()
-    ) {
-      throw new Error("RODiT credentials not configured (NEAR_CREDENTIALS_FILE_PATH)");
-    }
-    roditClientPromise = RoditClient.create({ role: "client" });
-  }
-  return roditClientPromise;
 }
 
 function headerValue(req: IncomingMessage, name: string): string {
@@ -222,8 +163,21 @@ function normalizeWakePayload(rawPayload: string):
       const mode = payload.mode === "next-heartbeat" ? "next-heartbeat" : "now";
       return { ok: true, text: payload.text.trim(), mode };
     }
-    if (typeof payload.event === "string") {
-      return { ok: true, text: payload.event, mode: "now" };
+    if (typeof payload.event === "string" && payload.event.trim()) {
+      const nested =
+        payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+          ? (payload.data as Record<string, unknown>)
+          : null;
+      const mode = nested?.mode === "next-heartbeat" ? "next-heartbeat" : "now";
+      return { ok: true, text: payload.event.trim(), mode };
+    }
+    const nested =
+      payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+        ? (payload.data as Record<string, unknown>)
+        : null;
+    if (nested && typeof nested.text === "string" && nested.text.trim()) {
+      const mode = nested.mode === "next-heartbeat" ? "next-heartbeat" : "now";
+      return { ok: true, text: nested.text.trim(), mode };
     }
     return { ok: false, error: "text required" };
   } catch {
@@ -355,6 +309,60 @@ export default definePluginEntry({
       },
     });
     api.logger.info("[rodit-webhooks] registered GET|DELETE /hooks/_receipts (test helper)");
+
+    api.registerTool({
+      name: "send_rodit_webhook",
+      description:
+        "Sign and POST a RODiT webhook (/hooks/wake) to a configured A2A peer after a delay. " +
+        "Resolves the peer base URL from plugins.entries.a2a.config.outbound.agents.",
+      parameters: {
+        type: "object",
+        properties: {
+          peerId: {
+            type: "string",
+            description: "Outbound peer id (key in outbound.agents), e.g. agent-a",
+          },
+          text: {
+            type: "string",
+            description: "Webhook body text (default: auto-generated ping message)",
+          },
+          delaySeconds: {
+            type: "number",
+            minimum: 0,
+            description: "Seconds to wait before sending (default: 10)",
+          },
+          hookPath: {
+            type: "string",
+            description: "Webhook path on the peer (default: hooks/wake)",
+          },
+        },
+        required: ["peerId"],
+        additionalProperties: false,
+      },
+      async execute(_toolCallId, params: {
+        peerId: string;
+        text?: string;
+        delaySeconds?: number;
+        hookPath?: string;
+      }) {
+        const result = await sendRoditWebhook({
+          config: (api.config ?? {}) as Parameters<typeof sendRoditWebhook>[0]["config"],
+          peerId: params.peerId,
+          text: params.text,
+          delaySeconds: params.delaySeconds ?? 10,
+          hookPath: params.hookPath,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      },
+    });
+    api.logger.info("[rodit-webhooks] registered tool send_rodit_webhook");
 
     api.registerService({
       id: "rodit-webhooks",
