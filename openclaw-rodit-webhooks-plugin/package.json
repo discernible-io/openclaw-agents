@@ -1,0 +1,43 @@
+{
+  "name": "@identyclaw/openclaw-rodit-webhooks-plugin",
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "type": "module",
+  "description": "RODiT-signed OpenClaw webhook ingress (/hooks/wake, /hooks/agent)",
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "scripts": {
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:openclaw"
+  },
+  "dependencies": {
+    "@rodit/rodit-auth-be": "9.11.20",
+    "tweetnacl": "^1.0.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.27"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.5",
+    "openclaw": "2026.5.27"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.27",
+      "minGatewayVersion": "2026.5.27"
+    }
+  }
+}

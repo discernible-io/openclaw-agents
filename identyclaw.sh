@@ -433,8 +433,9 @@ cmd_webhook_url() {
 cmd_test_webhook() {
   local id="${1:?Usage: $0 test-webhook agent-a|agent-b|agent-c}"
   load_env
-  local url code
+  local url code creds container
   url="$(agent_webhook_url "$id" hooks/wake)"
+  container="$(agent_container "$id")"
   echo "==> Webhook ingress auth (expect HTTP 400/401 without RODiT origin signature)"
   echo "    POST ${url}"
   echo "    Senders sign at origin via @rodit/rodit-auth-be: x-signature + x-timestamp (see clienttest-idc)"
@@ -452,6 +453,51 @@ cmd_test_webhook() {
       exit 1
       ;;
   esac
+
+  creds="$(find "$(agent_home "$id")/secrets/near-credentials" -name '*.json' 2>/dev/null | head -1)"
+  if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    [[ -n "$creds" ]] || {
+      echo "WARN: agent not running and no near-credentials — skipping signed webhook tests" >&2
+      return 0
+    }
+  fi
+
+  echo ""
+  echo "==> RODiT self-signed webhook (local ingress auth)"
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    local container_creds ext_dir
+    container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
+    [[ -n "$container_creds" ]] || container_creds="$creds"
+    ext_dir="/home/node/.openclaw/extensions/a2a"
+    podman cp "${IDENTYCLAW_ROOT}/scripts/test-rodit-webhooks.mjs" "$container:/tmp/test-rodit-webhooks.mjs" >/dev/null
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-rodit-webhooks.mjs \
+      --ext-dir "$ext_dir" \
+      --creds "$container_creds" \
+      --target "$(agent_ingress_base_url "$id")" \
+      --path hooks/wake
+  fi
+
+  echo ""
+  echo "==> /api/testhola webhook delivery (IdentyClaw API → agent webhook_url)"
+  echo "    Same pattern as clienttest-idc: valid HOLA triggers signed webhooks to /hooks/wake and /hooks/agent"
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    local container_creds ext_dir
+    container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
+    [[ -n "$container_creds" ]] || container_creds="$creds"
+    ext_dir="/home/node/.openclaw/extensions/a2a"
+    podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-testhola.mjs" "$container:/tmp/test-webhooks-testhola.mjs" >/dev/null
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-webhooks-testhola.mjs \
+      --ext-dir "$ext_dir" \
+      --creds "$container_creds" \
+      --agent-base "$(agent_ingress_base_url "$id")" \
+      --api-base "${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+  elif [[ -n "$creds" ]]; then
+    NODE_TLS_REJECT_UNAUTHORIZED=0 node "${IDENTYCLAW_ROOT}/scripts/test-webhooks-testhola.mjs" \
+      --ext-dir "$(agent_home "$id")/extensions/a2a" \
+      --creds "$creds" \
+      --agent-base "$(agent_ingress_base_url "$id")" \
+      --api-base "${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+  fi
 }
 
 cmd_token() {

@@ -1,8 +1,0 @@
-node_modules/
-
-# TypeScript source (index.ts) — build with `npm run build`; commit dist/index.js only.
-*.ts
-
-# Local secrets / overrides
-.env
-.env.*
