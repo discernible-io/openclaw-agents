@@ -183,7 +183,22 @@ podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || tru
 
 prepare_pod_deploy_host_paths
 
-podman pod create --name "$POD_NAME" -p "${POD_HOST_PORT}:${POD_LISTEN_PORT}"
+pod_publish_ports=("$POD_LISTEN_PORT")
+for id in $AGENT_IDS; do
+  agent_port="$(agent_ingress_port "$id")"
+  [[ -n "$agent_port" ]] || continue
+  found=0
+  for p in "${pod_publish_ports[@]}"; do
+    [[ "$p" == "$agent_port" ]] && { found=1; break; }
+  done
+  [[ "$found" -eq 0 ]] && pod_publish_ports+=("$agent_port")
+done
+
+pod_create_args=(--name "$POD_NAME")
+for p in "${pod_publish_ports[@]}"; do
+  pod_create_args+=(-p "${p}:${p}")
+done
+podman pod create "${pod_create_args[@]}"
 
 for id in $AGENT_IDS; do
   ensure_agent_runtime "$id"

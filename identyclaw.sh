@@ -21,6 +21,7 @@
 #   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
 #   test-webhook <id>    Smoke-test webhook ingress (expect 400/401 without RODiT x-signature)
 #   test-webhook-p2p <from> <to>  P2P webhook: from signs at origin, to verifies (optional bidirectional)
+#   send-rodit-webhook <id> <peer> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
@@ -470,12 +471,47 @@ cmd_test_webhook() {
     container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
     [[ -n "$container_creds" ]] || container_creds="$creds"
     ext_dir="/home/node/.openclaw/extensions/a2a"
+    podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
     podman cp "${IDENTYCLAW_ROOT}/scripts/test-rodit-webhooks.mjs" "$container:/tmp/test-rodit-webhooks.mjs" >/dev/null
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-rodit-webhooks.mjs \
       --ext-dir "$ext_dir" \
       --creds "$container_creds" \
       --target "$(agent_container_ingress_base_url "$id")" \
       --path hooks/wake
+  fi
+
+  local peer_id="" p
+  for p in $A2A_PEER_AGENTS; do
+    if [[ "$p" != "$id" ]]; then
+      peer_id="$p"
+      break
+    fi
+  done
+  if [[ -n "$peer_id" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    local peer_base container_creds
+    peer_base="$(agent_a2a_public_base_url "$peer_id")"
+    [[ -n "$peer_base" ]] || peer_base="$(agent_ingress_base_url "$peer_id")"
+    container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
+    if [[ -n "$peer_base" && -n "$container_creds" ]]; then
+      echo ""
+      echo "==> Outbound: send_rodit_webhook smoke (${id} → ${peer_id})"
+      podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
+      podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node -e "
+        import { runOutboundWebhookToPeer } from 'file:///tmp/lib-rodit-webhook-test.mjs';
+        const r = await runOutboundWebhookToPeer({
+          localId: '${id}',
+          peerId: '${peer_id}',
+          localCredsPath: '${container_creds}',
+          peerBase: '${peer_base}',
+          markerPrefix: 'test-webhook-outbound',
+          delaySeconds: 0,
+        });
+        const ok = r.deliveredOk && r.peerReceivedOk;
+        process.stdout.write((r.deliveredOk ? 'PASS' : 'FAIL') + '  outbound: we sent send_rodit_webhook to peer — ' + r.deliveredDetail + '\n');
+        process.stdout.write((r.peerReceivedOk ? 'PASS' : 'FAIL') + '  outbound: peer recorded our webhook — ' + r.peerReceivedDetail + '\n');
+        process.exit(ok ? 0 : 1);
+      " || true
+    fi
   fi
 
   echo ""
@@ -499,6 +535,31 @@ cmd_test_webhook() {
       --agent-base "$(agent_ingress_base_url "$id")" \
       --api-base "${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
   fi
+}
+
+cmd_send_rodit_webhook() {
+  local id="${1:?Usage: $0 send-rodit-webhook agent-b agent-a [message]}"
+  local peer="${2:?Usage: $0 send-rodit-webhook agent-b agent-a [message]}"
+  local text="${3:-}"
+  local delay="${SEND_RODIT_WEBHOOK_DELAY:-10}"
+  require_podman
+  load_env
+  require_agent_running "$id"
+
+  local container creds ext_dir
+  container="$(agent_container "$id")"
+  creds="$(agent_near_credentials_in_container "$id")"
+  [[ -n "$creds" ]] || {
+    echo "No NEAR credentials in ${id} container" >&2
+    exit 1
+  }
+
+  podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" "$container:/tmp/send-rodit-webhook.mjs" >/dev/null
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/send-rodit-webhook.mjs \
+    --peer "$peer" \
+    --delay "$delay" \
+    --creds "$creds" \
+    ${text:+--text "$text"}
 }
 
 cmd_test_webhook_p2p() {
@@ -526,32 +587,80 @@ cmd_test_webhook_p2p() {
   }
 
   peer_creds="$(peer_near_credentials_path "$receiver")"
-  ext_dir="/home/node/.openclaw/extensions/a2a"
+  local receiver_container reverse_via_container=0
+  receiver_container="$(agent_container "$receiver")"
+  if podman ps --format '{{.Names}}' | grep -qx "$receiver_container"; then
+    reverse_via_container=1
+  fi
+
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$sender_container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-p2p-suite.mjs" "$sender_container:/tmp/test-webhooks-p2p-suite.mjs" >/dev/null
 
+  echo "==> P2P webhook test (outbound + inbound via send_rodit_webhook)"
+  echo "    Outbound: ${sender} delivers → ${receiver} records"
+  echo "    Inbound:  ${receiver} delivers → ${sender} records"
+
   local -a exec_args=(
     node /tmp/test-webhooks-p2p-suite.mjs
-    --ext-dir "$ext_dir"
-    --sender "$sender"
-    --receiver "$receiver"
-    --signer-creds "$sender_creds"
-    --receiver-base "$receiver_base"
+    --local "$sender"
+    --peer "$receiver"
+    --local-creds "$sender_creds"
+    --local-base "$local_base"
+    --peer-base "$receiver_base"
     --path hooks/wake
   )
 
-  if [[ -n "$peer_creds" && -n "$local_base" ]]; then
-    echo "==> Bidirectional P2P webhook test (${sender} ↔ ${receiver})"
-    echo "    peer creds for reply: ${peer_creds}"
-    podman cp "$peer_creds" "$sender_container:/tmp/peer-reverse-creds.json" >/dev/null
-    exec_args+=(--reverse-signer-creds /tmp/peer-reverse-creds.json --reverse-receiver-base "$local_base")
+  if [[ "$reverse_via_container" -eq 1 ]]; then
+    exec_args+=(--skip-inbound)
+  elif [[ -n "$peer_creds" && -n "$local_base" ]]; then
+    podman cp "$peer_creds" "$sender_container:/tmp/peer-inbound-creds.json" >/dev/null
+    exec_args+=(--peer-creds /tmp/peer-inbound-creds.json)
   else
-    echo "==> P2P webhook test (${sender} → ${receiver})"
-    echo "    For ${receiver} → ${sender} reply, add peer NEAR creds at:"
+    echo "    Inbound needs peer NEAR creds at:"
     echo "    $(identyclaw_app_dir)/secrets/peer-credentials/${receiver}/*.json"
+    echo "    Or run the ${receiver} container locally (inbound via peer send_rodit_webhook)."
   fi
 
-  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" "${exec_args[@]}"
+  local exit_code=0
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" "${exec_args[@]}" || exit_code=$?
+
+  if [[ "$reverse_via_container" -eq 1 && -n "$local_base" ]]; then
+    echo ""
+    echo "--- Inbound: we receive webhooks from peer (${receiver} container) ---"
+    local receiver_creds marker send_out verify_script
+    receiver_creds="$(agent_near_credentials_in_container "$receiver")"
+    [[ -n "$receiver_creds" ]] || {
+      echo "FAIL  inbound: peer sent send_rodit_webhook to us — no NEAR creds in ${receiver} container" >&2
+      exit 1
+    }
+    marker="inbound-${receiver}-to-${sender}-$(date +%s)"
+    podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" "$receiver_container:/tmp/send-rodit-webhook.mjs" >/dev/null
+    podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$sender_container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" node -e "
+      import { clearReceipts } from 'file:///tmp/lib-rodit-webhook-test.mjs';
+      await clearReceipts('${local_base}');
+    " >/dev/null
+    send_out="$(podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$receiver_container" node /tmp/send-rodit-webhook.mjs \
+      --peer "$sender" --text "$marker" --delay 0 --creds "$receiver_creds" 2>&1)" || true
+    if echo "$send_out" | grep -q '"ok": true'; then
+      echo "PASS  inbound: peer sent send_rodit_webhook to us — $(echo "$send_out" | grep -o '"requestId": "[^"]*"' | head -1)"
+    else
+      echo "FAIL  inbound: peer sent send_rodit_webhook to us — ${send_out}" >&2
+      exit_code=1
+    fi
+    verify_script="$(mktemp)"
+    cat >"$verify_script" <<NODE
+import { verifyWebhookReceipt } from "file:///tmp/lib-rodit-webhook-test.mjs";
+const r = await verifyWebhookReceipt("${local_base}", { marker: "${marker}" });
+process.stdout.write((r.receiptOk ? "PASS" : "FAIL") + "  inbound: we recorded peer webhook — " + r.receiptDetail + "\\n");
+process.exit(r.receiptOk ? 0 : 1);
+NODE
+    podman cp "$verify_script" "$sender_container:/tmp/verify-webhook-receipt.mjs" >/dev/null
+    rm -f "$verify_script"
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" node /tmp/verify-webhook-receipt.mjs || exit_code=1
+  fi
+
+  exit "$exit_code"
 }
 
 cmd_token() {
@@ -785,6 +894,7 @@ main() {
     test-a2a) cmd_test_a2a "$@" ;;
     test-webhook) cmd_test_webhook "$@" ;;
     test-webhook-p2p) cmd_test_webhook_p2p "$@" ;;
+    send-rodit-webhook) cmd_send_rodit_webhook "$@" ;;
     webhook-url) cmd_webhook_url "$@" ;;
     token) cmd_token "$@" ;;
     chat) cmd_chat "$@" ;;

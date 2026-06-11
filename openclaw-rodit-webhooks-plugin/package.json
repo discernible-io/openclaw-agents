@@ -10,7 +10,7 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external"
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external && esbuild send-rodit-webhook.ts --bundle --platform=node --format=esm --outfile=dist/send-rodit-webhook.js --packages=external"
   },
   "dependencies": {
     "@rodit/rodit-auth-be": "9.11.20"

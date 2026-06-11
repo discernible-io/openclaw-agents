@@ -1,9 +1,166 @@
 // index.ts
-import { createRequire } from "node:module";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join as join2 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+
+// send-rodit-webhook.ts
+import { readFileSync } from "node:fs";
+
+// rodit-runtime.ts
+import { createRequire } from "node:module";
+import { dirname as dirname2, join } from "node:path";
+function normalizeWebhookBase(raw) {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (trimmed.includes("://")) return trimmed;
+  return `https://${trimmed}`;
+}
+async function getOwnPassportUrls(logLevel) {
+  const client = await getRoditClient(logLevel);
+  const own = await client.getConfigOwnRodit();
+  const meta = own?.own_rodit?.metadata ?? {};
+  return {
+    webhook_url: normalizeWebhookBase(String(meta.webhook_url || "")),
+    api_base: String(meta.subjectuniqueidentifier_url || "").trim().replace(/\/+$/, ""),
+    owner_id: String(own?.own_rodit?.owner_id || "").trim()
+  };
+}
+var roditClientPromise = null;
+function applyRoditEmbedEnv(logLevel) {
+  if (!process.env.LOG_LEVEL) {
+    process.env.LOG_LEVEL = logLevel ?? "error";
+  }
+  if (process.env.SUPPRESS_NO_CONFIG_WARNING === void 0) {
+    process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
+  }
+  if (process.env.SUPPRESS_STRICTNESS_CHECK === void 0) {
+    process.env.SUPPRESS_STRICTNESS_CHECK = "true";
+  }
+}
+function applyWebhookTlsSkip(skip) {
+  if (skip) {
+    process.env.SECURITY_OPTIONS_WEBHOOK_TLS_SKIP_VERIFY = "true";
+  }
+}
+function peerBaseToRoditWebhookUrl(baseUrl) {
+  return baseUrl.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+}
+function buildPeerWebhookReq(peerBaseUrl) {
+  return { user: { rodit_webhookurl: peerBaseToRoditWebhookUrl(peerBaseUrl) } };
+}
+async function getRoditClient(logLevel) {
+  applyRoditEmbedEnv(logLevel);
+  if (!roditClientPromise) {
+    const require2 = createRequire(import.meta.url);
+    const { RoditClient } = require2("@rodit/rodit-auth-be");
+    if (!process.env.NEAR_CREDENTIALS_FILE_PATH?.trim() && !process.env.RODIT_NEAR_CREDENTIALS_SOURCE?.trim()) {
+      throw new Error("RODiT credentials not configured (NEAR_CREDENTIALS_FILE_PATH)");
+    }
+    roditClientPromise = RoditClient.create({ role: "client" });
+  }
+  return roditClientPromise;
+}
+var roditAuthPromise = null;
+function loadRoditAuth(logLevel) {
+  applyRoditEmbedEnv(logLevel);
+  const require2 = createRequire(import.meta.url);
+  const pkgRoot = dirname2(require2.resolve("@rodit/rodit-auth-be"));
+  return require2(join(pkgRoot, "lib/auth/authentication.js"));
+}
+async function getRoditAuth(logLevel) {
+  if (!roditAuthPromise) {
+    roditAuthPromise = Promise.resolve(loadRoditAuth(logLevel));
+  }
+  return roditAuthPromise;
+}
+
+// send-rodit-webhook.ts
+function agentCardUrlToBase(url) {
+  const trimmed = url.trim().replace(/\/$/, "");
+  if (trimmed.endsWith("/.well-known/agent-card.json")) {
+    return trimmed.slice(0, -"/.well-known/agent-card.json".length);
+  }
+  return trimmed;
+}
+function resolveOutboundPeerBase(config, peerId) {
+  const peer = config.plugins?.entries?.a2a?.config?.outbound?.agents?.[peerId];
+  const cardUrl = peer?.url?.trim();
+  const loginBase = peer?.loginBaseUrl?.trim();
+  if (cardUrl) return agentCardUrlToBase(cardUrl);
+  if (loginBase) return loginBase.replace(/\/$/, "");
+  const known = Object.keys(config.plugins?.entries?.a2a?.config?.outbound?.agents ?? {});
+  throw new Error(
+    `Peer '${peerId}' not found in plugins.entries.a2a.config.outbound.agents` + (known.length ? ` (configured: ${known.join(", ")})` : "")
+  );
+}
+function outboundTlsSkipVerify(config) {
+  return config.plugins?.entries?.a2a?.config?.outbound?.tlsSkipVerify === true;
+}
+function loadNearSignerFromEnv() {
+  const credPath = process.env.NEAR_CREDENTIALS_FILE_PATH?.trim();
+  if (!credPath) {
+    throw new Error("NEAR_CREDENTIALS_FILE_PATH is not set");
+  }
+  const data = JSON.parse(readFileSync(credPath, "utf8"));
+  const accountId = data.implicit_account_id || data.account_id || data.accountId;
+  const privateKey = data.private_key || data.privateKey;
+  if (!accountId || !privateKey) {
+    throw new Error(`Missing account_id/private_key in ${credPath}`);
+  }
+  return { accountId: String(accountId).trim(), privateKey: String(privateKey).trim() };
+}
+async function sendRoditWebhook(opts) {
+  const delaySeconds = opts.delaySeconds ?? 10;
+  const hookPath = (opts.hookPath ?? "hooks/wake").replace(/^\/+/, "");
+  const targetBase = resolveOutboundPeerBase(opts.config, opts.peerId);
+  const tlsSkipVerify = outboundTlsSkipVerify(opts.config);
+  const signer = loadNearSignerFromEnv();
+  const endpoint = `/${hookPath}`;
+  const url = `${targetBase.replace(/\/+$/, "")}${endpoint}`;
+  const wakeText = opts.text?.trim() || `Webhook ping to ${opts.peerId} via send_rodit_webhook`;
+  if (delaySeconds > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1e3));
+  }
+  applyWebhookTlsSkip(tlsSkipVerify);
+  const client = await getRoditClient();
+  const peerReq = buildPeerWebhookReq(targetBase);
+  const payload = {
+    event: wakeText,
+    data: {
+      mode: "now",
+      token_id: signer.accountId,
+      peerTokenId: signer.accountId
+    }
+  };
+  let sdkResult;
+  try {
+    sdkResult = endpoint === "/hooks/wake" ? await client.sendWakeHook(payload, peerReq) : await client.sendWebhookToEndpoint(payload, endpoint, peerReq);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      url,
+      peerId: opts.peerId,
+      requestId: "",
+      delaySeconds,
+      status: 502,
+      ok: false,
+      response: { error: message, webhookUrl: peerBaseToRoditWebhookUrl(targetBase) }
+    };
+  }
+  const ok = sdkResult.isValid === true;
+  return {
+    url,
+    peerId: opts.peerId,
+    requestId: sdkResult.requestId ?? "",
+    delaySeconds,
+    status: ok ? 200 : 502,
+    ok,
+    response: sdkResult
+  };
+}
+
+// index.ts
 var DEFAULT_ENDPOINTS = ["/hooks/wake", "/hooks/agent"];
 var RECEIPTS_PATH = "/home/node/.openclaw/cache/webhook-receipts.json";
 var MAX_BODY_BYTES = 256 * 1024;
@@ -42,43 +199,6 @@ function recordReceipt(path, rawPayload, requestIdHeader) {
     webhookReceipts.splice(0, webhookReceipts.length - MAX_RECEIPTS);
   }
   persistReceipts();
-}
-var roditClientPromise = null;
-var roditAuthPromise = null;
-function applyRoditEmbedEnv(logLevel) {
-  if (!process.env.LOG_LEVEL) {
-    process.env.LOG_LEVEL = logLevel ?? "error";
-  }
-  if (process.env.SUPPRESS_NO_CONFIG_WARNING === void 0) {
-    process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
-  }
-  if (process.env.SUPPRESS_STRICTNESS_CHECK === void 0) {
-    process.env.SUPPRESS_STRICTNESS_CHECK = "true";
-  }
-}
-function loadRoditAuth(logLevel) {
-  applyRoditEmbedEnv(logLevel);
-  const require2 = createRequire(import.meta.url);
-  const pkgRoot = dirname(require2.resolve("@rodit/rodit-auth-be"));
-  return require2(join(pkgRoot, "lib/auth/authentication.js"));
-}
-async function getRoditAuth(logLevel) {
-  if (!roditAuthPromise) {
-    roditAuthPromise = Promise.resolve(loadRoditAuth(logLevel));
-  }
-  return roditAuthPromise;
-}
-async function getRoditClient(logLevel) {
-  applyRoditEmbedEnv(logLevel);
-  if (!roditClientPromise) {
-    const require2 = createRequire(import.meta.url);
-    const { RoditClient } = require2("@rodit/rodit-auth-be");
-    if (!process.env.NEAR_CREDENTIALS_FILE_PATH?.trim() && !process.env.RODIT_NEAR_CREDENTIALS_SOURCE?.trim()) {
-      throw new Error("RODiT credentials not configured (NEAR_CREDENTIALS_FILE_PATH)");
-    }
-    roditClientPromise = RoditClient.create({ role: "client" });
-  }
-  return roditClientPromise;
 }
 function headerValue(req, name) {
   const raw = req.headers[name.toLowerCase()];
@@ -138,7 +258,7 @@ async function requestGatewayHeartbeat(mode) {
   const dist = "/app/dist";
   const entry = readdirSync(dist).find((name) => name.startsWith("heartbeat-wake-") && name.endsWith(".js"));
   if (!entry) return;
-  const mod = await import(pathToFileURL(join(dist, entry)).href);
+  const mod = await import(pathToFileURL(join2(dist, entry)).href);
   mod.requestHeartbeat?.({ source: "hook", reason: "hook:wake" });
 }
 function normalizeWakePayload(rawPayload) {
@@ -148,8 +268,15 @@ function normalizeWakePayload(rawPayload) {
       const mode = payload.mode === "next-heartbeat" ? "next-heartbeat" : "now";
       return { ok: true, text: payload.text.trim(), mode };
     }
-    if (typeof payload.event === "string") {
-      return { ok: true, text: payload.event, mode: "now" };
+    if (typeof payload.event === "string" && payload.event.trim()) {
+      const nested2 = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data) ? payload.data : null;
+      const mode = nested2?.mode === "next-heartbeat" ? "next-heartbeat" : "now";
+      return { ok: true, text: payload.event.trim(), mode };
+    }
+    const nested = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data) ? payload.data : null;
+    if (nested && typeof nested.text === "string" && nested.text.trim()) {
+      const mode = nested.mode === "next-heartbeat" ? "next-heartbeat" : "now";
+      return { ok: true, text: nested.text.trim(), mode };
     }
     return { ok: false, error: "text required" };
   } catch {
@@ -269,11 +396,67 @@ var index_default = definePluginEntry({
       }
     });
     api.logger.info("[rodit-webhooks] registered GET|DELETE /hooks/_receipts (test helper)");
+    api.registerTool({
+      name: "send_rodit_webhook",
+      description: "Sign and POST a RODiT webhook (/hooks/wake) to a configured A2A peer after a delay. Resolves the peer base URL from plugins.entries.a2a.config.outbound.agents.",
+      parameters: {
+        type: "object",
+        properties: {
+          peerId: {
+            type: "string",
+            description: "Outbound peer id (key in outbound.agents), e.g. agent-a"
+          },
+          text: {
+            type: "string",
+            description: "Webhook body text (default: auto-generated ping message)"
+          },
+          delaySeconds: {
+            type: "number",
+            minimum: 0,
+            description: "Seconds to wait before sending (default: 10)"
+          },
+          hookPath: {
+            type: "string",
+            description: "Webhook path on the peer (default: hooks/wake)"
+          }
+        },
+        required: ["peerId"],
+        additionalProperties: false
+      },
+      async execute(_toolCallId, params) {
+        const result = await sendRoditWebhook({
+          config: api.config ?? {},
+          peerId: params.peerId,
+          text: params.text,
+          delaySeconds: params.delaySeconds ?? 10,
+          hookPath: params.hookPath
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2)
+            }
+          ]
+        };
+      }
+    });
+    api.logger.info("[rodit-webhooks] registered tool send_rodit_webhook");
     api.registerService({
       id: "rodit-webhooks",
       start: async () => {
         try {
           await getRoditClient(logLevel);
+          const passport = await getOwnPassportUrls(logLevel);
+          if (passport.webhook_url) {
+            api.logger.info(`[rodit-webhooks] Passport metadata.webhook_url=${passport.webhook_url}`);
+          }
+          const configured = api.config?.plugins?.entries?.a2a?.config?.inbound?.publicBaseUrl?.replace(/\/+$/, "");
+          if (configured && passport.webhook_url && configured !== passport.webhook_url) {
+            api.logger.warn(
+              `[rodit-webhooks] inbound.publicBaseUrl (${configured}) differs from Passport webhook_url (${passport.webhook_url})`
+            );
+          }
           api.logger.info("[rodit-webhooks] RODiT passport warmed up for webhook verification");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

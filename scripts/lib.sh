@@ -252,9 +252,10 @@ agent_container() {
 }
 
 agent_a2a_public_base_url() {
+  local id="$1"
   load_env
-  local explicit=""
-  case "$1" in
+  local explicit="" config_dir passport_url
+  case "$id" in
     agent-a) explicit="${AGENT_A_A2A_PUBLIC_BASE_URL:-}" ;;
     agent-b) explicit="${AGENT_B_A2A_PUBLIC_BASE_URL:-}" ;;
     agent-c) explicit="${AGENT_C_A2A_PUBLIC_BASE_URL:-}" ;;
@@ -262,8 +263,21 @@ agent_a2a_public_base_url() {
   esac
   if [[ -n "$explicit" ]]; then
     echo "$explicit"
-  elif [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-    agent_public_base_url "$1"
+    return 0
+  fi
+  if rodit_self_configure_enabled; then
+    config_dir="$(agent_home "$id")"
+    if agent_has_near_credentials "$config_dir"; then
+      passport_url="$(rodit_passport_webhook_url "$config_dir" 2>/dev/null || true)"
+      if [[ -n "$passport_url" ]]; then
+        echo "    (${id}: public base from Passport metadata.webhook_url)" >&2
+        echo "$passport_url"
+        return 0
+      fi
+    fi
+  fi
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    agent_public_base_url "$id"
   fi
 }
 
@@ -391,6 +405,87 @@ probe_rodit_own_owner_id() {
   fi
   echo "    (${config_dir##*/}: P2P inbound audience from own_rodit.owner_id=${probed:0:16}…)" >&2
   echo "$probed"
+}
+
+rodit_self_configure_enabled() {
+  load_env
+  [[ "${IDENTYCLAW_RODIT_SELF_CONFIGURE:-1}" != "0" ]]
+}
+
+# Passport metadata via RoditClient.getConfigOwnRodit() — webhook_url, api_base, owner_id, host, port.
+probe_rodit_passport_urls_json() {
+  local config_dir="$1"
+  local cred_file ext_dir cache cred_stat probed cached_key cached_json
+  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
+  ext_dir="$config_dir/extensions/a2a"
+  [[ -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]] || return 1
+
+  load_env
+  sync_quiet_plugin_env "$config_dir"
+
+  cache="$config_dir/.rodit-passport-urls.json"
+  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  if [[ -n "$cred_stat" && -f "$cache" ]]; then
+    read -r cached_key cached_json <"$cache" || true
+    if [[ "$cached_key" == "$cred_stat" && -n "$cached_json" ]]; then
+      echo "$cached_json"
+      return 0
+    fi
+  fi
+
+  command -v node >/dev/null 2>&1 || return 1
+  probed="$(
+    NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-passport-urls.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
+      || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  [[ -n "$probed" && "$probed" == "{"* ]] || return 1
+
+  if [[ -n "$cred_stat" ]]; then
+    printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
+    chmod 600 "$cache" 2>/dev/null || true
+  fi
+  echo "$probed"
+}
+
+rodit_passport_json_field() {
+  local config_dir="$1"
+  local field="$2"
+  local json value
+  json="$(probe_rodit_passport_urls_json "$config_dir" 2>/dev/null || true)"
+  [[ -n "$json" ]] || return 1
+  value="$(RODIT_JSON="$json" RODIT_FIELD="$field" python3 - <<'PY'
+import json, os, sys
+try:
+    data = json.loads(os.environ["RODIT_JSON"])
+    value = data.get(os.environ["RODIT_FIELD"], "")
+    if value is None:
+        sys.exit(1)
+    text = str(value).strip()
+    if not text:
+        sys.exit(1)
+    print(text)
+except Exception:
+    sys.exit(1)
+PY
+)" || return 1
+  echo "$value"
+}
+
+rodit_passport_webhook_url() {
+  rodit_passport_json_field "$1" "webhook_url"
+}
+
+rodit_passport_webhook_host() {
+  rodit_passport_json_field "$1" "host"
+}
+
+rodit_passport_webhook_port() {
+  rodit_passport_json_field "$1" "port"
 }
 
 agent_a2a_inbound_auth_mode() {
@@ -643,19 +738,37 @@ print(cfg.get('gateway', {}).get('auth', {}).get('token', ''))
 }
 
 agent_public_host() {
+  local id="$1"
+  local host="" config_dir passport_host
   load_env
-  case "$1" in
-    agent-a) echo "$AGENT_A_PUBLIC_HOST" ;;
-    agent-b) echo "$AGENT_B_PUBLIC_HOST" ;;
-    agent-c) echo "$AGENT_C_PUBLIC_HOST" ;;
-    *) echo "" ;;
+  case "$id" in
+    agent-a) host="${AGENT_A_PUBLIC_HOST:-}" ;;
+    agent-b) host="${AGENT_B_PUBLIC_HOST:-}" ;;
+    agent-c) host="${AGENT_C_PUBLIC_HOST:-}" ;;
+    *) echo ""; return 0 ;;
   esac
+  if [[ -n "$host" ]]; then
+    echo "$host"
+    return 0
+  fi
+  if rodit_self_configure_enabled; then
+    config_dir="$(agent_home "$id")"
+    if agent_has_near_credentials "$config_dir"; then
+      passport_host="$(rodit_passport_webhook_host "$config_dir" 2>/dev/null || true)"
+      if [[ -n "$passport_host" ]]; then
+        echo "$passport_host"
+        return 0
+      fi
+    fi
+  fi
+  echo ""
 }
 
 agent_ingress_port() {
+  local id="$1"
   load_env
-  local explicit=""
-  case "$1" in
+  local explicit="" config_dir passport_port
+  case "$id" in
     agent-a) explicit="${AGENT_A_INGRESS_PORT:-}" ;;
     agent-b) explicit="${AGENT_B_INGRESS_PORT:-}" ;;
     agent-c) explicit="${AGENT_C_INGRESS_PORT:-}" ;;
@@ -663,9 +776,19 @@ agent_ingress_port() {
   esac
   if [[ -n "$explicit" ]]; then
     echo "$explicit"
-  else
-    echo "${IDENTYCLAW_INGRESS_PORT}"
+    return 0
   fi
+  if rodit_self_configure_enabled; then
+    config_dir="$(agent_home "$id")"
+    if agent_has_near_credentials "$config_dir"; then
+      passport_port="$(rodit_passport_webhook_port "$config_dir" 2>/dev/null || true)"
+      if [[ -n "$passport_port" ]]; then
+        echo "$passport_port"
+        return 0
+      fi
+    fi
+  fi
+  echo "${IDENTYCLAW_INGRESS_PORT}"
 }
 
 agent_public_base_url() {
@@ -691,8 +814,7 @@ agent_container_ingress_base_url() {
   host="$(agent_public_host "$id")"
   [[ -n "$host" ]] || return 0
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-    tier="$(resolve_deploy_tier "${IDENTYCLAW_ROOT:-}")"
-    port="$(deploy_tier_app_port "$tier" 2>/dev/null || echo 4443)"
+    port="$(agent_ingress_port "$id")"
     echo "https://${host}:${port}"
     return 0
   fi
@@ -975,7 +1097,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|upgrade-plugins|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1427,8 +1549,9 @@ EOF
 | \`a2a_send_message\` | Send message/files to a peer; returns \`context_id\` / \`task_id\` |
 | \`a2a_get_task\` | Poll long-running peer tasks |
 | \`a2a_update_agent_card\` | Update this agent’s public Agent Card |
+| \`send_rodit_webhook\` | After a delay (default 10s), sign and POST \`/hooks/wake\` to a peer from \`outbound.agents\` |
 
-Prefer A2A for ongoing work with known peers (agent-a ↔ agent-b). Use IdentyClaw HOLA when verifying identity of an unknown sender or proving your Passport to a human-facing channel.
+Prefer A2A for ongoing work with known peers (agent-a ↔ agent-b). Use \`send_rodit_webhook\` to wake a peer via RODiT-signed webhook (not A2A). Use IdentyClaw HOLA when verifying identity of an unknown sender or proving your Passport to a human-facing channel.
 EOF
   else
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<'EOF'
@@ -1827,6 +1950,8 @@ build_local_rodit_webhooks_plugin() {
     npm install >&2
     npm run build >&2
   ) || return 1
+  # node_modules is not installed in-container (deps symlink from a2a); omit to avoid podman cp symlink errors.
+  rm -rf "$build_dir/node_modules"
   [[ -f "$build_dir/dist/index.js" ]] || {
     echo "    (rodit-webhooks: build failed — dist/index.js missing)" >&2
     return 1
@@ -1890,6 +2015,11 @@ for key, value in desired.items():
     if cfg.get(key) != value:
         cfg[key] = value
         changed = True
+
+allow = data.setdefault("tools", {}).setdefault("allow", [])
+if "send_rodit_webhook" not in allow:
+    allow.append("send_rodit_webhook")
+    changed = True
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
