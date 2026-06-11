@@ -503,6 +503,36 @@ agent_internal_gateway_port() {
   fi
 }
 
+# Pod agents chown state to the container uid; read the live gateway token from openclaw.json.
+agent_gateway_token() {
+  local id="$1"
+  local config_dir config container
+  config_dir="$(agent_home "$id")"
+  config="${config_dir}/openclaw.json"
+  if [[ -r "$config" ]]; then
+    python3 - "$config" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    cfg = json.load(f)
+print(cfg.get("gateway", {}).get("auth", {}).get("token", ""))
+PY
+    return 0
+  fi
+  container="$(agent_container "$id")"
+  if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec "$container" python3 -c "
+import json
+with open('/home/node/.openclaw/openclaw.json', encoding='utf-8') as f:
+    cfg = json.load(f)
+print(cfg.get('gateway', {}).get('auth', {}).get('token', ''))
+"
+    return 0
+  fi
+  if [[ -r "${config_dir}/.env" ]]; then
+    grep '^OPENCLAW_GATEWAY_TOKEN=' "${config_dir}/.env" | cut -d= -f2-
+  fi
+}
+
 agent_public_host() {
   load_env
   case "$1" in

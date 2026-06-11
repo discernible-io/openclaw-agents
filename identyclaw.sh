@@ -501,9 +501,7 @@ cmd_test_webhook() {
 
 cmd_token() {
   local id="${1:?Usage: $0 token agent-a|agent-b|agent-c}"
-  local env_file
-  env_file="$(agent_home "$id")/.env"
-  grep '^OPENCLAW_GATEWAY_TOKEN=' "$env_file" | cut -d= -f2-
+  agent_gateway_token "$id"
 }
 
 require_agent_running() {
@@ -536,18 +534,26 @@ cmd_chat() {
   require_podman
   require_agent_running "$id"
   load_env
-  local display ui_base
+  local display ui_base container gw_port token
   display="$(agent_display_name "$id")"
   ui_base="$(agent_ui_base_url "$id")"
+  container="$(agent_container "$id")"
+  gw_port="$(agent_internal_gateway_port "$id")"
+  token="$(agent_gateway_token "$id")"
+  [[ -n "$token" ]] || { echo "Missing OPENCLAW_GATEWAY_TOKEN for ${id}" >&2; exit 1; }
   printf '\033]0;%s (%s) — identyclaw chat\007' "$display" "$id"
   echo "=== ${display} · ${id} · ${ui_base}/ · session main ==="
   echo ""
-  # Suppress @rodit/rodit-auth-be JSON logs when chat loads the A2A plugin.
+  # Connect to the running gateway (not tui --local) — same session as Control UI, no second runtime.
   podman exec -it \
     -e LOG_LEVEL=error \
     -e SUPPRESS_NO_CONFIG_WARNING=true \
     -e SUPPRESS_STRICTNESS_CHECK=true \
-    "$(agent_container "$id")" node dist/index.js chat "$@"
+    "$container" node dist/index.js tui \
+    --url "ws://127.0.0.1:${gw_port}" \
+    --token "$token" \
+    --session main \
+    "$@"
 }
 
 cmd_ask() {
