@@ -15,7 +15,11 @@
  *     [--skip-inbound] [--require-inbound]
  */
 import { resolve } from "node:path";
-import { runInboundWebhookFromPeer, runOutboundWebhookToPeer } from "./lib-rodit-webhook-test.mjs";
+import {
+  runInboundWebhookFromLivePeer,
+  runInboundWebhookFromPeer,
+  runOutboundWebhookToPeer,
+} from "./lib-rodit-webhook-test.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -33,6 +37,7 @@ const peerBase = (arg("--peer-base", arg("--receiver-base", "")) || "").replace(
 const hookPath = arg("--path", "hooks/wake").replace(/^\/+/, "");
 const skipInbound = process.argv.includes("--skip-inbound");
 const requireInbound = process.argv.includes("--require-inbound");
+const simulateInbound = process.argv.includes("--simulate-inbound");
 
 if (!localCredsPath || !peerBase || !peerId) {
   process.stderr.write(
@@ -92,10 +97,8 @@ process.stdout.write("\n--- Inbound: we receive webhooks from peer ---\n");
 if (skipInbound) {
   process.stdout.write("SKIP  inbound section — --skip-inbound\n");
   tally("skip");
-} else if (!peerCredsPath || !localBase) {
-  const why = !peerCredsPath
-    ? "no --peer-creds (peer NEAR key for send_rodit_webhook on peer side)"
-    : "no --local-base (our ingress URL for receipt check)";
+} else if (!localBase) {
+  const why = "no --local-base (our ingress URL for receipt check)";
   process.stdout.write(`SKIP  inbound section — ${why}\n`);
   if (requireInbound) {
     record("inbound: peer sent send_rodit_webhook to us", false, why);
@@ -106,17 +109,28 @@ if (skipInbound) {
   }
 } else {
   try {
-    const inbound = await runInboundWebhookFromPeer({
-      configPath,
-      pluginDir,
-      localId,
-      peerId,
-      peerCredsPath,
-      localBase,
-      hookPath,
-      delaySeconds: 0,
-    });
-    process.stdout.write(`    POST ${inbound.hookUrl}\n`);
+    const inbound =
+      simulateInbound && peerCredsPath
+        ? await runInboundWebhookFromPeer({
+            configPath,
+            pluginDir,
+            localId,
+            peerId,
+            peerCredsPath,
+            localBase,
+            hookPath,
+            delaySeconds: 0,
+          })
+        : await runInboundWebhookFromLivePeer({
+            localId,
+            peerId,
+            peerBase,
+            localBase,
+            localCredsPath,
+            hookPath,
+            delaySeconds: 0,
+          });
+    process.stdout.write(`    expect POST ${inbound.hookUrl || localBase + "/" + hookPath}\n`);
     let ok = record("inbound: peer sent send_rodit_webhook to us", inbound.peerDeliveredOk, inbound.peerDeliveredDetail);
     ok = record("inbound: we recorded peer webhook", inbound.weReceivedOk, inbound.weReceivedDetail) && ok;
     tally(ok);

@@ -198,9 +198,132 @@ export async function runOutboundWebhookToPeer(opts) {
   };
 }
 
+function applyNearEnvFromCreds(credsPath, openclawHome = "/home/node/.openclaw") {
+  process.env.NEAR_CREDENTIALS_FILE_PATH = credsPath;
+  const creds = loadNearCreds(credsPath);
+  process.env.IDENTYCLAW_ACCOUNT_ID = creds.accountId;
+  process.env.IDENTYCLAW_NEAR_PRIVATE_KEY = creds.privateKey;
+  process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
+  process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
+  process.env.SUPPRESS_STRICTNESS_CHECK = "true";
+  process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
+  process.env.NEAR_CONTRACT_ID =
+    process.env.NEAR_CONTRACT_ID || process.env.IDENTYCLAW_NEAR_CONTRACT_ID || "genaaaa-identyclaw-com.near";
+  process.env.IDENTYCLAW_BASE_URL = process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
+  process.env.OPENCLAW_HOME = openclawHome;
+}
+
+/** P2P login_server against a live peer gateway (JWT for POST /a2a). */
+export async function acquireP2pJwtForPeer(peerBase, openclawHome = "/home/node/.openclaw") {
+  const ext = join(openclawHome, "extensions/a2a");
+  const { defaultRoditPeerLogin } = await import(
+    pathToFileURL(join(ext, "dist/auth/rodit-peer-login.js")).href
+  );
+  return defaultRoditPeerLogin(peerBase.replace(/\/+$/, ""), { logLevel: "error" });
+}
+
+/** Ask a live peer agent (via A2A message/send) to run send_rodit_webhook toward us. */
+export async function requestLivePeerSendRoditWebhook(opts) {
+  const {
+    peerBase,
+    jwt,
+    localOutboundPeerId,
+    marker,
+    delaySeconds = 0,
+    hookPath = "hooks/wake",
+  } = opts;
+  const a2aUrl = `${peerBase.replace(/\/+$/, "")}/a2a`;
+  const msgId = `live-inbound-${Date.now()}`;
+  const instruction =
+    `IDENTYCLAW_SMOKE inbound webhook test. Call tool send_rodit_webhook exactly once with: ` +
+    `peerId="${localOutboundPeerId}", text="${marker}", delaySeconds=${delaySeconds}, hookPath="${hookPath}". ` +
+    `Use the exact text value as the webhook event. Reply with the tool result JSON.`;
+  const { status, json, text } = await fetchJson(a2aUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${jwt}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: msgId,
+      method: "message/send",
+      params: {
+        message: {
+          role: "user",
+          parts: [{ kind: "text", text: instruction }],
+          messageId: msgId,
+        },
+      },
+    }),
+  });
+  if (status < 200 || status >= 300) {
+    throw new Error(`A2A message/send to live peer failed: HTTP ${status} ${String(text).slice(0, 300)}`);
+  }
+  return { a2aUrl, msgId, status, json, marker };
+}
+
 /**
- * Inbound: peer sends send_rodit_webhook → verify we received (local /hooks/_receipts).
- * Uses peer NEAR creds; optional outboundPeerOverride when peer config is not available locally.
+ * Inbound via live peer: P2P login → A2A message/send → peer signs send_rodit_webhook at origin.
+ * Receiver validates via rodit-auth-be (P2P session); no peer NEAR file on this host.
+ */
+export async function runInboundWebhookFromLivePeer(opts) {
+  const {
+    localId,
+    peerId,
+    peerBase,
+    localBase,
+    localCredsPath,
+    openclawHome = "/home/node/.openclaw",
+    hookPath = "hooks/wake",
+    markerPrefix = "live-inbound",
+    delaySeconds = 0,
+    pollIntervalMs = 2000,
+    pollTimeoutMs = 120000,
+  } = opts;
+
+  if (!localId || !peerBase || !localBase || !localCredsPath) {
+    throw new Error("localId, peerBase, localBase, localCredsPath are required");
+  }
+
+  applyNearEnvFromCreds(localCredsPath, openclawHome);
+  const marker = `${markerPrefix}-${peerId || "peer"}-to-${localId}-${Date.now()}`;
+  await clearReceipts(localBase);
+
+  const jwt = await acquireP2pJwtForPeer(peerBase, openclawHome);
+  const a2a = await requestLivePeerSendRoditWebhook({
+    peerBase,
+    jwt,
+    localOutboundPeerId: localId,
+    marker,
+    delaySeconds,
+    hookPath,
+  });
+
+  const deadline = Date.now() + pollTimeoutMs;
+  let receipt = { receiptOk: false, receiptDetail: "timeout waiting for inbound webhook" };
+  while (Date.now() < deadline) {
+    receipt = await verifyWebhookReceipt(localBase, { marker, hookPath });
+    if (receipt.receiptOk) break;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  return {
+    direction: "inbound-live",
+    marker,
+    hookUrl: `${localBase.replace(/\/+$/, "")}/${hookPath.replace(/^\/+/, "")}`,
+    a2aStatus: a2a.status,
+    peerDeliveredOk: a2a.status >= 200 && a2a.status < 300,
+    weReceivedOk: receipt.receiptOk,
+    peerDeliveredDetail: `live peer A2A message/send HTTP ${a2a.status} (peer send_rodit_webhook at origin)`,
+    weReceivedDetail: receipt.receiptDetail,
+    a2aResponse: a2a.json,
+  };
+}
+
+/**
+ * Inbound: simulate peer sending send_rodit_webhook → verify we received (local /hooks/_receipts).
+ * Offline harness only: signs with peer NEAR creds from disk. Prefer runInboundWebhookFromLivePeer.
  */
 export async function runInboundWebhookFromPeer(opts) {
   const {

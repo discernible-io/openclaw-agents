@@ -20,7 +20,7 @@ const peerBase = (
         ? (process.argv[3] || "https://agent-b.dihola.io:4443")
         : (process.argv[2] || "https://agent-b.dihola.io:4443")
 ).replace(/\/$/, "");
-const a2aUrl = (isFlagMode ? process.argv[4] : process.argv[3]) || `${peerBase}/a2a`;
+let a2aUrl = (isFlagMode ? process.argv[4] : process.argv[3]) || `${peerBase}/a2a`;
 
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
 process.env.SUPPRESS_NO_CONFIG_WARNING = "true";

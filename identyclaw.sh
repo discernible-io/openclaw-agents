@@ -20,6 +20,7 @@
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
 #   test-webhook <id>    Smoke-test webhook ingress (expect 400/401 without RODiT x-signature)
+#                        Skips /api/testhola by default (SKIP_TESTHOLA=1); needs valid HOLA when enabled
 #   test-webhook-p2p <from> <to>  P2P webhook: from signs at origin, to verifies (optional bidirectional)
 #   send-rodit-webhook <id> <peer> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
@@ -514,6 +515,13 @@ cmd_test_webhook() {
     fi
   fi
 
+  # /api/testhola requires a valid HOLA in the request; smoke script does not send one yet.
+  if [[ "${SKIP_TESTHOLA:-1}" == 1 ]]; then
+    echo ""
+    echo "==> Skip /api/testhola webhook delivery (SKIP_TESTHOLA=1 — needs valid HOLA; set SKIP_TESTHOLA=0 to run)"
+    return 0
+  fi
+
   echo ""
   echo "==> /api/testhola webhook delivery (IdentyClaw API → agent webhook_url)"
   echo "    Same pattern as clienttest-idc: valid HOLA triggers signed webhooks to /hooks/wake and /hooks/agent"
@@ -612,13 +620,11 @@ cmd_test_webhook_p2p() {
 
   if [[ "$reverse_via_container" -eq 1 ]]; then
     exec_args+=(--skip-inbound)
-  elif [[ -n "$peer_creds" && -n "$local_base" ]]; then
+  elif [[ -n "$peer_creds" && "${WEBHOOK_P2P_SIMULATE_INBOUND:-}" == 1 ]]; then
     podman cp "$peer_creds" "$sender_container:/tmp/peer-inbound-creds.json" >/dev/null
-    exec_args+=(--peer-creds /tmp/peer-inbound-creds.json)
+    exec_args+=(--simulate-inbound --peer-creds /tmp/peer-inbound-creds.json)
   else
-    echo "    Inbound needs peer NEAR creds at:"
-    echo "    $(identyclaw_app_dir)/secrets/peer-credentials/${receiver}/*.json"
-    echo "    Or run the ${receiver} container locally (inbound via peer send_rodit_webhook)."
+    echo "    Inbound: live peer at ${receiver_base} via A2A message/send (P2P login → send_rodit_webhook at origin)"
   fi
 
   local exit_code=0

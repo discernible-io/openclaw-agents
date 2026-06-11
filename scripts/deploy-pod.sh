@@ -198,6 +198,11 @@ pod_create_args=(--name "$POD_NAME")
 for p in "${pod_publish_ports[@]}"; do
   pod_create_args+=(-p "${p}:${p}")
 done
+for id in $AGENT_IDS; do
+  while IFS= read -r host_arg; do
+    [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
+  done < <(pod_agent_ingress_host_args "$id")
+done
 podman pod create "${pod_create_args[@]}"
 
 for id in $AGENT_IDS; do

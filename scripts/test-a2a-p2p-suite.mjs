@@ -21,6 +21,7 @@ import { join, resolve } from "node:path";
 import {
     fetchJson,
     loadNearCreds,
+    runInboundWebhookFromLivePeer,
     runInboundWebhookFromPeer,
     runOutboundWebhookToPeer,
 } from "./lib-rodit-webhook-test.mjs";
@@ -40,6 +41,7 @@ const localId = arg("--local-id", "");
 const configPath = resolve(arg("--config", process.env.OPENCLAW_CONFIG || "/home/node/.openclaw/openclaw.json"));
 const pluginDir = resolve(arg("--plugin-dir", "/home/node/.openclaw/extensions/rodit-webhooks/dist"));
 const skipWebhooks = process.argv.includes("--skip-webhooks");
+const simulateInbound = process.argv.includes("--simulate-inbound");
 
 if (!extDir || !credPath || !localBase) {
     process.stderr.write(
@@ -299,18 +301,29 @@ async function runWebhookSection() {
 
         process.stdout.write("\n  Inbound: we receive webhooks from peer\n");
 
-        if (peerCredsPath && localId) {
+        if (localId) {
             try {
-                const inbound = await runInboundWebhookFromPeer({
-                    configPath,
-                    pluginDir,
-                    localId,
-                    peerId,
-                    peerCredsPath,
-                    localBase,
-                    markerPrefix: "a2a-suite-inbound",
-                    delaySeconds: 0,
-                });
+                const inbound =
+                    simulateInbound && peerCredsPath
+                        ? await runInboundWebhookFromPeer({
+                              configPath,
+                              pluginDir,
+                              localId,
+                              peerId,
+                              peerCredsPath,
+                              localBase,
+                              markerPrefix: "a2a-suite-inbound",
+                              delaySeconds: 0,
+                          })
+                        : await runInboundWebhookFromLivePeer({
+                              localId,
+                              peerId,
+                              peerBase,
+                              localBase,
+                              localCredsPath: credPath,
+                              markerPrefix: "a2a-suite-inbound",
+                              delaySeconds: 0,
+                          });
                 record(
                     "webhook",
                     "inbound: peer sent send_rodit_webhook to us",
@@ -323,13 +336,7 @@ async function runWebhookSection() {
                 record("webhook", "inbound: we recorded peer webhook", false, "skipped after send failure");
             }
         } else {
-            recordSkip(
-                "webhook",
-                "inbound: peer sent send_rodit_webhook to us",
-                peerCredsPath
-                    ? "no --local-id"
-                    : "no --peer-creds (place at secrets/peer-credentials/<peer>/*.json)",
-            );
+            recordSkip("webhook", "inbound: peer sent send_rodit_webhook to us", "no --local-id");
             recordSkip("webhook", "inbound: we recorded peer webhook", "inbound not run");
         }
     } else {

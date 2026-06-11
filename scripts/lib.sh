@@ -101,6 +101,9 @@ ensure_tls_certs() {
   if [[ -n "$dev_a2a_host" && "$dev_a2a_host" != "$AGENT_A_PUBLIC_HOST" ]]; then
     extra_sans="${extra_sans},DNS:${dev_a2a_host}"
   fi
+  if [[ -n "${AGENT_B_INGRESS_ALT_HOST:-}" ]]; then
+    extra_sans="${extra_sans},DNS:${AGENT_B_INGRESS_ALT_HOST}"
+  fi
   case "$force" in
     --force|1|true) args+=(--force) ;;
   esac
@@ -809,6 +812,16 @@ agent_public_base_url() {
 # HTTPS ingress base for A2A + OpenClaw webhooks (pod mode). Same as agent_public_base_url.
 agent_ingress_base_url() {
   agent_public_base_url "$1"
+}
+
+# Pod agents resolve their public ingress host to loopback so self-tests hit nginx in-pod
+# (container DNS may differ from the host; e.g. webhook.discernible.io:7443).
+pod_agent_ingress_host_args() {
+  local id="$1" host
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  host="$(agent_public_host "$id")"
+  [[ -n "$host" ]] && printf '%s\n' "--add-host=${host}:127.0.0.1"
 }
 
 # HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 4443).
