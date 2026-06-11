@@ -470,6 +470,27 @@ near_credentials_container_path() {
   echo "/home/node/.openclaw/secrets/near-credentials/${account_id}.json"
 }
 
+# Optional peer NEAR creds for cross-host P2P webhook tests (private key signs, remote agent verifies).
+# Layout: ${IDENTYCLAW_APP_DIR}/secrets/peer-credentials/<peer-id>/*.json
+peer_near_credentials_path() {
+  local peer_id="$1"
+  local dir cred
+  load_env
+  dir="$(identyclaw_app_dir)/secrets/peer-credentials/${peer_id}"
+  cred="$(find "$dir" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1 || true)"
+  if [[ -n "$cred" ]]; then
+    printf '%s' "$cred"
+  fi
+  return 0
+}
+
+agent_near_credentials_in_container() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true
+}
+
 # Resolve NEAR passport JSON: prefer app secrets, then agent near-credentials (by implicit account id).
 resolve_near_credentials_file() {
   local config_dir="$1"
@@ -954,7 +975,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|upgrade-plugins|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|upgrade-plugins|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }

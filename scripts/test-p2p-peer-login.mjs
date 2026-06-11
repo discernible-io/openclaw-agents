@@ -14,12 +14,13 @@ import { join } from "node:path";
 import https from "node:https";
 
 const mode = process.argv[2];
+const isFlagMode = mode === "--auto" || mode === "--mediated";
 const peerBase = (
-    mode === "--auto" || mode === "--mediated"
-        ? "https://agent-b.dihola.io:4443"
-        : process.argv[2] || "https://agent-b.dihola.io:4443"
+    isFlagMode
+        ? (process.argv[3] || "https://agent-b.dihola.io:4443")
+        : (process.argv[2] || "https://agent-b.dihola.io:4443")
 ).replace(/\/$/, "");
-const a2aUrl = process.argv[3] || `${peerBase}/a2a`;
+const a2aUrl = (isFlagMode ? process.argv[4] : process.argv[3]) || `${peerBase}/a2a`;
 
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
 process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
@@ -84,17 +85,23 @@ if (mode === "--mediated") {
         { ...outboundCfg.auth, mode: "auto" },
         outboundCfg.agents,
     );
-    const peer = outboundCfg.agents?.["agent-b"] || outboundCfg.agents?.[Object.keys(outboundCfg.agents || {})[0]];
+    const peerId = Object.keys(outboundCfg.agents || {})[0];
+    const peer = peerId ? outboundCfg.agents?.[peerId] : undefined;
     if (!peer?.url) {
         console.error("No outbound peer configured in openclaw.json");
         process.exit(2);
     }
+    const peerBaseFromCard = peer.url.replace(/\/\.well-known\/agent-card\.json$/, "");
+    if (!isFlagMode || process.argv[3] === undefined) {
+        a2aUrl = `${peerBaseFromCard}/a2a`;
+    }
     const hdr = await auto.getAuthorizationHeader({
-        agentId: "agent-b",
+        agentId: peerId,
         agentCardUrl: peer.url,
     });
     p2pJwt = hdr.replace(/^Bearer /, "");
     console.log("Auto JWT acquired, len=" + p2pJwt.length);
+    console.log("Auto peer:", peerId, "→", a2aUrl);
 } else {
     console.log("==> P2P login_server →", peerBase + "/api/login");
     try {

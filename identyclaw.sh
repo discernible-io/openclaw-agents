@@ -20,6 +20,7 @@
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
 #   test-webhook <id>    Smoke-test webhook ingress (expect 400/401 without RODiT x-signature)
+#   test-webhook-p2p <from> <to>  P2P webhook: from signs at origin, to verifies (optional bidirectional)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
@@ -500,6 +501,58 @@ cmd_test_webhook() {
   fi
 }
 
+cmd_test_webhook_p2p() {
+  local sender="${1:?Usage: $0 test-webhook-p2p agent-b agent-a}"
+  local receiver="${2:?Usage: $0 test-webhook-p2p agent-b agent-a}"
+  require_podman
+  load_env
+  require_agent_running "$sender"
+
+  local sender_container sender_creds receiver_base local_base peer_creds ext_dir
+  sender_container="$(agent_container "$sender")"
+  receiver_base="$(agent_a2a_public_base_url "$receiver")"
+  [[ -n "$receiver_base" ]] || receiver_base="$(agent_ingress_base_url "$receiver")"
+  local_base="$(agent_a2a_public_base_url "$sender")"
+  [[ -n "$local_base" ]] || local_base="$(agent_ingress_base_url "$sender")"
+  [[ -n "$receiver_base" ]] || {
+    echo "No ingress URL for ${receiver} — set AGENT_*_A2A_PUBLIC_BASE_URL or AGENT_*_PUBLIC_HOST in env.local" >&2
+    exit 1
+  }
+
+  sender_creds="$(agent_near_credentials_in_container "$sender")"
+  [[ -n "$sender_creds" ]] || {
+    echo "No NEAR credentials in ${sender} container (secrets/near-credentials/*.json)" >&2
+    exit 1
+  }
+
+  peer_creds="$(peer_near_credentials_path "$receiver")"
+  ext_dir="/home/node/.openclaw/extensions/a2a"
+  podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-p2p-suite.mjs" "$sender_container:/tmp/test-webhooks-p2p-suite.mjs" >/dev/null
+
+  local -a exec_args=(
+    node /tmp/test-webhooks-p2p-suite.mjs
+    --ext-dir "$ext_dir"
+    --sender "$sender"
+    --receiver "$receiver"
+    --signer-creds "$sender_creds"
+    --receiver-base "$receiver_base"
+    --path hooks/wake
+  )
+
+  if [[ -n "$peer_creds" && -n "$local_base" ]]; then
+    echo "==> Bidirectional P2P webhook test (${sender} ↔ ${receiver})"
+    echo "    peer creds for reply: ${peer_creds}"
+    podman cp "$peer_creds" "$sender_container:/tmp/peer-reverse-creds.json" >/dev/null
+    exec_args+=(--reverse-signer-creds /tmp/peer-reverse-creds.json --reverse-receiver-base "$local_base")
+  else
+    echo "==> P2P webhook test (${sender} → ${receiver})"
+    echo "    For ${receiver} → ${sender} reply, add peer NEAR creds at:"
+    echo "    $(identyclaw_app_dir)/secrets/peer-credentials/${receiver}/*.json"
+  fi
+
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" "${exec_args[@]}"
+}
+
 cmd_token() {
   local id="${1:?Usage: $0 token agent-a|agent-b|agent-c}"
   agent_gateway_token "$id"
@@ -730,6 +783,7 @@ main() {
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-webhook) cmd_test_webhook "$@" ;;
+    test-webhook-p2p) cmd_test_webhook_p2p "$@" ;;
     webhook-url) cmd_webhook_url "$@" ;;
     token) cmd_token "$@" ;;
     chat) cmd_chat "$@" ;;

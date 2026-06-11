@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * P2P webhook test: peer signs at origin, local agent verifies (RODiT x-signature + x-timestamp).
+ * For bidirectional tests with /hooks/_receipts verification, use test-webhooks-p2p-suite.mjs
+ * or: ./identyclaw.sh test-webhook-p2p agent-b agent-a
  *
  * Usage:
  *   node scripts/test-webhooks-p2p.mjs \
