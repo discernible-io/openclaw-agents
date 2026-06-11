@@ -10,6 +10,22 @@ import { readFileSync } from "node:fs";
 // rodit-runtime.ts
 import { createRequire } from "node:module";
 import { dirname as dirname2, join } from "node:path";
+function normalizeWebhookBase(raw) {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (trimmed.includes("://")) return trimmed;
+  return `https://${trimmed}`;
+}
+async function getOwnPassportUrls(logLevel) {
+  const client = await getRoditClient(logLevel);
+  const own = await client.getConfigOwnRodit();
+  const meta = own?.own_rodit?.metadata ?? {};
+  return {
+    webhook_url: normalizeWebhookBase(String(meta.webhook_url || "")),
+    api_base: String(meta.subjectuniqueidentifier_url || "").trim().replace(/\/+$/, ""),
+    owner_id: String(own?.own_rodit?.owner_id || "").trim()
+  };
+}
 var roditClientPromise = null;
 function applyRoditEmbedEnv(logLevel) {
   if (!process.env.LOG_LEVEL) {
@@ -431,6 +447,16 @@ var index_default = definePluginEntry({
       start: async () => {
         try {
           await getRoditClient(logLevel);
+          const passport = await getOwnPassportUrls(logLevel);
+          if (passport.webhook_url) {
+            api.logger.info(`[rodit-webhooks] Passport metadata.webhook_url=${passport.webhook_url}`);
+          }
+          const configured = api.config?.plugins?.entries?.a2a?.config?.inbound?.publicBaseUrl?.replace(/\/+$/, "");
+          if (configured && passport.webhook_url && configured !== passport.webhook_url) {
+            api.logger.warn(
+              `[rodit-webhooks] inbound.publicBaseUrl (${configured}) differs from Passport webhook_url (${passport.webhook_url})`
+            );
+          }
           api.logger.info("[rodit-webhooks] RODiT passport warmed up for webhook verification");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

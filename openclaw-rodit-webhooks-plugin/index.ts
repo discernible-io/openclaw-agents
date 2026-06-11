@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendRoditWebhook } from "./send-rodit-webhook.js";
-import { getRoditAuth, getRoditClient } from "./rodit-runtime.js";
+import { getOwnPassportUrls, getRoditAuth, getRoditClient } from "./rodit-runtime.js";
 
 type RoditStateManager = {
   getOwnBase64urlJwkPublicKey: () => string | null | undefined;
@@ -369,6 +369,18 @@ export default definePluginEntry({
       start: async () => {
         try {
           await getRoditClient(logLevel);
+          const passport = await getOwnPassportUrls(logLevel);
+          if (passport.webhook_url) {
+            api.logger.info(`[rodit-webhooks] Passport metadata.webhook_url=${passport.webhook_url}`);
+          }
+          const configured = (
+            api.config?.plugins?.entries?.a2a?.config as { inbound?: { publicBaseUrl?: string } } | undefined
+          )?.inbound?.publicBaseUrl?.replace(/\/+$/, "");
+          if (configured && passport.webhook_url && configured !== passport.webhook_url) {
+            api.logger.warn(
+              `[rodit-webhooks] inbound.publicBaseUrl (${configured}) differs from Passport webhook_url (${passport.webhook_url})`,
+            );
+          }
           api.logger.info("[rodit-webhooks] RODiT passport warmed up for webhook verification");
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
