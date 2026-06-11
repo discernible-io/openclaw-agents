@@ -96,6 +96,11 @@ ensure_tls_certs() {
   load_env
   cert_dir="$(identyclaw_app_dir)/certs"
   extra_sans="DNS:${AGENT_B_PUBLIC_HOST},DNS:${AGENT_C_PUBLIC_HOST}"
+  local dev_a2a_host
+  dev_a2a_host="$(deploy_tier_health_domain development 2>/dev/null || true)"
+  if [[ -n "$dev_a2a_host" && "$dev_a2a_host" != "$AGENT_A_PUBLIC_HOST" ]]; then
+    extra_sans="${extra_sans},DNS:${dev_a2a_host}"
+  fi
   case "$force" in
     --force|1|true) args+=(--force) ;;
   esac
