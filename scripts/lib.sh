@@ -2159,7 +2159,7 @@ openclaw_agent_exec() {
     return $?
   fi
 
-  podman run --rm \
+  podman run --rm --userns=keep-id \
     -e HOME=/home/node \
     -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
     -v "${config_dir}:/home/node/.openclaw:rw${z}" \
@@ -2199,9 +2199,19 @@ install_identyclaw_plugin() {
 
   echo "    (installing IdentyClaw plugin from ${plugin_spec}…)" >&2
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
-  openclaw_agent_exec "$config_dir" "$container" plugins install "$plugin_spec" >&2 || return 1
+  local install_args=()
+  [[ "$force" == "1" ]] && install_args+=(--force)
+  if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
+    local vendored="${IDENTYCLAW_ROOT}/openclaw-identyclaw-plugin"
+    if [[ -f "$vendored/openclaw.plugin.json" && -f "$vendored/dist/index.js" ]]; then
+      echo "    (ClawHub install failed — using vendored ${vendored})" >&2
+      copy_openclaw_plugin_tree "$vendored" "$ext_dir" dist openclaw.plugin.json package.json
+    else
+      return 1
+    fi
+  fi
   [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]] || {
-    echo "    (identyclaw-tools: ClawHub install finished but extension tree is missing)" >&2
+    echo "    (identyclaw-tools: install finished but extension tree is missing)" >&2
     return 1
   }
 
@@ -2279,6 +2289,11 @@ upgrade_agent_plugins() {
     echo "A2A plugin build failed for ${id}" >&2
     return 1
   }
+
+  # ClawHub identyclaw-tools install scans manifest deps (e.g. @rodit/hola-client via a2a).
+  if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    copy_openclaw_plugin_tree "$a2a_build" "$config_dir/extensions/a2a" dist openclaw.plugin.json package.json node_modules
+  fi
 
   echo "    (IdentyClaw: ${IDENTYCLAW_CLAWHUB_PLUGIN})"
   install_identyclaw_plugin "$config_dir" 1 "$id" || {
