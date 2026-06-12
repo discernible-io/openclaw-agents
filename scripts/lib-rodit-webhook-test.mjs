@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_CONFIG = "/home/node/.openclaw/openclaw.json";
-const DEFAULT_PLUGIN_DIR = "/home/node/.openclaw/extensions/rodit-webhooks/dist";
+const DEFAULT_PLUGIN_DIR = "/home/node/.openclaw/extensions/identyclaw-webhooks/dist";
 
 export function loadNearCreds(path) {
   const data = JSON.parse(readFileSync(path, "utf8"));

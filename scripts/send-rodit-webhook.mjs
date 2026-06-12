@@ -36,7 +36,7 @@ if (credsPath) {
   process.env.NEAR_CREDENTIALS_FILE_PATH = credsPath;
 }
 
-const pluginDir = resolve(arg("--plugin-dir", "/home/node/.openclaw/extensions/rodit-webhooks/dist"));
+const pluginDir = resolve(arg("--plugin-dir", "/home/node/.openclaw/extensions/identyclaw-webhooks/dist"));
 const { sendRoditWebhook } = await import(pathToFileURL(join(pluginDir, "send-rodit-webhook.js")).href);
 
 const config = JSON.parse(readFileSync(configPath, "utf8"));

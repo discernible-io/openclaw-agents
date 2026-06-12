@@ -27,10 +27,6 @@ node_modules/
 **/dist/
 !openclaw-identyclaw-plugin/dist/
 !openclaw-identyclaw-plugin/dist/**
-!openclaw-rodit-webhooks-plugin/index.ts
-!openclaw-rodit-webhooks-plugin/dist/
-!openclaw-rodit-webhooks-plugin/dist/**
-
 # --- Migration / backup archives ---
 *.tgz
 *.tar.gz

@@ -39,7 +39,7 @@ const peerCredsPath = arg("--peer-creds", "") ? resolve(arg("--peer-creds", ""))
 const peerId = arg("--peer-id", "");
 const localId = arg("--local-id", "");
 const configPath = resolve(arg("--config", process.env.OPENCLAW_CONFIG || "/home/node/.openclaw/openclaw.json"));
-const pluginDir = resolve(arg("--plugin-dir", "/home/node/.openclaw/extensions/rodit-webhooks/dist"));
+const pluginDir = resolve(arg("--plugin-dir", "/home/node/.openclaw/extensions/identyclaw-webhooks/dist"));
 const skipWebhooks = process.argv.includes("--skip-webhooks");
 const simulateInbound = process.argv.includes("--simulate-inbound");
 

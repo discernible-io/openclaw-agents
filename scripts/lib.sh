@@ -187,6 +187,7 @@ load_env() {
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-agent-a agent-b}"
   A2A_PLUGIN_REPO="${A2A_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-a2a-idc-plugin.git}"
   IDENTYCLAW_PLUGIN_REPO="${IDENTYCLAW_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-identyclaw-plugin.git}"
+  IDENTYCLAW_WEBHOOKS_PLUGIN_REPO="${IDENTYCLAW_WEBHOOKS_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin.git}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
@@ -1802,7 +1803,7 @@ ensure_a2a_plugin_build() {
   config_dir="$(agent_home "$id")"
   agent_has_near_credentials "$config_dir" || return 0
   install_a2a_idc_plugin "$config_dir"
-  install_rodit_webhooks_plugin "$config_dir" || true
+  install_identyclaw_webhooks_plugin "$config_dir" || true
   ensure_webhooks_plugin_config "$config_dir"
 }
 
@@ -2047,70 +2048,30 @@ patch_a2a_dual_inbound() {
   bash "$patch" "$inbound"
 }
 
-# Fingerprint repo plugin sources so every agent installs the same build.
-rodit_webhooks_plugin_source_stamp() {
-  local src="${IDENTYCLAW_ROOT}/openclaw-rodit-webhooks-plugin"
-  [[ -f "$src/index.ts" && -f "$src/openclaw.plugin.json" && -f "$src/package.json" ]] || return 1
-  sha256sum "$src/index.ts" "$src/openclaw.plugin.json" "$src/package.json" 2>/dev/null \
-    | sha256sum | awk '{print $1}'
-}
-
-build_local_rodit_webhooks_plugin() {
-  local build_dir="$1"
-  local src="${IDENTYCLAW_ROOT}/openclaw-rodit-webhooks-plugin"
-
-  command -v npm >/dev/null 2>&1 || {
-    echo "    (rodit-webhooks: npm required to build local plugin)" >&2
-    return 1
-  }
-  [[ -f "$src/package.json" && -f "$src/index.ts" ]] || {
-    echo "    (rodit-webhooks: missing source at ${src})" >&2
-    return 1
-  }
-
-  rm -rf "$build_dir"
-  mkdir -p "$build_dir"
-  cp -a "$src/." "$build_dir/"
-  (
-    cd "$build_dir"
-    npm install >&2
-    npm run build >&2
-  ) || return 1
-  # node_modules is not installed in-container (deps symlink from a2a); omit to avoid podman cp symlink errors.
-  rm -rf "$build_dir/node_modules"
-  [[ -f "$build_dir/dist/index.js" ]] || {
-    echo "    (rodit-webhooks: build failed — dist/index.js missing)" >&2
-    return 1
-  }
-}
-
-install_rodit_webhooks_plugin() {
+install_identyclaw_webhooks_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
-  local ext_dir="$config_dir/extensions/rodit-webhooks"
-  local build_dir="$config_dir/.rodit-webhooks-plugin-build"
-  local stamp installed_stamp
+  local ext_dir="$config_dir/extensions/identyclaw-webhooks"
+  local build_dir="$config_dir/.identyclaw-webhooks-plugin-build"
+  load_env
 
   agent_has_near_credentials "$config_dir" || return 0
 
-  stamp="$(rodit_webhooks_plugin_source_stamp 2>/dev/null || true)"
-  installed_stamp=""
-  [[ -f "$ext_dir/.source-stamp" ]] && installed_stamp="$(tr -d '\n' <"$ext_dir/.source-stamp")"
-
-  if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" \
-    && -n "$stamp" && "$stamp" == "$installed_stamp" ]]; then
-    link_rodit_webhooks_plugin_deps "$ext_dir"
+  if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
+    link_identyclaw_webhooks_plugin_deps "$ext_dir"
     return 0
   fi
 
-  echo "    (building RODiT webhooks plugin from ${IDENTYCLAW_ROOT}/openclaw-rodit-webhooks-plugin…)" >&2
-  build_local_rodit_webhooks_plugin "$build_dir" || return 1
+  echo "    (building IdentyClaw webhooks plugin from ${IDENTYCLAW_WEBHOOKS_PLUGIN_REPO}…)" >&2
+  build_git_plugin "$IDENTYCLAW_WEBHOOKS_PLUGIN_REPO" "$build_dir" build || return 1
+  [[ -f "$build_dir/dist/index.js" ]] || {
+    echo "    (identyclaw-webhooks: build failed — dist/index.js missing)" >&2
+    return 1
+  }
+
   copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json
-  if [[ -n "$stamp" ]]; then
-    printf '%s\n' "$stamp" >"$ext_dir/.source-stamp"
-    chmod 600 "$ext_dir/.source-stamp" 2>/dev/null || true
-  fi
-  link_rodit_webhooks_plugin_deps "$ext_dir"
+  rm -rf "$build_dir/node_modules"
+  link_identyclaw_webhooks_plugin_deps "$ext_dir"
 }
 
 ensure_webhooks_plugin_config() {
@@ -2128,7 +2089,17 @@ data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
 plugins = data.setdefault("plugins", {}).setdefault("entries", {})
-entry = plugins.setdefault("rodit-webhooks", {})
+legacy = plugins.pop("rodit-webhooks", None)
+entry = plugins.setdefault("identyclaw-webhooks", {})
+if legacy:
+    if legacy.get("enabled") is True:
+        entry["enabled"] = True
+    legacy_cfg = legacy.get("config") or {}
+    merged_cfg = entry.setdefault("config", {})
+    for key, value in legacy_cfg.items():
+        if key not in merged_cfg:
+            merged_cfg[key] = value
+    changed = True
 if entry.get("enabled") is not True:
     entry["enabled"] = True
     changed = True
@@ -2197,7 +2168,7 @@ install_identyclaw_plugin() {
   copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json node_modules hola-client
 }
 
-link_rodit_webhooks_plugin_deps() {
+link_identyclaw_webhooks_plugin_deps() {
   local target="$1"
   mkdir -p "${target}/node_modules"
   rm -rf "${target}/node_modules/openclaw" "${target}/node_modules/@rodit"
@@ -2207,11 +2178,11 @@ link_rodit_webhooks_plugin_deps() {
   fi
 }
 
-link_rodit_webhooks_plugin_deps_in_container() {
+link_identyclaw_webhooks_plugin_deps_in_container() {
   local container="$1"
   podman exec "$container" bash -c '
     set -euo pipefail
-    ext=/home/node/.openclaw/extensions/rodit-webhooks
+    ext=/home/node/.openclaw/extensions/identyclaw-webhooks
     mkdir -p "$ext/node_modules"
     rm -rf "$ext/node_modules/openclaw" "$ext/node_modules/@rodit"
     ln -sf /app "$ext/node_modules/openclaw"
@@ -2276,9 +2247,13 @@ upgrade_agent_plugins() {
   }
 
   local rw_build
-  rw_build="$(mktemp -d /tmp/openclaw-rodit-webhooks-plugin.XXXXXX)"
-  if ! build_local_rodit_webhooks_plugin "$rw_build"; then
-    echo "    (${id}: RODiT webhooks plugin build skipped — see errors above)" >&2
+  rw_build="$(mktemp -d /tmp/openclaw-identyclaw-webhooks-plugin.XXXXXX)"
+  echo "    (IdentyClaw webhooks: ${IDENTYCLAW_WEBHOOKS_PLUGIN_REPO})"
+  if ! build_git_plugin "$IDENTYCLAW_WEBHOOKS_PLUGIN_REPO" "$rw_build" build; then
+    echo "    (${id}: IdentyClaw webhooks plugin build skipped — see errors above)" >&2
+    rw_build=""
+  elif [[ ! -f "$rw_build/dist/index.js" ]]; then
+    echo "    (${id}: IdentyClaw webhooks plugin build failed — dist/index.js missing)" >&2
     rw_build=""
   fi
 
@@ -2286,12 +2261,8 @@ upgrade_agent_plugins() {
     install_plugin_tree_in_container "$container" a2a "$a2a_build" dist openclaw.plugin.json package.json node_modules
     install_plugin_tree_in_container "$container" identyclaw-tools "$idc_build" dist openclaw.plugin.json package.json node_modules hola-client
     if [[ -n "$rw_build" && -f "$rw_build/dist/index.js" ]]; then
-      install_plugin_tree_in_container "$container" rodit-webhooks "$rw_build" dist openclaw.plugin.json package.json
-      link_rodit_webhooks_plugin_deps_in_container "$container"
-      stamp="$(rodit_webhooks_plugin_source_stamp 2>/dev/null || true)"
-      if [[ -n "$stamp" ]]; then
-        podman exec "$container" bash -c "printf '%s\n' '$stamp' > /home/node/.openclaw/extensions/rodit-webhooks/.source-stamp"
-      fi
+      install_plugin_tree_in_container "$container" identyclaw-webhooks "$rw_build" dist openclaw.plugin.json package.json
+      link_identyclaw_webhooks_plugin_deps_in_container "$container"
     fi
     ensure_openclaw_cli_link "$container"
     podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
@@ -2299,10 +2270,8 @@ upgrade_agent_plugins() {
     copy_openclaw_plugin_tree "$a2a_build" "$config_dir/extensions/a2a" dist openclaw.plugin.json package.json node_modules
     copy_openclaw_plugin_tree "$idc_build" "$config_dir/extensions/identyclaw-tools" dist openclaw.plugin.json package.json node_modules hola-client
     if [[ -n "$rw_build" && -f "$rw_build/dist/index.js" ]]; then
-      copy_openclaw_plugin_tree "$rw_build" "$config_dir/extensions/rodit-webhooks" dist openclaw.plugin.json package.json
-      link_rodit_webhooks_plugin_deps "$config_dir/extensions/rodit-webhooks"
-      stamp="$(rodit_webhooks_plugin_source_stamp 2>/dev/null || true)"
-      [[ -n "$stamp" ]] && printf '%s\n' "$stamp" >"$config_dir/extensions/rodit-webhooks/.source-stamp"
+      copy_openclaw_plugin_tree "$rw_build" "$config_dir/extensions/identyclaw-webhooks" dist openclaw.plugin.json package.json
+      link_identyclaw_webhooks_plugin_deps "$config_dir/extensions/identyclaw-webhooks"
     fi
   fi
 
@@ -2327,16 +2296,11 @@ ensure_a2a_packages() {
   if ! install_a2a_idc_plugin "$config_dir"; then
     return 0
   fi
-  install_rodit_webhooks_plugin "$config_dir" || true
+  install_identyclaw_webhooks_plugin "$config_dir" || true
   ensure_webhooks_plugin_config "$config_dir" || true
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
-  if [[ ! -f "$config_dir/extensions/rodit-webhooks/dist/index.js" ]]; then
-    rw_build="$(mktemp -d /tmp/openclaw-rodit-webhooks-plugin.XXXXXX)"
-    if build_local_rodit_webhooks_plugin "$rw_build"; then
-      install_plugin_tree_in_container "$container" rodit-webhooks "$rw_build" dist openclaw.plugin.json package.json
-      link_rodit_webhooks_plugin_deps_in_container "$container"
-    fi
-    rm -rf "$rw_build"
+  if [[ -f "$config_dir/extensions/identyclaw-webhooks/dist/index.js" ]]; then
+    link_identyclaw_webhooks_plugin_deps_in_container "$container"
   fi
   ensure_openclaw_cli_link "$container"
   podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
