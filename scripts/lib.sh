@@ -186,7 +186,6 @@ load_env() {
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-agent-a agent-b}"
   A2A_PLUGIN_REPO="${A2A_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-a2a-idc-plugin.git}"
-  IDENTYCLAW_PLUGIN_REPO="${IDENTYCLAW_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-identyclaw-plugin.git}"
   IDENTYCLAW_WEBHOOKS_PLUGIN_REPO="${IDENTYCLAW_WEBHOOKS_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin.git}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
@@ -1772,22 +1771,13 @@ ensure_identyclaw_packages() {
   config_dir="$(agent_home "$id")"
   skill_spec="${IDENTYCLAW_CLAWHUB_SKILL}"
 
-  if ! install_identyclaw_plugin "$config_dir"; then
-    echo "    (${id}: IdentyClaw plugin build/install skipped — see errors above)" >&2
+  if ! install_identyclaw_plugin "$config_dir" 0 "$id"; then
+    echo "    (${id}: IdentyClaw plugin install skipped — see errors above)" >&2
   fi
 
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
   ensure_openclaw_cli_link "$container"
-  if ! podman exec "$container" test -f /home/node/.openclaw/extensions/identyclaw-tools/openclaw.plugin.json 2>/dev/null; then
-    local idc_build
-    idc_build="$(mktemp -d /tmp/openclaw-idc-plugin.XXXXXX)"
-    if build_git_plugin "$IDENTYCLAW_PLUGIN_REPO" "$idc_build" prepare:publish \
-      && [[ -f "$idc_build/dist/index.js" ]]; then
-      install_plugin_tree_in_container "$container" identyclaw-tools "$idc_build" \
-        dist openclaw.plugin.json package.json node_modules hola-client
-    fi
-    rm -rf "$idc_build"
-  fi
+  link_identyclaw_plugin_deps_in_container "$container"
   podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
   if ! identyclaw_skill_installed_in_container "$container"; then
     echo "    (${id}: installing ClawHub skill ${skill_spec} from identyclaw/identyclaw…)" >&2
@@ -2147,25 +2137,77 @@ install_a2a_idc_plugin() {
   patch_a2a_dual_inbound "$ext_dir"
 }
 
+openclaw_agent_image() {
+  load_env
+  echo "${OPENCLAW_IMAGE:-${OPENCLAW_LOCAL_IMAGE:-${OPENCLAW_BASE_IMAGE}}}"
+}
+
+# Run OpenClaw CLI against an agent state dir (live container or ephemeral podman run).
+openclaw_agent_exec() {
+  local config_dir="$1"
+  local container="$2"
+  shift 2
+  local z image
+  load_env
+  z="$(selinux_mount_suffix)"
+  image="$(openclaw_agent_image)"
+
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    ensure_openclaw_cli_link "$container"
+    podman exec "$container" env OPENCLAW_STATE_DIR=/home/node/.openclaw \
+      node /app/openclaw.mjs "$@"
+    return $?
+  fi
+
+  podman run --rm \
+    -e HOME=/home/node \
+    -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
+    -v "${config_dir}:/home/node/.openclaw:rw${z}" \
+    "$image" \
+    node /app/openclaw.mjs "$@"
+}
+
+link_identyclaw_plugin_deps_in_container() {
+  local container="$1"
+  podman exec "$container" bash -c '
+    set -euo pipefail
+    ext="/home/node/.openclaw/extensions/identyclaw-tools"
+    [[ -d "$ext" ]] || exit 0
+    mkdir -p "$ext/node_modules"
+    rm -rf "$ext/node_modules/openclaw"
+    ln -sf /app "$ext/node_modules/openclaw"
+  ' 2>/dev/null || true
+}
+
 install_identyclaw_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
-  local ext_dir="$config_dir/extensions/identyclaw-tools"
-  local build_dir="$config_dir/.identyclaw-plugin-build"
+  local id="${3:-}"
+  local container ext_dir plugin_spec
+  ext_dir="$config_dir/extensions/identyclaw-tools"
   load_env
+  plugin_spec="${IDENTYCLAW_CLAWHUB_PLUGIN}"
+  [[ -n "$id" ]] && container="$(agent_container "$id")" || container=""
 
   if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
     return 0
   fi
 
-  echo "    (building IdentyClaw plugin from ${IDENTYCLAW_PLUGIN_REPO}…)" >&2
-  build_git_plugin "$IDENTYCLAW_PLUGIN_REPO" "$build_dir" prepare:publish || return 1
-  [[ -f "$build_dir/dist/index.js" ]] || {
-    echo "    (IdentyClaw plugin build failed — dist/index.js missing)" >&2
+  if [[ "$force" == "1" ]]; then
+    rm -rf "$ext_dir" "$config_dir/.identyclaw-plugin-build"
+  fi
+
+  echo "    (installing IdentyClaw plugin from ${plugin_spec}…)" >&2
+  openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
+  openclaw_agent_exec "$config_dir" "$container" plugins install "$plugin_spec" >&2 || return 1
+  [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]] || {
+    echo "    (identyclaw-tools: ClawHub install finished but extension tree is missing)" >&2
     return 1
   }
 
-  copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json node_modules hola-client
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    link_identyclaw_plugin_deps_in_container "$container"
+  fi
 }
 
 link_identyclaw_webhooks_plugin_deps() {
@@ -2224,12 +2266,11 @@ install_plugin_tree_in_container() {
 
 upgrade_agent_plugins() {
   local id="$1"
-  local container config_dir a2a_build idc_build
+  local container config_dir a2a_build
   load_env
   config_dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   a2a_build="$(mktemp -d /tmp/openclaw-a2a-plugin.XXXXXX)"
-  idc_build="$(mktemp -d /tmp/openclaw-idc-plugin.XXXXXX)"
 
   echo "==> Upgrading plugins for ${id}"
   echo "    (A2A: ${A2A_PLUGIN_REPO})"
@@ -2239,10 +2280,9 @@ upgrade_agent_plugins() {
     return 1
   }
 
-  echo "    (IdentyClaw: ${IDENTYCLAW_PLUGIN_REPO})"
-  build_git_plugin "$IDENTYCLAW_PLUGIN_REPO" "$idc_build" prepare:publish || return 1
-  [[ -f "$idc_build/dist/index.js" ]] || {
-    echo "IdentyClaw plugin build failed for ${id}" >&2
+  echo "    (IdentyClaw: ${IDENTYCLAW_CLAWHUB_PLUGIN})"
+  install_identyclaw_plugin "$config_dir" 1 "$id" || {
+    echo "IdentyClaw plugin install failed for ${id}" >&2
     return 1
   }
 
@@ -2259,23 +2299,22 @@ upgrade_agent_plugins() {
 
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     install_plugin_tree_in_container "$container" a2a "$a2a_build" dist openclaw.plugin.json package.json node_modules
-    install_plugin_tree_in_container "$container" identyclaw-tools "$idc_build" dist openclaw.plugin.json package.json node_modules hola-client
     if [[ -n "$rw_build" && -f "$rw_build/dist/index.js" ]]; then
       install_plugin_tree_in_container "$container" identyclaw-webhooks "$rw_build" dist openclaw.plugin.json package.json
       link_identyclaw_webhooks_plugin_deps_in_container "$container"
     fi
+    link_identyclaw_plugin_deps_in_container "$container"
     ensure_openclaw_cli_link "$container"
     podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
   else
     copy_openclaw_plugin_tree "$a2a_build" "$config_dir/extensions/a2a" dist openclaw.plugin.json package.json node_modules
-    copy_openclaw_plugin_tree "$idc_build" "$config_dir/extensions/identyclaw-tools" dist openclaw.plugin.json package.json node_modules hola-client
     if [[ -n "$rw_build" && -f "$rw_build/dist/index.js" ]]; then
       copy_openclaw_plugin_tree "$rw_build" "$config_dir/extensions/identyclaw-webhooks" dist openclaw.plugin.json package.json
       link_identyclaw_webhooks_plugin_deps "$config_dir/extensions/identyclaw-webhooks"
     fi
   fi
 
-  rm -rf "$a2a_build" "$idc_build" "$rw_build"
+  rm -rf "$a2a_build" "$rw_build"
 
   if [[ -w "$config_dir/openclaw.json" ]]; then
     ensure_identyclaw_config "$config_dir"

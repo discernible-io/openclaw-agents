@@ -31,7 +31,7 @@
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
-#   upgrade-plugins [id|all]  Rebuild + install latest A2A + IdentyClaw plugins from GitHub
+#   upgrade-plugins [id|all]  Rebuild A2A from GitHub; refresh IdentyClaw plugin from ClawHub
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
