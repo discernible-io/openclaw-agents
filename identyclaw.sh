@@ -16,12 +16,13 @@
 #   enable-boot          One-time: linger + podman-restart + recreate agents (survives reboot)
 #   status               Show podman + health URLs
 #   logs <id>            Follow logs
-#   test-mail <id>       himalaya envelope list inside container
+#   test                 Run test-constitution.md suites (agents from env.local AGENT_IDS / A2A_PEER_AGENTS)
+#   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
-#   test-a2a <from> <to> Smoke-test A2A discovery + inbound auth between agents
-#   test-webhook <id>    Smoke-test webhook ingress (expect 400/401 without RODiT x-signature)
+#   test-a2a [from] [to] Smoke-test A2A discovery + inbound auth (defaults: local → peer)
+#   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Skips /api/testhola by default (SKIP_TESTHOLA=1); needs valid HOLA when enabled
-#   test-webhook-p2p <from> <to>  P2P webhook: from signs at origin, to verifies (optional bidirectional)
+#   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
 #   send-rodit-webhook <id> <peer> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
@@ -354,7 +355,9 @@ cmd_logs() {
 }
 
 cmd_test_mail() {
-  local id="${1:?Usage: $0 test-mail agent-a|agent-b|agent-c}"
+  local id="${1:-}"
+  load_env
+  id="${id:-$(resolve_local_agent_id)}"
   require_podman
   require_agent_running "$id"
   podman exec "$(agent_container "$id")" himalaya --version
@@ -383,48 +386,71 @@ cmd_generate_certs() {
   echo "TLS material ready in $(identyclaw_app_dir)/certs/"
 }
 
-cmd_test_a2a() {
-  local from_id="${1:?Usage: $0 test-a2a agent-a agent-b}"
-  local to_id="${2:?Usage: $0 test-a2a agent-a agent-b}"
-  require_podman
-  load_env
-  require_agent_running "$from_id"
-  require_agent_running "$to_id"
-
-  local from_container to_container to_url
-  from_container="$(agent_container "$from_id")"
-  to_container="$(agent_container "$to_id")"
-  to_url="$(agent_agent_card_url "$to_id")"
-
-  echo "==> Discovery: ${from_id} → ${to_id}"
-  podman exec "$from_container" curl -sf "$to_url"
-  echo ""
-
-  echo "==> Discovery: ${to_id} → ${from_id}"
-  podman exec "$to_container" curl -sf "$(agent_agent_card_url "$from_id")"
-  echo ""
-
-  echo "==> Inbound auth (expect HTTP 401 without Bearer token)"
-  local code a2a_url host port curl_resolve=()
-  a2a_url="$(agent_a2a_endpoint_url "$to_id")"
-  host="$(agent_public_host "$to_id")"
-  port="$(agent_ingress_port "$to_id")"
-  if [[ -n "$host" && -n "$port" && "$a2a_url" == https://* ]]; then
-    curl_resolve=(--resolve "${host}:${port}:127.0.0.1")
+a2a_fetch_agent_card() {
+  local runner_id="$1" target_id="$2"
+  local url container resolve=() curl_flags=(-sf)
+  url="$(agent_agent_card_url "$target_id")"
+  if agent_is_local "$runner_id" && agent_container_running "$runner_id"; then
+    container="$(agent_container "$runner_id")"
+    if ! agent_is_local "$target_id"; then
+      curl_flags=(-sk)
+    fi
+    podman exec "$container" curl "${curl_flags[@]}" "$url"
+    return 0
   fi
-  code="$(curl -sk "${curl_resolve[@]}" -o /dev/null -w '%{http_code}' -X POST "$a2a_url" \
+  mapfile -t resolve < <(agent_ingress_curl_resolve_args "$target_id")
+  curl -sk "${resolve[@]}" "$url"
+}
+
+a2a_probe_unauth_post() {
+  local id="$1"
+  local code a2a_url resolve=()
+  a2a_url="$(agent_a2a_endpoint_url "$id")"
+  mapfile -t resolve < <(agent_ingress_curl_resolve_args "$id")
+  code="$(curl -sk "${resolve[@]}" -o /dev/null -w '%{http_code}' -X POST "$a2a_url" \
     -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{"id":"smoke"}}')"
   if [[ "$code" != "401" ]]; then
-    echo "FAIL: POST /a2a without auth returned HTTP ${code}, expected 401 (${a2a_url})" >&2
-    exit 1
+    echo "FAIL: POST /a2a without auth on ${id} returned HTTP ${code}, expected 401 (${a2a_url})" >&2
+    return 1
   fi
-  echo "OK: unauthenticated POST /a2a rejected (HTTP 401)"
+  echo "OK: unauthenticated POST /a2a on ${id} rejected (HTTP 401)"
+}
+
+cmd_test_a2a() {
+  local from_id to_id
+  require_podman
+  load_env
+  from_id="${1:-$(resolve_local_agent_id)}"
+  to_id="${2:-}"
+  if [[ -z "$to_id" ]]; then
+    to_id="$(resolve_peer_agent_id "$from_id" 2>/dev/null || true)"
+    to_id="${to_id:-$from_id}"
+  fi
+  require_agent_running "$from_id"
+
+  echo "==> A2A smoke (from=${from_id}, to=${to_id})"
+
+  echo "==> Discovery: ${from_id} → ${to_id}"
+  a2a_fetch_agent_card "$from_id" "$to_id"
+  echo ""
+
+  echo "==> Discovery: ${to_id} → ${from_id}"
+  a2a_fetch_agent_card "$to_id" "$from_id"
+  echo ""
+
+  echo "==> Inbound auth (expect HTTP 401 without Bearer token)"
+  a2a_probe_unauth_post "$to_id"
+  if [[ "$from_id" != "$to_id" ]]; then
+    a2a_probe_unauth_post "$from_id"
+  fi
 
   echo ""
   echo "A2A smoke passed (discovery + inbound auth gate)."
-  echo "For end-to-end RODiT messaging, run:"
-  echo "  $0 ask ${from_id} 'Use a2a_send_message to ping ${to_id} and report the task id'"
+  if [[ "$from_id" != "$to_id" ]]; then
+    echo "For end-to-end RODiT messaging, run:"
+    echo "  $0 ask ${from_id} 'Use a2a_send_message to ping ${to_id} and report the task id'"
+  fi
 }
 
 cmd_webhook_url() {
@@ -434,8 +460,9 @@ cmd_webhook_url() {
 }
 
 cmd_test_webhook() {
-  local id="${1:?Usage: $0 test-webhook agent-a|agent-b|agent-c}"
+  local id="${1:-}"
   load_env
+  id="${id:-$(resolve_local_agent_id)}"
   local url code creds container
   url="$(agent_webhook_url "$id" hooks/wake)"
   container="$(agent_container "$id")"
@@ -571,10 +598,18 @@ cmd_send_rodit_webhook() {
 }
 
 cmd_test_webhook_p2p() {
-  local sender="${1:?Usage: $0 test-webhook-p2p agent-b agent-a}"
-  local receiver="${2:?Usage: $0 test-webhook-p2p agent-b agent-a}"
+  local sender receiver
   require_podman
   load_env
+  sender="${1:-$(resolve_local_agent_id)}"
+  receiver="${2:-}"
+  if [[ -z "$receiver" ]]; then
+    receiver="$(resolve_peer_agent_id "$sender" 2>/dev/null || true)"
+    [[ -n "$receiver" ]] || {
+      echo "No peer agent in A2A_PEER_AGENTS for ${sender} — set IDENTYCLAW_PEER_AGENT or pass receiver id" >&2
+      exit 1
+    }
+  fi
   require_agent_running "$sender"
 
   local sender_container sender_creds receiver_base local_base peer_creds ext_dir
@@ -667,6 +702,38 @@ NODE
   fi
 
   exit "$exit_code"
+}
+
+cmd_test() {
+  local local_id peer_id failed=0
+  load_env
+  local_id="$(resolve_local_agent_id)"
+  peer_id="$(resolve_peer_agent_id "$local_id" 2>/dev/null || true)"
+  echo "==> Test constitution (local=${local_id}${peer_id:+, peer=${peer_id}})"
+  echo "    AGENT_IDS=${AGENT_IDS}"
+  echo "    A2A_PEER_AGENTS=${A2A_PEER_AGENTS}"
+  echo ""
+
+  cmd_test_a2a "$local_id" "${peer_id:-$local_id}" || failed=1
+  echo ""
+  cmd_test_webhook "$local_id" || failed=1
+  if [[ -n "$peer_id" && "$peer_id" != "$local_id" ]]; then
+    echo ""
+    cmd_test_webhook_p2p "$local_id" "$peer_id" || failed=1
+  else
+    echo ""
+    echo "==> Skip test-webhook-p2p (no remote peer configured)"
+  fi
+  echo ""
+  cmd_test_mail "$local_id" || failed=1
+
+  echo ""
+  if [[ $failed -eq 0 ]]; then
+    echo "Constitution suites: passed"
+  else
+    echo "Constitution suites: not-passed (see output above)" >&2
+  fi
+  return "$failed"
 }
 
 cmd_token() {
@@ -895,6 +962,7 @@ main() {
     enable-boot) cmd_enable_boot "$@" ;;
     status) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
+    test) cmd_test "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;

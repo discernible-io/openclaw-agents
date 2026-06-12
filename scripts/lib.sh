@@ -63,6 +63,12 @@ deploy_tier_app_port() {
 }
 
 deploy_tier_health_domain() {
+  local id host
+  load_env
+  for id in $AGENT_IDS; do
+    host="$(agent_public_host "$id")"
+    [[ -n "$host" ]] && { printf '%s' "$host"; return 0; }
+  done
   case "$1" in
     development) printf 'webhook.discernible.io' ;;
     main) printf 'agent-a.identyclaw.com' ;;
@@ -292,6 +298,66 @@ agent_near_credentials_host_path() {
 
 agent_container() {
   echo "openclaw-${1}"
+}
+
+# True when id is listed in AGENT_IDS (runs on this host).
+agent_is_local() {
+  local id="$1" local_id
+  load_env
+  for local_id in $AGENT_IDS; do
+    [[ "$local_id" == "$id" ]] && return 0
+  done
+  return 1
+}
+
+agent_container_running() {
+  local id="$1" container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"
+}
+
+# First agent in AGENT_IDS — local origin/destination for constitution suites.
+resolve_local_agent_id() {
+  local id
+  load_env
+  for id in $AGENT_IDS; do
+    [[ -n "$id" ]] && { echo "$id"; return 0; }
+  done
+  echo "agent-a"
+}
+
+# Remote peer for cross-host suites: first A2A_PEER_AGENTS entry not in AGENT_IDS.
+# Override: IDENTYCLAW_PEER_AGENT=agent-a in env.local.
+resolve_peer_agent_id() {
+  local local_id="${1:-$(resolve_local_agent_id)}"
+  local p
+  load_env
+  if [[ -n "${IDENTYCLAW_PEER_AGENT:-}" ]]; then
+    echo "$IDENTYCLAW_PEER_AGENT"
+    return 0
+  fi
+  for p in $A2A_PEER_AGENTS; do
+    if ! agent_is_local "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  for p in $A2A_PEER_AGENTS; do
+    [[ "$p" != "$local_id" ]] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+# curl --resolve for local HTTPS ingress (loopback health / A2A probes from host).
+agent_ingress_curl_resolve_args() {
+  local id="$1" host port url
+  load_env
+  host="$(agent_public_host "$id")"
+  port="$(agent_ingress_port "$id")"
+  url="$(agent_a2a_endpoint_url "$id")"
+  if agent_is_local "$id" && [[ -n "$host" && -n "$port" && "$url" == https://* ]]; then
+    printf '%s\n' --resolve "${host}:${port}:127.0.0.1"
+  fi
 }
 
 agent_a2a_public_base_url() {

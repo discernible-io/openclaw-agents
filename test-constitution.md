@@ -9,16 +9,21 @@ Terminology: test outcomes are only **`passed`** or **`not-passed`** (not "succe
 ## Core Workflow (Do This Every Run)
 
 1. **Preconditions**
-   - Agents are running: `podman ps` shows `openclaw-agent-a`, `openclaw-agent-b`, and/or `openclaw-agent-c` (pod mode) or standalone containers from `./identyclaw.sh start`.
+   - **Local agent** is running: `AGENT_IDS` in `../identyclaw-agents-app/env.local` lists the agent(s) on this host (e.g. `AGENT_IDS=agent-b` on Archimedes, `AGENT_IDS=agent-a` on Juanelo). `podman ps` shows `openclaw-<id>` for each.
    - Runtime config lives under `../identyclaw-agents-app/` (`env.local`, `agents/<id>/`, TLS certs) — not in the git checkout.
+   - **Peer agent** for cross-host suites comes from `A2A_PEER_AGENTS` (first id not in `AGENT_IDS`), or override `IDENTYCLAW_PEER_AGENT`.
    - For HTTPS ingress tests, nginx sidecar is up (`identyclaw-nginx`) and `AGENT_*_PUBLIC_HOST` / ingress URLs in `env.local` match the tier (development **4443**, main **9443**).
 
 2. **Run the suites** (operator-driven; not a single startup hook):
    ```bash
-   ./identyclaw.sh test-a2a agent-a agent-b
-   ./identyclaw.sh test-webhook agent-a
-   ./identyclaw.sh test-webhook-p2p agent-b agent-a
-   ./identyclaw.sh test-mail agent-a
+   ./identyclaw.sh test
+   ```
+   Equivalent per-suite commands (agent ids optional — defaults from `env.local`):
+   ```bash
+   ./identyclaw.sh test-a2a              # local → peer
+   ./identyclaw.sh test-webhook          # local ingress
+   ./identyclaw.sh test-webhook-p2p      # local → peer
+   ./identyclaw.sh test-mail             # local mailbox
    ```
    Advanced / CI-style runs execute `scripts/*.mjs` inside an agent container (see [Test inventory](#test-inventory)).
 
@@ -56,10 +61,11 @@ Reference implementation for single-host webhook ingress: [`clienttest-idc`](../
 
 | Entry point | Module | What it exercises |
 | --- | --- | --- |
-| `./identyclaw.sh test-a2a <from> <to>` | `identyclaw.sh` | Agent-card fetch both ways; unauthenticated `POST /a2a` → 401 |
-| `./identyclaw.sh test-webhook <id>` | `scripts/test-rodit-webhooks.mjs` (+ optional outbound, testhola) | Unsigned/invalid-sig rejection; signed ingress via `rodit-auth-be` |
-| `./identyclaw.sh test-webhook-p2p <sender> <receiver>` | `scripts/test-webhooks-p2p-suite.mjs` | Outbound + inbound P2P webhook receipts |
-| `./identyclaw.sh test-mail <id>` | Himalaya in container | IMAP connectivity |
+| `./identyclaw.sh test` | all wrappers below | Full constitution run; resolves local/peer from `env.local` |
+| `./identyclaw.sh test-a2a [from] [to]` | `identyclaw.sh` | Agent-card fetch both ways; unauthenticated `POST /a2a` → 401 (peer may be remote) |
+| `./identyclaw.sh test-webhook [id]` | `scripts/test-rodit-webhooks.mjs` (+ optional outbound, testhola) | Unsigned/invalid-sig rejection; signed ingress via `rodit-auth-be` |
+| `./identyclaw.sh test-webhook-p2p [sender] [receiver]` | `scripts/test-webhooks-p2p-suite.mjs` | Outbound + inbound P2P webhook receipts |
+| `./identyclaw.sh test-mail [id]` | Himalaya in container | IMAP connectivity |
 | `scripts/test-a2a-p2p-suite.mjs` | A2A + webhooks | Mediated/P2P auth, optional webhook section |
 | `scripts/test-p2p-peer-suite.mjs` | Dual-mode A2A | Positive and negative P2P cases |
 | `scripts/test-a2a-rodit-auth.mjs` | RODiT on `/a2a` | Bearer rejection matrix |
