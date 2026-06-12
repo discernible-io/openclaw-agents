@@ -167,7 +167,6 @@ cmd_set_instagram() {
 
 start_one() {
   local id="$1"
-  abort_if_pod_deploy_start start
   load_env
   local dir container gw br z rt
   dir="$(agent_home "$id")"
@@ -176,7 +175,15 @@ start_one() {
   rt="$(podman_runtime_args)"
 
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-    start_pod_agent "$id" || return 1
+    case " $AGENT_IDS " in
+      *" ${id} "*) ;;
+      *)
+        echo "${id} is not provisioned on this host (AGENT_IDS=${AGENT_IDS})." >&2
+        echo "First deploy: ./scripts/deploy-local-podman.sh" >&2
+        return 1
+        ;;
+    esac
+    start_pod_agent "$id" start || return 1
     echo "Full pod redeploy: ./scripts/deploy-local-podman.sh --skip-build"
     return 0
   fi
@@ -270,11 +277,11 @@ cmd_restart() {
   local target="${1:-all}"
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     case "$target" in
-      agent-a|agent-b|agent-c) start_pod_agent "$target" ;;
+      agent-a|agent-b|agent-c) start_pod_agent "$target" restart ;;
       all)
         local id
         for id in $AGENT_IDS; do
-          start_pod_agent "$id"
+          start_pod_agent "$id" restart
         done
         ;;
       *) echo "Usage: $0 restart [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;

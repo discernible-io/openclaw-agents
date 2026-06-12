@@ -1359,22 +1359,7 @@ identyclaw_skips_host_restore() {
 }
 
 # Standalone start/restart touches host-owned openclaw.json; pod deploy uses container-namespace ownership.
-abort_if_pod_deploy_start() {
-  local cmd="${1:-start}"
-  load_env
-  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
-  cat >&2 <<EOF
-IDENTYCLAW_DEPLOY_MODE=pod — identyclaw.sh ${cmd} is for standalone dev only.
-
-Pod agents are managed by scripts/deploy-pod.sh (or scripts/deploy-local-podman.sh).
-
-  Redeploy:          ./scripts/deploy-local-podman.sh
-  Restart one agent: ./identyclaw.sh restart <id>
-  Status:            ./identyclaw.sh status
-
-EOF
-  exit 1
-}
+# Pod mode: identyclaw.sh start → start_pod_agent (start); restart → start_pod_agent (restart).
 
 # Read AGENT_IDS from env.local (used by deploy.yml host prep and deploy-pod.sh).
 deploy_agent_ids_from_env() {
@@ -1401,14 +1386,20 @@ deploy_agent_ids_from_env() {
 }
 
 # Start or restart a pod-managed agent without host-side bootstrap (avoids openclaw.json EACCES).
+# Second arg: start (idempotent — no-op if running) or restart (bounce gateway if running).
 start_pod_agent() {
   local id="$1"
+  local mode="${2:-restart}"
   local container dir
   load_env
   container="$(agent_container "$id")"
   dir="$(agent_home "$id")"
 
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    if [[ "$mode" == "start" ]]; then
+      echo "Already running: ${container} (use './identyclaw.sh restart ${id}' to bounce the gateway)"
+      return 0
+    fi
     echo "==> ${id} already running in pod — restarting gateway"
     podman restart "$container" >/dev/null
     ensure_discord_plugin_compat_and_restart "$id"
