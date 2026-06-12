@@ -866,6 +866,7 @@ cmd_ask() {
     -e LOG_LEVEL=error \
     -e SUPPRESS_NO_CONFIG_WARNING=true \
     -e SUPPRESS_STRICTNESS_CHECK=true \
+    -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
     "$(agent_container "$id")" node dist/index.js agent \
     --agent main -m "$message"
 }
