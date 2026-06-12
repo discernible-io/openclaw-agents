@@ -168,11 +168,6 @@ cmd_set_instagram() {
 start_one() {
   local id="$1"
   load_env
-  local dir container gw br z rt
-  dir="$(agent_home "$id")"
-  container="$(agent_container "$id")"
-  z="$(selinux_mount_suffix)"
-  rt="$(podman_runtime_args)"
 
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     case " $AGENT_IDS " in
@@ -187,6 +182,12 @@ start_one() {
     echo "Full pod redeploy: ./scripts/deploy-local-podman.sh --skip-build"
     return 0
   fi
+
+  local dir container gw br z rt
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  z="$(selinux_mount_suffix)"
+  rt="$(podman_runtime_args)"
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run $0 init" >&2; exit 1; }
   [[ -f "$dir/openclaw.json" ]] || { echo "Missing config — run $0 init" >&2; exit 1; }
