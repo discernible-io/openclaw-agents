@@ -340,6 +340,7 @@ Each agent uses **two** published integrations (installed on `./identyclaw.sh st
 |-------------|--------|---------|
 | **identyclaw** skill + `identyclaw-tools` plugin | [ClawHub: identyclaw/identyclaw](https://clawhub.ai/identyclaw/identyclaw) | HOLA verify/create, Passport lookup, DID, API workflows |
 | **identyclaw-a2a** plugin | [ClawHub: @identyclaw/openclaw-a2a-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-a2a-plugin) | Agent-to-agent messaging (`a2a_send_message`, tasks, files) with RODiT JWT auth |
+| **identyclaw-webhooks** plugin | [openclaw-identyclaw-webhooks-plugin](https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin) | RODiT-signed inbound webhooks + outbound `send_rodit_webhook` to configured peers |
 
 Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). A2A peers are listed in `A2A_PEER_AGENTS` (`env.local`).
 
@@ -347,10 +348,131 @@ Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport cred
 # After adding near-credentials for agent-a and agent-b:
 ./identyclaw.sh restart agent-a agent-b
 ./identyclaw.sh test-a2a agent-a agent-b
+./identyclaw.sh test              # full suite — see test-constitution.md
 ./identyclaw.sh ask agent-a 'Verify any inbound HOLA with identyclaw_verify_hola; use a2a_send_message for peer agent-b'
 ```
 
 See [`security-compliance-improvements.md`](security-compliance-improvements.md#a2a-agent-to-agent-communication-agent-a--agent-b) for RODiT JWT details and production ingress. For agents on **different machines**, follow [Cross-machine A2A (Option A)](security-compliance-improvements.md#cross-machine-a2a-option-a) (public HTTPS on **9443**).
+
+#### Where the contract is defined
+
+Unlike the IdentyClaw API (authoritative OpenAPI in `api-docs/swagger.json` / [`clienttest-idc`](../clienttest-idc) `target-swagger.json`), agent-to-agent collaboration has **layered** contracts:
+
+| Layer | Source | What it specifies |
+|-------|--------|-------------------|
+| Wire protocol | [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) | JSON-RPC on `POST /a2a`, Agent Card at `GET /.well-known/agent-card.json`, tasks/messages/artifacts |
+| Implementation | `identyclaw-a2a` plugin (`openclaw.plugin.json`, `a2afork.md`) | RODiT JWT auth, P2P `/api/login`, outbound peer map, plugin tools |
+| Webhooks | `identyclaw-webhooks` plugin | Signed `POST /hooks/*`, outbound `send_rodit_webhook` |
+| Deployment | [`test-constitution.md`](test-constitution.md) | Expected behavior on this host (401 without auth, signed webhook rejection, receipts, etc.) |
+| Runtime | `~/identyclaw-agents-app/agents/<id>/openclaw.json` | Per-agent inbound/outbound auth modes, peer URLs, audiences |
+
+Deployed Agent Cards advertise **`protocolVersion: "0.3.0"`** (OpenClaw A2A plugin binding). Validate deployments with `./identyclaw.sh test` — not against IdentyClaw API swagger.
+
+#### Two channels — different jobs
+
+Peer collaboration uses **two HTTP surfaces**. They are complementary, not interchangeable.
+
+| Channel | Endpoint(s) | Purpose |
+|---------|-------------|---------|
+| **A2A** | `GET /.well-known/agent-card.json`, `POST /a2a` | Structured **messaging, files, tasks, artifacts** between agents |
+| **Webhooks** | `POST /hooks/wake`, `/hooks/agent`, custom `/hooks/<name>` | Signed **wake / event ping** — nudge a peer gateway, record an event |
+
+**Guidance:** prefer **A2A** for ongoing work with known peers (`a2a_send_message`). Use **`send_rodit_webhook`** to wake a peer via RODiT-signed webhook (not A2A). Use **HOLA / IdentyClaw API tools** (`identyclaw_*`) for identity verification of unknown senders — that is a separate surface from A2A wire protocol.
+
+#### A2A — permitted and forbidden
+
+**HTTP surfaces**
+
+| Request | Auth | Allowed? |
+|---------|------|----------|
+| `GET /.well-known/agent-card.json` | None (public discovery) | Yes |
+| `GET /api/login/timestamp`, `POST /api/login` | Passport sign (P2P) | Yes when inbound mode is `p2p` or `dual` |
+| `POST /a2a` | `Authorization: Bearer <RODiT JWT>` | Yes — JSON-RPC A2A operations |
+| `POST /a2a` without Bearer | — | **No** → HTTP **401** (`allowUnauthenticated` is never enabled by bootstrap) |
+| `POST /a2a` to arbitrary hosts | — | **No** — only configured peers in `outbound.agents` |
+
+**Tools** (local LLM → remote peer via `identyclaw-a2a`):
+
+| Tool | Action |
+|------|--------|
+| `a2a_get_agents` | List configured outbound peers |
+| `a2a_get_agent` | Read a peer's skills/capabilities from its Agent Card |
+| `a2a_send_message` | Send **text and files**; returns `context_id` / `task_id` |
+| `a2a_get_task` | Poll long-running peer tasks |
+| `a2a_view_text_artifact` / `a2a_view_data_artifact` | Fetch minimized large responses |
+| `a2a_update_agent_card` | Update **this** agent's public Agent Card metadata |
+
+A2A is **not text-only**: the plugin supports messages, file attachments (plugin docs: ~**1 MB** outbound), long-running tasks, streaming (Agent Card: `streaming: true`), and artifacts. Inbound JSON-RPC body limit: **1 MB**.
+
+**Outbound limits:** peers must appear in `plugins.entries.identyclaw-a2a.config.outbound.agents` (from `A2A_PEER_AGENTS`). Outbound auth: `mediated`, `p2p`, or `auto` (P2P first, mediated fallback — see [`allowed-fallback-standard.md`](../docs/docs/allowed-fallback-standard.md)).
+
+**Inbound limits:** JWT validated per `inbound.auth` (`issuer`, `audience`, `p2pAudience`, mode `mediated` / `p2p` / `dual`). Sender identity from JWT `token_id`; conversations keyed by sender + `context_id`.
+
+**Forbidden via A2A**
+
+| Action | Why |
+|--------|-----|
+| Remote execution of arbitrary OpenClaw tools on a peer | Only A2A JSON-RPC methods — opaque execution; no direct tool proxy |
+| Gateway admin / Control UI access | Separate `OPENCLAW_GATEWAY_TOKEN` trust boundary |
+| Messaging unlisted peers | Outbound allowlist only |
+| Access to peer workspace, memory, or internal state | A2A delivers messages/tasks; each agent processes locally |
+
+#### Webhooks — permitted and forbidden
+
+**Inbound** (peers / integrators → your agent):
+
+| Endpoint | Auth | Behavior |
+|----------|------|----------|
+| `POST /hooks/wake` | RODiT `x-signature` + `x-timestamp` | Validates signature → triggers **gateway heartbeat** (`mode: now` or `next-heartbeat`) |
+| `POST /hooks/agent` | Same | Accepts payload → `{ ok: true, accepted: true }` (accept-only in current plugin) |
+| Custom `/hooks/<name>` | Same | Configurable via `identyclaw-webhooks` `endpoints` |
+| `GET/DELETE /hooks/_receipts` | None | Test helper for constitution runs |
+| Unsigned or invalid signature | — | **No** → HTTP **400** or **401** |
+
+**Outbound** (your agent → peer), via `send_rodit_webhook` tool:
+
+| Permitted | Details |
+|-----------|---------|
+| Sign + POST to configured peer's `/hooks/wake` (default) | Peer base from `outbound.agents` |
+| Path override | e.g. `hooks/agent` |
+| Default delay | 10 seconds before send |
+
+| Forbidden | Details |
+|-----------|---------|
+| Send to non-configured peer | Error: peer not in `outbound.agents` |
+| Unsigned delivery | Must use `@rodit/rodit-auth-be` at origin |
+| Arbitrary URLs | Only webhook paths on known peer bases |
+
+**Webhook nuance:** `/hooks/wake` parses `text` / `event` from the body (validation + receipt logging) but the handler primarily calls **`requestGatewayHeartbeat(mode)`** — it does **not** inject that text into an A2A conversation. Webhooks are a **wake signal**, not a full message bus. Body limit: **256 KB**.
+
+#### Auth boundaries (do not conflate credentials)
+
+| Credential | Unlocks |
+|------------|---------|
+| **A2A inbound JWT** | `POST /a2a` only |
+| **Webhook RODiT signature** | `POST /hooks/*` only |
+| **Gateway token** | Control UI / operator — **not** for peers |
+| **IdentyClaw API JWT** (`login_server`) | Mediated A2A + `identyclaw_*` API tools |
+| **P2P JWT** (peer `/api/login`) | Direct peer A2A when inbound mode allows |
+
+Rotating one credential does not automatically revoke the others. See [Trust boundaries](security-compliance-improvements.md#trust-boundaries-do-not-conflate) in `security-compliance-improvements.md`.
+
+#### Collaboration summary
+
+| Action | A2A | Webhook |
+|--------|-----|---------|
+| Discover peer capabilities | Yes (public Agent Card) | No |
+| Send conversational message | Yes (`a2a_send_message`) | No |
+| Send files to peer | Yes (via A2A) | No |
+| Poll tasks / fetch artifacts | Yes | No |
+| Wake peer gateway | Indirectly (message triggers work) | Yes (`/hooks/wake`) |
+| Deliver signed event string | Via message content | Yes (payload `event`/`text`; receipt logged) |
+| Call peer without Passport JWT | No | No |
+| Administer peer gateway | No | No |
+
+**Typical flow:** (1) public Agent Card discovery → (2) optional HOLA trust via `identyclaw-tools` → (3) ongoing work via **`a2a_send_message`** → (4) optional **`send_rodit_webhook`** wake when a lightweight signed ping is enough.
+
+**Verify:** `./identyclaw.sh test` (see [`test-constitution.md`](test-constitution.md)) — A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail.
 
 ### Agent A (configured — dedalo43 / Juanelo)
 
@@ -628,6 +750,12 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh chat agent-a` | Interactive terminal chat |
 | `./identyclaw.sh ask agent-a "..."` | One-shot message to an agent |
 | `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks) |
+| `./identyclaw.sh test` | Full gateway suite ([`test-constitution.md`](test-constitution.md): A2A, webhooks, mail) |
+| `./identyclaw.sh test-a2a [from] [to]` | Agent Card discovery + unauthenticated `/a2a` → 401 |
+| `./identyclaw.sh test-a2a-auth [mode]` | Mediated/P2P JWT on `/a2a` (`mediated`, `p2p`, or `both`) |
+| `./identyclaw.sh test-webhook [id]` | Webhook ingress (unsigned, invalid sig, signed) |
+| `./identyclaw.sh test-webhook-p2p [from] [to]` | Bidirectional P2P webhook receipts |
+| `./identyclaw.sh webhook-url agent-a [path]` | Print public HTTPS webhook URL |
 
 ## Production ingress (CI/CD + nginx TLS sidecar)
 
