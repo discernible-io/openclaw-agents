@@ -2123,6 +2123,18 @@ elif "agents" in outbound:
     del outbound["agents"]
     changed = True
 
+# identyclaw-webhooks still reads legacy plugins.entries.a2a for outbound peers.
+if outbound:
+    legacy_stub = plugins.setdefault("a2a", {})
+    if legacy_stub.get("enabled") is True:
+        legacy_stub.pop("enabled", None)
+        changed = True
+    legacy_cfg = legacy_stub.setdefault("config", {})
+    mirrored_outbound = json.loads(json.dumps(outbound))
+    if legacy_cfg.get("outbound") != mirrored_outbound:
+        legacy_cfg["outbound"] = mirrored_outbound
+        changed = True
+
 a2a_tools = [
     "a2a_get_agents",
     "a2a_get_agent",
@@ -2215,6 +2227,31 @@ patch_a2a_plugin() {
   patch_a2a_tool_params "$ext_dir"
 }
 
+patch_webhooks_a2a_config_key() {
+  local ext_dir="$1"
+  local patch="${IDENTYCLAW_ROOT}/scripts/patch-webhooks-a2a-config-key.sh"
+  local target
+  [[ -d "$ext_dir/dist" && -f "$patch" ]] || return 0
+  for target in "$ext_dir/dist/send-rodit-webhook.js" "$ext_dir/dist/index.js"; do
+    [[ -f "$target" ]] || continue
+    bash "$patch" "$target"
+  done
+}
+
+patch_webhooks_a2a_config_key_in_container() {
+  local container="$1"
+  local patch="${IDENTYCLAW_ROOT}/scripts/patch-webhooks-a2a-config-key.sh"
+  local target
+  [[ -f "$patch" ]] || return 0
+  podman cp "$patch" "$container:/tmp/patch-webhooks-a2a-config-key.sh" >/dev/null 2>&1 || return 0
+  for target in \
+    /home/node/.openclaw/extensions/identyclaw-webhooks/dist/send-rodit-webhook.js \
+    /home/node/.openclaw/extensions/identyclaw-webhooks/dist/index.js; do
+    podman exec "$container" test -f "$target" || continue
+    podman exec "$container" bash /tmp/patch-webhooks-a2a-config-key.sh "$target" 2>/dev/null || true
+  done
+}
+
 install_identyclaw_webhooks_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
@@ -2226,6 +2263,7 @@ install_identyclaw_webhooks_plugin() {
 
   if [[ "$force" != "1" && -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]; then
     link_identyclaw_webhooks_plugin_deps "$ext_dir"
+    patch_webhooks_a2a_config_key "$ext_dir"
     return 0
   fi
 
@@ -2239,6 +2277,7 @@ install_identyclaw_webhooks_plugin() {
   copy_openclaw_plugin_tree "$build_dir" "$ext_dir" dist openclaw.plugin.json package.json
   rm -rf "$build_dir/node_modules"
   link_identyclaw_webhooks_plugin_deps "$ext_dir"
+  patch_webhooks_a2a_config_key "$ext_dir"
 }
 
 ensure_webhooks_plugin_config() {
@@ -2574,6 +2613,7 @@ upgrade_agent_plugins() {
       install_plugin_tree_in_container "$container" identyclaw-webhooks "$rw_build" dist openclaw.plugin.json package.json \
         || echo "    (${id}: IdentyClaw webhooks plugin copy skipped — see errors above)" >&2
       link_identyclaw_webhooks_plugin_deps_in_container "$container" 2>/dev/null || true
+      patch_webhooks_a2a_config_key_in_container "$container"
     fi
     link_identyclaw_plugin_deps_in_container "$container"
     ensure_openclaw_cli_link "$container"
@@ -2581,8 +2621,10 @@ upgrade_agent_plugins() {
   elif [[ -n "$rw_build" && -f "$rw_build/dist/index.js" ]]; then
     copy_openclaw_plugin_tree "$rw_build" "$config_dir/extensions/identyclaw-webhooks" dist openclaw.plugin.json package.json
     link_identyclaw_webhooks_plugin_deps "$config_dir/extensions/identyclaw-webhooks"
+    patch_webhooks_a2a_config_key "$config_dir/extensions/identyclaw-webhooks"
   fi
 
+  patch_webhooks_a2a_config_key_in_container "$container"
   rm -rf "$rw_build"
 }
 
@@ -2602,6 +2644,7 @@ ensure_a2a_packages() {
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
   if [[ -f "$config_dir/extensions/identyclaw-webhooks/dist/index.js" ]]; then
     link_identyclaw_webhooks_plugin_deps_in_container "$container"
+    patch_webhooks_a2a_config_key_in_container "$container"
   fi
   ensure_openclaw_cli_link "$container"
   podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true

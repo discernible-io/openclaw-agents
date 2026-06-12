@@ -6,7 +6,8 @@
  *   node scripts/send-rodit-webhook.mjs --peer agent-a [--text "ping"] [--delay 10]
  *     [--config /home/node/.openclaw/openclaw.json]
  *
- * Requires NEAR_CREDENTIALS_FILE_PATH (or --creds) and a2a outbound.agents in openclaw.json.
+ * Requires NEAR_CREDENTIALS_FILE_PATH (or --creds) and outbound.agents under
+ * plugins.entries.identyclaw-a2a (or legacy a2a) in openclaw.json.
  */
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
