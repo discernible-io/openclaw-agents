@@ -4,9 +4,9 @@
  *
  * Usage:
  *   node scripts/test-a2a-rodit-auth.mjs \
- *     --ext-dir ~/identyclaw-agents-app/agents/agent-b/extensions/a2a \
- *     --creds ~/identyclaw-agents-app/agents/agent-b/secrets/near-credentials/*.json \
- *     --target https://agent-a.dihola.io:9443 \
+ *     --ext-dir ../identyclaw-agents-app/agents/agent-b/extensions/a2a \
+ *     --creds ../identyclaw-agents-app/agents/agent-b/secrets/near-credentials/*.json \
+ *     --target https://webhook.dihola.io:7443 \
  *     --mode mediated|p2p|both
  */
 import { createRequire } from "node:module";

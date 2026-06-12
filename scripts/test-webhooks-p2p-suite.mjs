@@ -9,8 +9,8 @@
  *   node scripts/test-webhooks-p2p-suite.mjs \
  *     --local agent-b --peer agent-a \
  *     --local-creds /path/to/local-near.json \
- *     --local-base https://agent-b.dihola.io:4443 \
- *     --peer-base https://agent-a.dihola.io:9443 \
+ *     --local-base https://webhook.discernible.io:7443 \
+ *     --peer-base https://webhook.dihola.io:7443 \
  *     [--peer-creds /path/to/peer-near.json] \
  *     [--skip-inbound] [--require-inbound]
  */

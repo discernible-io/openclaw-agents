@@ -457,7 +457,7 @@ cmd_test_webhook() {
       ;;
   esac
 
-  creds="$(find "$(agent_home "$id")/secrets/near-credentials" -name '*.json' 2>/dev/null | head -1 || true)"
+  creds="$(agent_near_credentials_host_path "$id")"
   if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
     [[ -n "$creds" ]] || {
       echo "WARN: agent not running and no near-credentials — skipping signed webhook tests" >&2

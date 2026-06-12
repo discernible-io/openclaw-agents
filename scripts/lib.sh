@@ -3,9 +3,14 @@ set -euo pipefail
 
 IDENTYCLAW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Runtime config and secrets live under IDENTYCLAW_APP_DIR (never in the git checkout).
+# Runtime config and agent state live under IDENTYCLAW_APP_DIR (never in the git checkout).
+# Default: sibling ../identyclaw-agents-app next to the repo clone (peer-coordinated layout).
 identyclaw_app_dir() {
-  echo "${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
+  if [[ -n "${IDENTYCLAW_APP_DIR:-}" ]]; then
+    printf '%s' "$IDENTYCLAW_APP_DIR"
+    return 0
+  fi
+  printf '%s' "$(cd "${IDENTYCLAW_ROOT}/.." && pwd)/identyclaw-agents-app"
 }
 
 identyclaw_env_file() {
@@ -59,10 +64,25 @@ deploy_tier_app_port() {
 
 deploy_tier_health_domain() {
   case "$1" in
-    development) printf 'agent-a.dihola.io' ;;
+    development) printf 'webhook.discernible.io' ;;
     main) printf 'agent-a.identyclaw.com' ;;
     *) return 1 ;;
   esac
+}
+
+# Post-deploy health probe: first AGENT_IDS host + ingress port from env.local.
+deploy_health_ingress() {
+  local id host port
+  load_env
+  for id in ${AGENT_IDS:-agent-a}; do
+    host="$(agent_public_host "$id")"
+    port="$(agent_ingress_port "$id")"
+    if [[ -n "$host" && -n "$port" ]]; then
+      printf '%s %s' "$host" "$port"
+      return 0
+    fi
+  done
+  printf '%s %s' "$(deploy_tier_health_domain development)" "$(deploy_tier_app_port development)"
 }
 
 deploy_tier_nginx_build_env() {
@@ -77,9 +97,8 @@ ensure_app_layout() {
   local app env_file
   app="$(identyclaw_app_dir)"
   env_file="${app}/env.local"
-  mkdir -p "${app}"/{certs,logs/nginx,secrets,agents,exports}
+  mkdir -p "${app}"/{certs,logs/nginx,agents,exports}
   chmod 711 "${app}/certs" 2>/dev/null || true
-  chmod 750 "${app}/secrets" 2>/dev/null || true
   if [[ ! -f "$env_file" ]]; then
     cp "${IDENTYCLAW_ROOT}/env.example" "$env_file"
     chmod 600 "$env_file"
@@ -95,25 +114,31 @@ ensure_tls_certs() {
   ensure_app_layout
   load_env
   cert_dir="$(identyclaw_app_dir)/certs"
-  extra_sans="DNS:${AGENT_B_PUBLIC_HOST},DNS:${AGENT_C_PUBLIC_HOST}"
-  local dev_a2a_host
-  dev_a2a_host="$(deploy_tier_health_domain development 2>/dev/null || true)"
-  if [[ -n "$dev_a2a_host" && "$dev_a2a_host" != "$AGENT_A_PUBLIC_HOST" ]]; then
-    extra_sans="${extra_sans},DNS:${dev_a2a_host}"
-  fi
+  extra_sans=""
+  local h
+  for h in "${AGENT_A_PUBLIC_HOST}" "${AGENT_B_PUBLIC_HOST}" "${AGENT_C_PUBLIC_HOST}"; do
+    [[ -n "$h" ]] || continue
+    [[ -n "$extra_sans" ]] && extra_sans+=","
+    extra_sans+="DNS:${h}"
+  done
   if [[ -n "${AGENT_B_INGRESS_ALT_HOST:-}" ]]; then
     extra_sans="${extra_sans},DNS:${AGENT_B_INGRESS_ALT_HOST}"
   fi
   case "$force" in
     --force|1|true) args+=(--force) ;;
   esac
-  TLS_CN="${AGENT_A_PUBLIC_HOST}" EXTRA_SANS="$extra_sans" \
+  local tls_cn="${AGENT_A_PUBLIC_HOST}"
+  for id in ${AGENT_IDS:-}; do
+    h="$(agent_public_host "$id")"
+    [[ -n "$h" ]] && { tls_cn="$h"; break; }
+  done
+  TLS_CN="${tls_cn}" EXTRA_SANS="$extra_sans" \
     bash "${IDENTYCLAW_ROOT}/scripts/generate-self-signed-certs.sh" "$cert_dir" "${args[@]}"
 }
 
 load_env() {
   local f
-  IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
+  IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   f="${IDENTYCLAW_APP_DIR}/env.local"
   if [[ -f "$f" ]]; then
     # Parse KEY=VALUE safely (supports quoted values with spaces).
@@ -167,7 +192,7 @@ load_env() {
   AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
   AGENT_B_PUBLIC_HOST="${AGENT_B_PUBLIC_HOST:-agent-b.identyclaw.com}"
   AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
-  IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-${HOME}/identyclaw-agents-app}"
+  IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
   AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
 }
@@ -253,6 +278,16 @@ agent_home() {
   local id="$1"
   load_env
   echo "${IDENTYCLAW_AGENT_STATE_ROOT}/${id}"
+}
+
+# Host path: per-agent NEAR Passport JSON (canonical layout for peer coordination).
+agent_near_credentials_dir() {
+  echo "$(agent_home "$1")/secrets/near-credentials"
+}
+
+agent_near_credentials_host_path() {
+  local id="$1"
+  find "$(agent_near_credentials_dir "$id")" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true
 }
 
 agent_container() {
@@ -573,17 +608,21 @@ near_credentials_container_path() {
   echo "/home/node/.openclaw/secrets/near-credentials/${account_id}.json"
 }
 
-# Optional peer NEAR creds for cross-host P2P webhook tests (private key signs, remote agent verifies).
-# Layout: ${IDENTYCLAW_APP_DIR}/secrets/peer-credentials/<peer-id>/*.json
+# Peer NEAR creds for cross-host P2P webhook tests (private key signs, remote agent verifies).
+# Canonical: ${IDENTYCLAW_APP_DIR}/agents/<peer-id>/secrets/near-credentials/*.json
 peer_near_credentials_path() {
   local peer_id="$1"
-  local dir cred
+  local cred legacy_dir
   load_env
-  dir="$(identyclaw_app_dir)/secrets/peer-credentials/${peer_id}"
-  cred="$(find "$dir" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1 || true)"
+  cred="$(agent_near_credentials_host_path "$peer_id")"
   if [[ -n "$cred" ]]; then
     printf '%s' "$cred"
+    return 0
   fi
+  # Legacy layout (pre agents/-only migration).
+  legacy_dir="$(identyclaw_app_dir)/secrets/peer-credentials/${peer_id}"
+  cred="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1 || true)"
+  [[ -n "$cred" ]] && printf '%s' "$cred"
   return 0
 }
 
@@ -594,57 +633,54 @@ agent_near_credentials_in_container() {
   podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true
 }
 
-# Resolve NEAR passport JSON: prefer app secrets, then agent near-credentials (by implicit account id).
+# Resolve NEAR passport JSON for an agent (canonical: agents/<id>/secrets/near-credentials/).
 resolve_near_credentials_file() {
   local config_dir="$1"
-  local app_secrets agent_cred_dir candidate account_id
+  local agent_cred_dir candidate legacy_dir legacy_app_secrets
   load_env
-  app_secrets="$(identyclaw_app_dir)/secrets"
   agent_cred_dir="$config_dir/secrets/near-credentials"
-  mkdir -p "$agent_cred_dir" "$app_secrets" 2>/dev/null || true
+  mkdir -p "$agent_cred_dir" 2>/dev/null || true
 
-  for candidate in "$agent_cred_dir"/*.json "$app_secrets"/*.json; do
+  for candidate in "$agent_cred_dir"/*.json; do
     [[ -f "$candidate" ]] || continue
-    account_id="$(python3 - "$candidate" <<'PY'
-import json, sys
-from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-print(data.get("implicit_account_id") or data.get("account_id") or "")
-PY
-)"
-    [[ -n "$account_id" ]] || continue
-    if [[ -f "$app_secrets/${account_id}.json" ]]; then
-      echo "$app_secrets/${account_id}.json"
-      return 0
-    fi
-    if [[ -f "$agent_cred_dir/${account_id}.json" ]]; then
-      echo "$agent_cred_dir/${account_id}.json"
-      return 0
-    fi
     echo "$candidate"
     return 0
   done
-  return 1
+
+  # Legacy: app-level secrets/<account>.json or secrets/peer-credentials/<agent-id>/
+  legacy_app_secrets="$(identyclaw_app_dir)/secrets"
+  for candidate in "$legacy_app_secrets"/*.json; do
+    [[ -f "$candidate" ]] || continue
+    echo "$candidate"
+    return 0
+  done
+  legacy_dir="$legacy_app_secrets/peer-credentials/$(basename "$config_dir")"
+  candidate="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true)"
+  [[ -n "$candidate" ]] || return 1
+  echo "$candidate"
+  return 0
 }
 
-# Ensure agent near-credentials/<implicit_account_id>.json exists (copy from app/secrets if needed).
+# Copy resolved creds into agents/<id>/secrets/near-credentials/ (one-way migration from legacy layouts).
 ensure_near_credentials_in_agent() {
   local config_dir="$1"
-  local cred_file app_secrets agent_cred_dir account_id dest
+  local cred_file agent_cred_dir account_id dest
   cred_file="$(resolve_near_credentials_file "$config_dir")" || return 1
   agent_cred_dir="$config_dir/secrets/near-credentials"
-  app_secrets="$(identyclaw_app_dir)/secrets"
-  account_id="$(basename "$cred_file" .json)"
+  account_id="$(python3 - "$cred_file" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(data.get("implicit_account_id") or data.get("account_id") or Path(sys.argv[1]).stem)
+PY
+)"
   dest="$agent_cred_dir/${account_id}.json"
   mkdir -p "$agent_cred_dir"
+  chmod 700 "$config_dir/secrets" "$agent_cred_dir" 2>/dev/null || true
   if [[ "$cred_file" != "$dest" ]]; then
     cp -a "$cred_file" "$dest"
     chmod 600 "$dest"
-  fi
-  if [[ ! -f "$app_secrets/${account_id}.json" && -f "$dest" ]]; then
-    mkdir -p "$app_secrets"
-    cp -a "$dest" "$app_secrets/${account_id}.json"
-    chmod 600 "$app_secrets/${account_id}.json"
+    echo "    ($(basename "$config_dir"): migrated NEAR creds → secrets/near-credentials/${account_id}.json)" >&2
   fi
 }
 

@@ -17,16 +17,16 @@ Mailbox passwords are **not** required for `init`, `build-image`, or `start` —
 
 ## Repository vs app directory
 
-The **git checkout** holds scripts and image definitions only. **Config, TLS, and secrets** live outside the repo:
+The **git checkout** holds scripts and image definitions only. **Config, TLS, and agent state** live in a sibling app directory (default `../identyclaw-agents-app`):
 
 | Path | Purpose |
 |------|---------|
-| `~/identyclaw-agents` | Clone of this repo — run `./identyclaw.sh` from here |
-| `~/identyclaw-agents-app/env.local` | Runtime settings (chmod 600; created by `./identyclaw.sh init`) |
-| `~/identyclaw-agents-app/agents/agent-{a,b,c}/` | Per-agent state (`openclaw.json`, `secrets/`, workspace) |
-| `~/identyclaw-agents-app/certs/` | TLS for production pod (not used in standalone dev) |
+| `identyclaw-agents/` | Clone of this repo — run `./identyclaw.sh` from here |
+| `../identyclaw-agents-app/env.local` | Runtime settings (chmod 600; created by `./identyclaw.sh init`) |
+| `../identyclaw-agents-app/agents/agent-{a,b,c}/` | Per-agent state (`openclaw.json`, `secrets/near-credentials/`, workspace) |
+| `../identyclaw-agents-app/certs/` | TLS for production pod (not used in standalone dev) |
 
-Override the app root: `export IDENTYCLAW_APP_DIR=/custom/path` (default: `~/identyclaw-agents-app`).
+Override the app root: `export IDENTYCLAW_APP_DIR=/custom/path` (default: `../identyclaw-agents-app` next to the clone).
 
 ## Quick start (rootless — recommended)
 
@@ -35,8 +35,8 @@ Run as your normal user (not `root`):
 ```bash
 cd ~/identyclaw-agents
 chmod +x identyclaw.sh
-./identyclaw.sh init          # creates ~/identyclaw-agents-app/ and env.local from env.example
-# Edit ~/identyclaw-agents-app/env.local if needed (emails, ports; passwords optional)
+./identyclaw.sh init          # creates ../identyclaw-agents-app/ and env.local from env.example
+# Edit ../identyclaw-agents-app/env.local if needed (emails, ports; passwords optional)
 ./identyclaw.sh build-image
 ./identyclaw.sh start all
 ./identyclaw.sh status
@@ -665,9 +665,8 @@ Webhook auth matches [`clienttest-idc`](../clienttest-idc): **Ed25519 signed at 
 On the deployment host as the SSH deploy user:
 
 ```bash
-mkdir -p ~/identyclaw-agents-app/{certs,logs,secrets,agents}
-chmod 711 ~/identyclaw-agents-app/certs
-chmod 750 ~/identyclaw-agents-app/secrets
+mkdir -p ../identyclaw-agents-app/{certs,logs,agents}
+chmod 711 ../identyclaw-agents-app/certs
 
 # Or: ./identyclaw.sh init  (creates app layout + env.local from env.example)
 cp ~/identyclaw-agents/env.example ~/identyclaw-agents-app/env.local

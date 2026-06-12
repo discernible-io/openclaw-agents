@@ -3,7 +3,7 @@
 # Mirrors .github/workflows/deploy.yml host steps. Run on the deployment host.
 #
 # Required env:
-#   APP_DIR              Host app root (e.g. ~/identyclaw-agents-app)
+#   APP_DIR              Host app root (default: ../identyclaw-agents-app sibling of repo)
 #   OPENCLAW_IMAGE       Full image ref (ghcr.io/.../openclaw-himalaya:SHA)
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #

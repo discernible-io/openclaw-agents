@@ -1,4 +1,4 @@
-# Identyclaw repo — code only. Runtime config/secrets live in ~/identyclaw-agents-app/.
+# Identyclaw repo — code only. Runtime config/agent state live in ../identyclaw-agents-app/.
 
 # --- Secrets / local env ---
 env.local

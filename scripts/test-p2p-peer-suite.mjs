@@ -6,8 +6,8 @@
  *   NODE_TLS_REJECT_UNAUTHORIZED=0 node test-p2p-peer-suite.mjs
  *
  * Env overrides:
- *   PEER_A_BASE  default https://agent-a.dihola.io:9443  (Juanelo inbound)
- *   PEER_B_BASE  default https://agent-b.dihola.io:4443  (Archimedes)
+ *   PEER_A_BASE  default https://webhook.dihola.io:7443  (Juanelo)
+ *   PEER_B_BASE  default https://webhook.discernible.io:7443  (Archimedes)
  */
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -16,8 +16,8 @@ import { join } from "node:path";
 import https from "node:https";
 
 // In pod: nginx listens on 4443 (host maps 9443→4443 for agent-a). Use 4443 from containers.
-const PEER_A = (process.env.PEER_A_BASE || "https://agent-a.dihola.io:4443").replace(/\/$/, "");
-const PEER_B = (process.env.PEER_B_BASE || "https://agent-b.dihola.io:4443").replace(/\/$/, "");
+const PEER_A = (process.env.PEER_A_BASE || "https://webhook.dihola.io:7443").replace(/\/$/, "");
+const PEER_B = (process.env.PEER_B_BASE || "https://webhook.discernible.io:7443").replace(/\/$/, "");
 
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
 process.env.SUPPRESS_NO_CONFIG_WARNING = "true";

@@ -5,7 +5,7 @@
  * Usage:
  *   node scripts/test-rodit-webhooks.mjs \
  *     --creds /path/to/near-credentials.json \
- *     --target https://agent-b.dihola.io:4443/hooks/wake \
+ *     --target https://webhook.discernible.io:7443/hooks/wake \
  *     [--signer-creds /other/agent/creds.json]
  */
 import { createRequire } from "node:module";

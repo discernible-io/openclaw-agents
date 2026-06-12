@@ -8,7 +8,7 @@
  *   node scripts/test-webhooks-p2p.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/a2a \
  *     --peer-creds /path/to/agent-a/near-credentials.json \
- *     --local https://agent-b.dihola.io:4443
+ *     --local https://webhook.discernible.io:7443
  */
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";

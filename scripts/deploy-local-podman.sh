@@ -10,7 +10,7 @@
 #   ./scripts/deploy-local-podman.sh --skip-build
 #
 # Env:
-#   APP_DIR                  Default: ~/identyclaw-agents-app
+#   APP_DIR                  Default: ../identyclaw-agents-app (sibling of repo)
 #   APP_PORT                 Default: 9443 (both tiers for now)
 #   TARGET                   Override tier (default: from current git branch)
 #   GITHUB_SHA               Image tag (default: git HEAD)
@@ -35,16 +35,17 @@ for arg in "$@"; do
 done
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-APP_DIR="${APP_DIR:-$HOME/identyclaw-agents-app}"
+
+# shellcheck source=lib.sh
+source "$REPO_ROOT/scripts/lib.sh"
+
+APP_DIR="${APP_DIR:-$(identyclaw_app_dir)}"
 APP_DIR="${APP_DIR/#\~/$HOME}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 USE_LOCAL_RESOLVE="${USE_LOCAL_RESOLVE:-0}"
 PULL_FROM_GHCR="${PULL_FROM_GHCR:-0}"
 HEALTH_CHECK_MAX_ATTEMPTS="${HEALTH_CHECK_MAX_ATTEMPTS:-5}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-5}"
-
-# shellcheck source=lib.sh
-source "$REPO_ROOT/scripts/lib.sh"
 
 if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
   DEPLOY_SHA="${GITHUB_SHA:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
@@ -64,7 +65,6 @@ esac
 APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
 POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
 POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
-DOMAIN="$(deploy_tier_health_domain "$DEPLOY_TIER")"
 NGINX_BUILD_ENV="$(deploy_tier_nginx_build_env "$DEPLOY_TIER")"
 
 github_repository_from_origin() {
@@ -130,12 +130,13 @@ bash "$REPO_ROOT/scripts/deploy-pod.sh"
 
 echo "==> Operator CLI (pod restart / status): ${APP_DIR}/repo/identyclaw.sh"
 
-HEALTH_URL="https://${DOMAIN}:${POD_HOST_PORT}/health"
+read -r HEALTH_HOST HEALTH_PORT < <(IDENTYCLAW_APP_DIR="$APP_DIR" deploy_health_ingress)
+HEALTH_URL="https://${HEALTH_HOST}:${HEALTH_PORT}/health"
 echo "==> Health check: ${HEALTH_URL} (tier=${DEPLOY_TIER}, tag=${IMAGE_TAG})"
 attempt=0
 while [[ $attempt -lt $HEALTH_CHECK_MAX_ATTEMPTS ]]; do
   if [[ "$USE_LOCAL_RESOLVE" == 1 ]]; then
-    if curl -sk --resolve "${DOMAIN}:${POD_HOST_PORT}:127.0.0.1" "$HEALTH_URL" | grep -q healthy; then
+    if curl -sk --resolve "${HEALTH_HOST}:${HEALTH_PORT}:127.0.0.1" "$HEALTH_URL" | grep -q healthy; then
       echo "healthy"
       exit 0
     fi

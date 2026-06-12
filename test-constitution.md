@@ -1,53 +1,88 @@
-# TEST CONSTITUTION
+# TEST CONSTITUTION — identyclaw-agents
 
-> **Before editing:** Review [`documentation-standard.md`](documentation-standard.md).
+Mission: verify each deployed **OpenClaw agent gateway** (A2A ingress, RODiT-signed webhooks, optional mail and IdentyClaw API touchpoints) behaves correctly on this host. Report **findings** (what happened vs what the agent stack requires). Diagnose and fix gateway, plugin, or test-harness gaps when findings show incorrect behavior.
 
-YOU ARE THE TEST SUITE
+**Out of scope here:** the IdentyClaw API deployment-time suite in the sibling [`clienttest-idc`](../clienttest-idc) repo (`target-swagger.json`, `SPEC_PERF_*`, `clienttest-idc-container`). Run that suite against `https://api.identyclaw.com` when validating API contract and performance gates.
 
-IMPORTANT: Tests run once per deployment. You cannot run them interactively.
-
-Terminology rule: test outcomes are only `passed` or `not-passed` (not "success/failure").
-
-Mission: verify the API **does what it should** and **does not do what it should not**, per `@target-swagger.json`. Report **findings** (what happened vs what the spec requires). Diagnose and fix API implementation gaps when findings show incorrect behavior.
+Terminology: test outcomes are only **`passed`** or **`not-passed`** (not "success/failure"). Scripts may print `PASS`/`FAIL` on stdout; treat `PASS` → `passed` and `FAIL` → `not-passed` in reports.
 
 ## Core Workflow (Do This Every Run)
 
-1. Start with logs:
-   - Run: `podman logs clienttest-idc-container`
-   - Search for latest `not-passed` outcomes using log search tools (`rg` or equivalent).
-2. For every `not-passed` test, answer all three (findings only):
-   - What happened? (status, body, headers, timing — observed facts)
-   - What should the API have done or not done? (per `@target-swagger.json`)
-   - What must change (test suite or API) so the behavior matches the spec?
-3. If you cannot explain what should have happened:
-   - Fix the test module/spec alignment first, then verify in the next run.
-4. If you cannot explain what happened:
-   - Add or improve test logging until behavior is fully explainable in the next run.
+1. **Preconditions**
+   - Agents are running: `podman ps` shows `openclaw-agent-a`, `openclaw-agent-b`, and/or `openclaw-agent-c` (pod mode) or standalone containers from `./identyclaw.sh start`.
+   - Runtime config lives under `../identyclaw-agents-app/` (`env.local`, `agents/<id>/`, TLS certs) — not in the git checkout.
+   - For HTTPS ingress tests, nginx sidecar is up (`identyclaw-nginx`) and `AGENT_*_PUBLIC_HOST` / ingress URLs in `env.local` match the tier (development **4443**, main **9443**).
 
-Do not ask preliminary questions before log analysis. Diagnose from logs first.
+2. **Run the suites** (operator-driven; not a single startup hook):
+   ```bash
+   ./identyclaw.sh test-a2a agent-a agent-b
+   ./identyclaw.sh test-webhook agent-a
+   ./identyclaw.sh test-webhook-p2p agent-b agent-a
+   ./identyclaw.sh test-mail agent-a
+   ```
+   Advanced / CI-style runs execute `scripts/*.mjs` inside an agent container (see [Test inventory](#test-inventory)).
 
-## SDK-First Policy (With Explicit Exceptions)
+3. **Start with output, then logs**
+   - Capture stdout/stderr from the command above; search for `FAIL`, non-zero exit, or `not-passed`.
+   - For gateway-side evidence: `podman logs openclaw-agent-<id>` and `podman logs identyclaw-nginx`.
 
-Use `/sdk` facilities whenever possible, especially for valid JWT flows that should match real RODiT client behavior.
+4. For every **not-passed** case, answer all three (findings only):
+   - **What happened?** (HTTP status, body, headers, receipt entries, timing — observed facts)
+   - **What should the agent have done or not done?** (per [Expected behavior](#expected-behavior) below)
+   - **What must change?** (test script, `identyclaw.sh`, plugin, nginx config, Passport `webhook_url`, or upstream API)
+
+5. If you cannot explain what should have happened → fix the test script or document the contract in this file first.
+6. If you cannot explain what happened → improve test logging (`scripts/lib-rodit-webhook-test.mjs`, suite `.mjs` files) until the next run is fully explainable.
+
+Do not ask preliminary questions before inspecting command output and container logs.
+
+## Expected Behavior
+
+These are the contracts this repo's tests enforce (not OpenAPI from `clienttest-idc`).
+
+| Surface | Should do | Should not do |
+| --- | --- | --- |
+| `POST /a2a` without `Authorization` | Return **401** | Accept unauthenticated JSON-RPC |
+| Agent-card discovery (`/.well-known/agent-card.json`) | Return **200** with reachable card when agent is up | 404/5xx while gateway is healthy |
+| `POST /hooks/wake` (and `/hooks/agent`) without RODiT origin signature | Return **400** or **401** | Accept unsigned or garbage `x-signature` |
+| `POST /hooks/*` with valid `@rodit/rodit-auth-be` signature | Return **200** / accepted webhook response | Reject a correctly signed peer payload |
+| P2P webhook delivery (`send_rodit_webhook` / `send-rodit-webhook.mjs`) | Peer records event on `GET /hooks/_receipts` | Silent drop with no receipt |
+| `/api/testhola` → agent `webhook_url` (optional, `SKIP_TESTHOLA=0`) | Signed delivery to `/hooks/wake` and `/hooks/agent` | Skip verification when HOLA is valid |
+| IMAP (`test-mail`) | Authenticate and list envelopes when mailbox password is set | Fail auth when credentials are configured |
+
+Reference implementation for single-host webhook ingress: [`clienttest-idc`](../clienttest-idc).
+
+## Test Inventory
+
+| Entry point | Module | What it exercises |
+| --- | --- | --- |
+| `./identyclaw.sh test-a2a <from> <to>` | `identyclaw.sh` | Agent-card fetch both ways; unauthenticated `POST /a2a` → 401 |
+| `./identyclaw.sh test-webhook <id>` | `scripts/test-rodit-webhooks.mjs` (+ optional outbound, testhola) | Unsigned/invalid-sig rejection; signed ingress via `rodit-auth-be` |
+| `./identyclaw.sh test-webhook-p2p <sender> <receiver>` | `scripts/test-webhooks-p2p-suite.mjs` | Outbound + inbound P2P webhook receipts |
+| `./identyclaw.sh test-mail <id>` | Himalaya in container | IMAP connectivity |
+| `scripts/test-a2a-p2p-suite.mjs` | A2A + webhooks | Mediated/P2P auth, optional webhook section |
+| `scripts/test-p2p-peer-suite.mjs` | Dual-mode A2A | Positive and negative P2P cases |
+| `scripts/test-a2a-rodit-auth.mjs` | RODiT on `/a2a` | Bearer rejection matrix |
+| `scripts/test-webhooks-testhola.mjs` | IdentyClaw API + agent | HOLA-triggered webhook delivery |
+| `openclaw-identyclaw-plugin/scripts/smoke-test.mjs` | IdentyClaw HTTP API | Public/protected endpoint reachability (needs `IDENTYCLAW_JWT` for auth routes) |
+
+Shared helpers: `scripts/lib-rodit-webhook-test.mjs` (receipts, outbound/inbound runners).
+
+## RODiT / SDK-First Policy
+
+Use **`@rodit/rodit-auth-be`** from the agent's A2A extension (`/home/node/.openclaw/extensions/a2a`) for valid signed flows — same path production peers use.
 
 For authenticated normal-client calls:
-- Use SDK-authorized `client.request()` patterns.
-- Preserve JWT auth behavior.
-- Do not replace SDK auth with manual requests that can silently drop/bypass authorization.
+- Prefer `RoditClient`, `login_server`, and SDK signing helpers loaded from the extension.
+- Do not replace SDK auth with hand-rolled requests that can drop `Authorization` or mis-canonicalize the signed body.
 
-When passing custom headers to `client.request()`, ensure authorization is preserved (for example, explicitly include the bearer token if required by SDK behavior).
+Skipping the SDK is allowed and often required for **negative** cases:
+- missing or malformed `x-signature` / `x-timestamp`
+- unsigned POST bodies
+- wrong `Content-Type`
+- truncated payloads
 
-Skipping the SDK is allowed and often required for negative/protocol-edge cases the SDK is not designed to produce, including:
-- intentionally malformed JWT strings
-- impossible `Authorization` values
-- login payloads with invalid/missing signatures
-- rate-limit probes
-- incorrect `Content-Type`
-- truncated/corrupt payloads
-
-In those cases, use direct HTTP (`fetch` or equivalent) against the API base URL so real middleware and handlers are exercised.
-
-Deep dependencies (shared utilities, targeted SDK internals) are acceptable for diagnostics/coverage as long as protocol-sensitive rules below are respected.
+In those cases, use direct `fetch` against the agent ingress URL so real nginx + gateway middleware are exercised.
 
 ## Protocol-Sensitive Rule (Do Not Alter While Debugging)
 
@@ -59,179 +94,85 @@ Do not change protocol-critical formats or canonicalization rules during debuggi
 - checksum algorithm
 - signature encoding requirements
 
-Changing these can invalidate digital signatures and produce misleading `not-passed` outcomes.
+Changing these can invalidate digital signatures and produce misleading **not-passed** outcomes.
 
 ## Cryptographic Signature Requirements
 
-Use real cryptographic signatures (Ed25519, etc.) generated via SDK-compatible key handling.
+Use real Ed25519 signatures via NEAR credential JSON and `@rodit/rodit-auth-be`.
 
-Do not use fake or placeholder signatures. Signature tests must use real signatures to validate legitimate behavior.
-
-For key-pair handling patterns, consult `/sdk` implementations.
+Do not use fake or placeholder signatures for positive cases. Negative probes may send intentionally invalid hex strings.
 
 ## Findings-First Reporting
 
-Tests may encode any internal case matrix (including fields named `expect*` in code). **Logs and published results must report findings**, not expectation jargon.
+**Logs and published results must report findings**, not expectation jargon.
 
 Use this shape:
-- **What happened** — observed HTTP status, response body fields, errors, timings.
-- **What the spec requires** — allowed or required behavior from `@target-swagger.json` (should do / should not do).
-- **Outcome** — `passed` if behavior matches the spec; `not-passed` if it does not.
+- **What happened** — observed HTTP status, response body fields, receipt rows, errors, timings.
+- **What the stack requires** — from [Expected behavior](#expected-behavior) (should do / should not do).
+- **Outcome** — `passed` if behavior matches; `not-passed` if it does not.
 
-Do not write "not-passed as expected", "failed as expected", or similar. A negative probe where the API correctly rejects invalid input is a **`passed`** test; say "API returned 400 with `checksum_invalid`" (finding), not "failed as expected."
+Do not write "not-passed as expected" or "failed as expected." A negative probe where the gateway correctly rejects invalid input is a **`passed`** test; say "agent returned 401 with unsigned POST" (finding), not "failed as expected."
 
-In structured sub-results, `expected` / `actual` mean **per-spec vs observed**, not test-runner wishful thinking.
+In structured sub-results, `expected` / `actual` mean **per-contract vs observed**, not test-runner wishful thinking.
 
 ## Passed vs Not-Passed Logic
 
-`passed` — the API behaved as the spec requires for that case (including correct rejection of invalid input).
+**`passed`** — the agent (or integrated API touchpoint) behaved as required for that case, including correct rejection of invalid input.
 
-`not-passed` — the API did something the spec forbids, omitted something the spec requires, or returned the wrong status/payload/error contract.
+**`not-passed`** — wrong status/payload, missing receipt, broken discovery, or acceptance of input that must be rejected.
 
 Never hide, mock away, or fallback around real errors in ways that obscure root cause.
 
-## Suite Focus and Disabling Policy
+## Exceptional Tests (Cross-Service)
 
-To focus debugging effort, passed suites may be disabled in `@config/default.json`:
-- move suite names from `ENABLED_TEST_SUITES` to `EXCLUDED_TESTS`
-- do not delete tests
+Some tests validate integration side effects not fully specified in a single OpenAPI file:
 
-IMPORTANT RULE:
-- Only passed tests may be disabled by the test system.
-- Not-passed tests may only be disabled by the user.
-- The test system must never disable not-passed tests.
+1. **Webhook receipt verification** — `GET /hooks/_receipts` after P2P or outbound delivery (`lib-rodit-webhook-test.mjs`).
+2. **`/api/testhola` delivery** — IdentyClaw API signs and POSTs to the agent's Passport `webhook_url` (`test-webhooks-testhola.mjs`; gated by `SKIP_TESTHOLA`, default `1` in `identyclaw.sh`).
 
-## Exceptional Tests Outside Swagger
+Rules:
+- Documented in this section; do not silently remove assertions.
+- Use real runtime paths (no mocked delivery).
+- Preserve protocol-sensitive and cryptographic rules above.
+- Report with the same what happened / what should happen / required fix structure.
 
-Some tests intentionally validate real integration side effects that are not fully described in `@target-swagger.json`.
+## Reporting Defects
 
-Webhook delivery verification (`/webhook`, `/hooks/wake`, `/hooks/agent`) is an approved exceptional category and may be treated as required even when endpoint-side effects are not explicitly specified in swagger.
+When a **not-passed** outcome is caused by implementation (not test logic), document:
 
-Rules for exceptional tests:
-- Must be explicitly documented in this constitution (like webhooks here).
-- Must use real runtime behavior (no mocked delivery path).
-- Must preserve protocol-sensitive and cryptographic rules in this document.
-- Must report failures with clear "what happened / what should happen / required fix" evidence, same as swagger-backed tests.
+### Title
+**Surface**: e.g. `POST https://agent-b…/hooks/wake`  
+**Test**: e.g. `test-rodit-webhooks.mjs` → `signed POST via rodit-auth-be`  
+**What happened**: Observed status, body, receipts  
+**What should happen**: Row from [Expected behavior](#expected-behavior)  
+**Evidence**: Command output or `podman logs` excerpt  
+**Required fix**: Concrete change (plugin, nginx, Passport metadata, `identyclaw.sh`, or upstream API)
 
-When swagger and exceptional-test behavior diverge, do not silently downgrade assertions; update this constitution and keep the intended assertion level explicit.
+## Credentials
 
-## Reporting API Bugs
+Per-agent NEAR keys — never committed.
 
-When a `not-passed` test is caused by API implementation (not test logic), document it using:
+| Role | Location | Used for |
+| --- | --- | --- |
+| Agent primary | `../identyclaw-agents-app/agents/<id>/secrets/near-credentials/*.json` (mounted in container) | JWT login, webhook signing, A2A auth |
+| Peer (second agent) | `../identyclaw-agents-app/agents/<peer-id>/secrets/near-credentials/*.json` or `--peer-creds` | P2P webhook inbound simulation, dual-agent suites |
 
-### Bug Title
-**Endpoint**: `/api/endpoint/path`  
-**Test**: `testFunctionName`  
-**What Happened**: Actual behavior observed in logs  
-**What the API Should Do (per spec)**: Required or forbidden behavior from `@target-swagger.json`  
-**Logs**: Relevant excerpts proving the not-passed outcome  
-**Required Fix**: Concrete API code/config changes required
+Deploy/bootstrap: `./identyclaw.sh init` seeds agent trees under `../identyclaw-agents-app/agents/`; `deploy-pod.sh` / `./scripts/deploy-local-podman.sh` start the pod.
+
+**App root resolution:** `IDENTYCLAW_APP_DIR` defaults to `../identyclaw-agents-app` (sibling of the git clone). Override with `export IDENTYCLAW_APP_DIR=…` on CI hosts where the layout differs.
+
+**Legacy migration:** app-level `secrets/*.json` and `secrets/peer-credentials/<id>/` are still read once; bootstrap copies into `agents/<id>/secrets/near-credentials/`.
+
+Optional: `IDENTYCLAW_API_BASE_URL` in `env.local` (default `https://api.identyclaw.com`) for testhola and plugin smoke tests.
 
 ## Test Reliability Heuristic
 
-Older test modules (inspect via git history) are generally more trustworthy. Compare newer not-passed modules against older established patterns, especially for SDK integration and test harness behavior.
+Prefer **`./identyclaw.sh`** wrappers over ad-hoc curls — they resolve ingress URLs, copy scripts into containers, and set `NODE_TLS_REJECT_UNAUTHORIZED=0` for self-signed tier certs.
 
-## Cryptographic Credentials
+When comparing failures, treat **`scripts/lib-rodit-webhook-test.mjs`** and **`test-rodit-webhooks.mjs`** as the canonical webhook patterns; newer suites should align with their signing and receipt checks.
 
-Two Ed25519 key pairs are required for full coverage (self-HOLA + peer/subagent HOLA). Both are supplied as base64-encoded NEAR credential JSON — never committed.
-
-### Primary test / agent credentials (SDK path)
-- **Env**: `NEAR_CREDENTIALS_JSON_B64` in host `secrets/secrets.env` (see `configuration-standard.md`)
-- **Loader**: SDK config + `src/test-utils/near-test-credentials.js` → `loadPrimaryNearCredentials()`
-- **Purpose**: Default agent key for JWT login, HOLA self-tests (`/api/testhola`), and parent-side delegated-signer signatures
-- **Used in**: `identyclaw-api`, `hola-verification-coverage`, `testMultipleDelegatedSigners`, `testDelegatedSignerAuthorization` (agent)
-
-### Peer / subagent credentials (test-only, outside SDK config)
-- **Env**: `NEAR_TEST_PEER_CREDENTIALS_JSON_B64` in host `secrets/testing.env` (sibling of `secrets.env`; loaded by `src/test-utils/load-testing-env.js`, not mapped in `config/custom-environment-variables.json`)
-- **Loader**: `src/test-utils/near-test-credentials.js` → `loadPeerNearCredentials()` (reads `process.env` only)
-- **Purpose**: Second key pair for peer-to-peer HOLA, subagent HOLA, and delegated-signer tests that require a distinct signer
-- **Used in**: `testSubagentHolaVerification`, `testDelegatedSignerAuthorization` (subagent)
-- **Skip behavior**: Tests that need the peer key are skipped with `skipped: true` when `testing.env` is missing or the variable is unset
-
-Deploy passes both env files when present: `--env-file secrets/secrets.env` and optionally `--env-file secrets/testing.env`.
-
-Credential JSON uses NEAR format; tests convert to tweetnacl for signing.
-
-## Performance SLOs (`SPEC_PERF_*`)
-
-Prove Identyclaw is **not** chain-bound for authorization traffic. Run against **`https://api.identyclaw.com`** (main) or a staging host documented in suite config. Measure **end-to-end client latency** (fetch/curl from the test runner), not server-only logs.
-
-### Tags
-
-| Tag | Blocks deploy? | Purpose |
-| --- | --- | --- |
-| `@perf-main` | — | Requires healthy `/health`; fetch/curl login (not `login_server()` unless `@perf-mitm-path`) |
-| `@perf-gate` | **Yes** | Correctness + architectural invariants (must pass) |
-| `@perf-metric` | **No** | Latency reporting vs `SPEC_PERF_*` targets (`pass` / `warn` / `fail` — logged only) |
-| `@perf-degraded` | Optional | When RPC is down |
-| `@perf-mitm-path` | — | May use `login_server()` |
-
-**Environment preconditions (infra abort, not perf regression, if unmet):**
-
-- Target `/health` returns `status: "healthy"` (not `degraded`) for runs tagged `@perf-main`.
-- `fetch failed` / HTTP **502** during perf setup → labeled **infra abort**; does not count as `@perf-metric` regression.
-
-Warm-up: discard first sample per endpoint after login.
-
-### `@perf-gate` — pass/fail (blocks deploy)
-
-| Test / spec | Must pass |
-| --- | --- |
-| `SPEC_PERF_JWT_STEADY_POLL` | All **200** while `secondsUntilSessionExp > 0`; **`renewalCount > 0`** before credential `exp` |
-| `SPEC_PERF_HOLANONCE_BURST` | All **200** within 60 s; no **429**/**5xx**; **0 NEAR RPC** delta on S2 |
-| `SPEC_PERF_HOLANONCE_S2_ZERO_RPC` | **0 NEAR RPC** during S2 holanonce sampling (when metrics available) |
-| `SPEC_PERF_CHAIN_READ_RATIO` | `chainReads / totalRequests ≤ 0.10` |
-| `SPEC_PERF_LOGIN_ERROR_BUDGET` | `< 1%` login **5xx**; **0%** timestamp **5xx** |
-| `testSessionLifetimePollUntilExpiry` | Per session-lifetime suite (`SPEC_REQUIRES_SESSION_POLL`) |
-| `SPEC_PERF_RPC_DEGRADED_HEALTH` | When `/health` is `degraded` (@perf-degraded) |
-
-### `@perf-metric` — report only (does not block deploy)
-
-Record p50/p95/max against targets below. Status: **`pass`** / **`warn`** / **`fail`**. Emit `PERF METRIC` log lines and structured JSON records.
-
-For `SPEC_PERF_JWT_STEADY_POLL`, emit three series:
-
-1. `s2_non_renewal_p95` — session maintenance (apples-to-apples with traditional IAM)
-2. `s2_renewal_p95` — poll(s) with `New-Token`
-3. `s2_all_polls_p95` — full series (headline only)
-
-Example log line:
-
-```
-PERF METRIC  SPEC_PERF_JWT_STEADY_POLL  p95=357ms target=200ms  WARN  (gate: PASS renewalCount=1 all200=true)
-PERF GATE    SPEC_PERF_HOLANONCE_BURST  all200=true rpcDelta=0  PASS
-```
-
-### Latency targets (`@perf-metric` — reported, not deployment blockers)
-
-| Spec ID | Endpoint / flow | Class | p95 target (ms) | Samples (min) | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `SPEC_PERF_LOGIN_TIMESTAMP_P95_MS` | `GET /api/login/timestamp` | S1 | **250** | 30 | No auth |
-| `SPEC_PERF_LOGIN_POST_P95_MS` | `POST /api/login` (full bootstrap) | S1 | **400** | 20 | Includes local sign |
-| `SPEC_PERF_HOLANONCE_P95_MS` | `GET /api/holanonce16ts` | S2 | **150** | 50 | Also `@perf-gate` 0 RPC |
-| `SPEC_PERF_JWT_PROTECTED_NOP_P95_MS` | Lightweight protected GET with JWT | S2 | **200** | 30 | JWT middleware only |
-| `SPEC_PERF_ME_IDENTITY_P95_MS` | `GET /api/me/identity` | S3 | **1200** | 20 | Chain read expected |
-| `SPEC_PERF_VERIFY_HOLA_P95_MS` | `POST /api/identity/verify` (valid fresh HOLA) | S3 | **1500** | 15 | Unique nonce per sample |
-| `SPEC_PERF_AGENTS_LIST_P95_MS` | `GET /api/agents?limit=20` | S4 | **800** | 15 | Public |
-| `SPEC_PERF_HEALTH_P95_MS` | `GET /health` | — | **200** | 20 | Cached RPC probe |
-
-### Throughput / sustained-session specs
-
-| Spec ID | `@perf-gate` criteria | `@perf-metric` (report only) |
-| --- | --- | --- |
-| `SPEC_PERF_HOLANONCE_BURST` | All **200**; no **429**/**5xx**; 0 NEAR RPC | p95 vs `SPEC_PERF_HOLANONCE_P95_MS` |
-| `SPEC_PERF_JWT_STEADY_POLL` | All **200**; `renewalCount > 0`; min duration | `s2_non_renewal` / `s2_renewal` / `s2_all_polls` p95 vs `SPEC_PERF_JWT_PROTECTED_NOP_P95_MS` |
-| `SPEC_PERF_LOGIN_ERROR_BUDGET` | `< 1%` login **5xx**; 0 timestamp **5xx** | — |
-| `SPEC_PERF_CHAIN_READ_RATIO` | Ratio ≤ **0.10** | — |
-
-### Degradation (`@perf-degraded`)
-
-| Spec ID | Success criteria |
-| --- | --- |
-| `SPEC_PERF_RPC_DEGRADED_HEALTH` | When `/health` reports `degraded`: S1/S2 still **200**; S3 verify may **5xx** with `IDENTITY_VERIFICATION_FAILED` — must **not** return `verified: true` without checks |
-
-**Suite module:** `performanceSlo` (`src/test-modules/performance-slo.js`). Thresholds in `src/test-modules/perf-slo-utils.js` (`PERF_SPECS`). Only **`@perf-gate`** failures block deployment (same train as `sessionLifetime`). **`@perf-metric`** warnings are logged in the suite summary (`gateFailures` vs `metricWarnings`).
+Inspect git history for older modules when a newer suite disagrees with an established pattern.
 
 ## Continuous Improvement
 
-If you identify ambiguity or recurring failure patterns, propose a constitution improvement with concrete wording.
+If you identify ambiguity or recurring failure patterns, propose a constitution improvement with concrete wording in this file.

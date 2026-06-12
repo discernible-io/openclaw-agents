@@ -7,7 +7,7 @@
  *   node scripts/test-webhooks-testhola.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/a2a \
  *     --creds /path/to/near-credentials.json \
- *     --agent-base https://agent-b.dihola.io:4443 \
+ *     --agent-base https://webhook.discernible.io:7443 \
  *     --api-base https://api.identyclaw.com
  */
 import { createRequire } from "node:module";
