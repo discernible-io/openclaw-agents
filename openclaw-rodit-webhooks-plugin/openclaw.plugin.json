@@ -2,6 +2,9 @@
   "id": "rodit-webhooks",
   "name": "RODiT Webhooks",
   "description": "Inbound OpenClaw webhooks with RODiT Ed25519 origin signatures (x-signature + x-timestamp)",
+  "contracts": {
+    "tools": ["send_rodit_webhook"]
+  },
   "activation": {
     "onStartup": true
   },
