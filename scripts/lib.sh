@@ -1837,7 +1837,11 @@ build_a2a_peer_map() {
     else
       peers_json+=","
     fi
-    peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\"}"
+    if [[ -n "$public_base" ]]; then
+      peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\",\"loginBaseUrl\":\"${public_base}\"}"
+    else
+      peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\"}"
+    fi
   done
   peers_json+="}"
   echo "$peers_json"

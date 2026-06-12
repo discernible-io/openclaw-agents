@@ -701,7 +701,7 @@ NODE
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" node /tmp/verify-webhook-receipt.mjs || exit_code=1
   fi
 
-  exit "$exit_code"
+  return "$exit_code"
 }
 
 cmd_test() {
