@@ -2258,6 +2258,28 @@ patch_a2a_dynamic_peers() {
   bash "$patch" "$ext_dir"
 }
 
+# Remove dynamicPeersFromJwt so ClawHub install can validate config before schema patch.
+strip_a2a_dynamic_peers_config_for_install() {
+  local config_dir="$1"
+  local container="${2:-}"
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+outbound = (
+    data.get("plugins", {})
+    .get("entries", {})
+    .get("identyclaw-a2a", {})
+    .get("config", {})
+    .get("outbound", {})
+)
+if outbound.pop("dynamicPeersFromJwt", None) is not None:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 patch_a2a_plugin() {
   local ext_dir="$1"
   local container="${2:-}"
@@ -2416,10 +2438,16 @@ install_a2a_plugin() {
   fi
 
   echo "    (installing A2A plugin from ${plugin_spec}…)" >&2
+  # Fresh plugin manifests reject dynamicPeersFromJwt until patch-a2a-dynamic-peers runs.
+  local restore_dynamic_peers=0
+  if a2a_dynamic_peers_from_jwt_enabled; then
+    strip_a2a_dynamic_peers_config_for_install "$config_dir" "$container" && restore_dynamic_peers=1
+  fi
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
   local install_args=()
   [[ "$force" == "1" ]] && install_args+=(--force)
   if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
+    [[ "$restore_dynamic_peers" == "1" ]] && ensure_a2a_config "$id" "$config_dir" "$container" || true
     return 1
   fi
   a2a_ext_ready "$config_dir" "$container" || {

@@ -8,13 +8,28 @@ ext_dir="${1:?usage: patch-a2a-dynamic-peers.sh <plugin-ext-dir>}"
 IDENTYCLAW_ROOT="${IDENTYCLAW_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 registry_src="${IDENTYCLAW_ROOT}/scripts/a2a-dynamic-peer-registry.js"
 registry_dst="${ext_dir}/dist/auth/a2a-dynamic-peer-registry.js"
-[[ -f "$registry_src" ]] || exit 0
-
-cp "$registry_src" "$registry_dst"
+if [[ -f "$registry_src" ]]; then
+  mkdir -p "$(dirname "$registry_dst")"
+  cp "$registry_src" "$registry_dst"
+fi
 
 python3 - "$ext_dir" <<'PY'
+import json
 import sys
 from pathlib import Path
+
+ext = Path(sys.argv[1])
+manifest = ext / "openclaw.plugin.json"
+if manifest.is_file():
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    outbound = data.get("configSchema", {}).get("properties", {}).get("outbound", {})
+    props = outbound.get("properties", {})
+    if "dynamicPeersFromJwt" not in props:
+        props["dynamicPeersFromJwt"] = {
+            "type": "boolean",
+            "description": "Register outbound peers dynamically from inbound JWT rodit_webhookurl",
+        }
+        manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 ext = Path(sys.argv[1])
 inbound = ext / "dist/auth/rodit-inbound.js"
