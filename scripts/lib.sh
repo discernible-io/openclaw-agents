@@ -657,6 +657,20 @@ rodit_self_configure_enabled() {
   [[ "${IDENTYCLAW_RODIT_SELF_CONFIGURE:-1}" != "0" ]]
 }
 
+# Open A2A to any IdentyClaw Passport holder via P2P login (inbound promiscuous + dynamic outbound peers).
+a2a_open_p2p_enabled() {
+  load_env
+  [[ "${IDENTYCLAW_A2A_OPEN_P2P:-0}" != "0" ]]
+}
+
+a2a_dynamic_peers_from_jwt_enabled() {
+  load_env
+  if a2a_open_p2p_enabled; then
+    return 0
+  fi
+  [[ "${IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT:-0}" != "0" ]]
+}
+
 # Passport metadata via RoditClient.getConfigOwnRodit() — webhook_url, api_base, owner_id, host, port.
 probe_rodit_passport_urls_json() {
   local config_dir="$1"
@@ -745,6 +759,10 @@ agent_a2a_inbound_auth_mode() {
     echo "$explicit"
     return 0
   fi
+  if a2a_open_p2p_enabled; then
+    echo "p2p"
+    return 0
+  fi
   echo "${IDENTYCLAW_A2A_INBOUND_AUTH_MODE:-mediated}"
 }
 
@@ -758,6 +776,10 @@ agent_a2a_outbound_auth_mode() {
   esac
   if [[ -n "$explicit" ]]; then
     echo "$explicit"
+    return 0
+  fi
+  if a2a_open_p2p_enabled; then
+    echo "p2p"
     return 0
   fi
   echo "${IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE:-mediated}"
@@ -1785,8 +1807,16 @@ For outbound HOLA, prefer \`identyclaw_create_hola\` (plugin v1.3.0+) or follow 
 - **Display name:** ${display_name}
 EOF
   if [[ "$has_a2a" == "yes" ]]; then
+    local open_p2p_note=""
+    if a2a_open_p2p_enabled; then
+      open_p2p_note="
+- **Open P2P:** inbound accepts any Passport holder via \`POST /api/login\` + \`POST /a2a\`. Outbound peers are registered dynamically from inbound JWT \`rodit_webhookurl\` (no \`A2A_PEER_AGENTS\` required for callbacks)."
+    elif a2a_dynamic_peers_from_jwt_enabled; then
+      open_p2p_note="
+- **Dynamic peers:** outbound entries are upserted from inbound JWT \`rodit_webhookurl\` after successful auth."
+    fi
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<EOF
-- **Configured peers:** ${peers} (see \`plugins.entries.identyclaw-a2a.config.outbound.agents\` in \`openclaw.json\`).
+- **Configured peers:** ${peers} (static bootstrap list; see \`plugins.entries.identyclaw-a2a.config.outbound.agents\`).${open_p2p_note}
 
 ### A2A tools
 
@@ -1798,7 +1828,7 @@ EOF
 | \`a2a_update_agent_card\` | Update this agent’s public Agent Card |
 | \`send_rodit_webhook\` | After a delay (default 10s), sign and POST \`/hooks/wake\` to a peer from \`outbound.agents\` |
 
-Prefer A2A for ongoing work with known peers (agent-a ↔ agent-b). Use \`send_rodit_webhook\` to wake a peer via RODiT-signed webhook (not A2A). Use IdentyClaw HOLA when verifying identity of an unknown sender or proving your Passport to a human-facing channel.
+For unknown senders: \`identyclaw_verify_hola\` before trusting chat claims. Open P2P inbound does not replace HOLA for impersonation checks. To message a never-seen peer proactively, use \`identyclaw_get_agent_identity\` / \`identyclaw_list_agents\` for discovery; they must expose a public Agent Card and accept P2P login.
 EOF
   else
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<'EOF'
@@ -1982,7 +2012,7 @@ ensure_a2a_config() {
     sync_identyclaw_env "$config_dir"
   fi
 
-  local audience display_name public_base_url peers_json inbound_auth_mode outbound_auth_mode p2p_audience
+  local audience display_name public_base_url peers_json inbound_auth_mode outbound_auth_mode p2p_audience dynamic_peers_from_jwt
   audience="$(agent_a2a_audience "$id" "$config_dir")"
   display_name="$(agent_display_name "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
@@ -1995,10 +2025,15 @@ ensure_a2a_config() {
       p2p_audience="$(agent_a2a_p2p_audience "$id" "$config_dir")"
       ;;
   esac
+  dynamic_peers_from_jwt="0"
+  if a2a_dynamic_peers_from_jwt_enabled; then
+    dynamic_peers_from_jwt="1"
+  fi
 
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$audience" "$display_name" "$public_base_url" "$peers_json" \
-    "$IDENTYCLAW_API_BASE_URL" "$inbound_auth_mode" "$outbound_auth_mode" "$p2p_audience" <<'PY'
+    "$IDENTYCLAW_API_BASE_URL" "$inbound_auth_mode" "$outbound_auth_mode" "$p2p_audience" \
+    "$dynamic_peers_from_jwt" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -2011,6 +2046,7 @@ issuer = sys.argv[6]
 inbound_auth_mode = sys.argv[7] or "mediated"
 outbound_auth_mode = sys.argv[8] or "mediated"
 p2p_audience = sys.argv[9] or ""
+dynamic_peers_from_jwt = sys.argv[10] == "1"
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -2105,10 +2141,22 @@ if outbound.get("tlsSkipVerify") is not True:
     outbound["tlsSkipVerify"] = True
     changed = True
 
+if dynamic_peers_from_jwt:
+    if outbound.get("dynamicPeersFromJwt") is not True:
+        outbound["dynamicPeersFromJwt"] = True
+        changed = True
+elif outbound.get("dynamicPeersFromJwt"):
+    del outbound["dynamicPeersFromJwt"]
+    changed = True
+
 if peers:
     existing_agents = outbound.get("agents", {})
     if existing_agents != peers:
         outbound["agents"] = peers
+        changed = True
+elif dynamic_peers_from_jwt:
+    if outbound.get("agents") != {}:
+        outbound["agents"] = {}
         changed = True
 elif "agents" in outbound:
     del outbound["agents"]
@@ -2202,6 +2250,14 @@ patch_a2a_tool_params() {
   bash "$patch" "$outbound"
 }
 
+patch_a2a_dynamic_peers() {
+  local ext_dir="$1"
+  local patch="${IDENTYCLAW_ROOT}/scripts/patch-a2a-dynamic-peers.sh"
+  a2a_dynamic_peers_from_jwt_enabled || return 0
+  [[ -d "$ext_dir/dist" && -f "$patch" ]] || return 0
+  bash "$patch" "$ext_dir"
+}
+
 patch_a2a_plugin() {
   local ext_dir="$1"
   local container="${2:-}"
@@ -2210,12 +2266,19 @@ patch_a2a_plugin() {
     ext_dir="$(agent_a2a_ext_dir_container)"
     podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-dual-inbound.sh" "$container:/tmp/patch-a2a-dual-inbound.sh" >/dev/null 2>&1 || true
     podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-tool-params.sh" "$container:/tmp/patch-a2a-tool-params.sh" >/dev/null 2>&1 || true
+    podman exec "$container" mkdir -p /tmp/identyclaw-patch/scripts 2>/dev/null || true
+    podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-dynamic-peers.sh" "$container:/tmp/identyclaw-patch/scripts/patch-a2a-dynamic-peers.sh" >/dev/null 2>&1 || true
+    podman cp "${IDENTYCLAW_ROOT}/scripts/a2a-dynamic-peer-registry.js" "$container:/tmp/identyclaw-patch/scripts/a2a-dynamic-peer-registry.js" >/dev/null 2>&1 || true
     podman exec "$container" bash /tmp/patch-a2a-dual-inbound.sh "$ext_dir/dist/auth/rodit-inbound.js" 2>/dev/null || true
     podman exec "$container" bash /tmp/patch-a2a-tool-params.sh "$ext_dir/dist/outbound/tools.js" 2>/dev/null || true
+    if a2a_dynamic_peers_from_jwt_enabled; then
+      podman exec "$container" env IDENTYCLAW_ROOT=/tmp/identyclaw-patch bash /tmp/identyclaw-patch/scripts/patch-a2a-dynamic-peers.sh "$ext_dir" 2>/dev/null || true
+    fi
     return 0
   fi
   patch_a2a_dual_inbound "$ext_dir"
   patch_a2a_tool_params "$ext_dir"
+  patch_a2a_dynamic_peers "$ext_dir"
 }
 
 patch_webhooks_a2a_config_key() {
