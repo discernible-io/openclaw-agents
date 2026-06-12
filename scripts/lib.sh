@@ -185,6 +185,9 @@ load_env() {
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-agent-a agent-b}"
+  # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
+  # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
+  A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.2.5}"
   IDENTYCLAW_WEBHOOKS_PLUGIN_REPO="${IDENTYCLAW_WEBHOOKS_PLUGIN_REPO:-https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin.git}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
@@ -205,6 +208,57 @@ load_env() {
 
 a2a_plugin_id() {
   echo "identyclaw-a2a"
+}
+
+a2a_tls_skip_verify_enabled() {
+  load_env
+  case "${A2A_TLS_SKIP_VERIFY:-1}" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    *)
+      echo "Invalid A2A_TLS_SKIP_VERIFY=${A2A_TLS_SKIP_VERIFY} (use 1 or 0)" >&2
+      return 1
+      ;;
+  esac
+}
+
+sync_a2a_tls_env() {
+  local config_dir="$1"
+  local env_file="$config_dir/.env"
+  local key="NODE_TLS_REJECT_UNAUTHORIZED"
+  local value="0"
+  [[ -f "$env_file" ]] || return 0
+  if a2a_tls_skip_verify_enabled; then
+    python3 - "$env_file" "$key" "$value" <<'PY'
+import os, sys
+from pathlib import Path
+
+env_file, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+prefix = f"{key}="
+lines = []
+if env_file.is_file():
+    with open(env_file, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith(prefix)]
+lines.append(f"{key}={value}\n")
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+  else
+    python3 - "$env_file" "$key" <<'PY'
+import os, sys
+from pathlib import Path
+
+env_file, key = Path(sys.argv[1]), sys.argv[2]
+prefix = f"{key}="
+if not env_file.is_file():
+    raise SystemExit(0)
+lines = [ln for ln in env_file.read_text(encoding="utf-8").splitlines(keepends=True) if not ln.startswith(prefix)]
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+  fi
 }
 
 agent_a2a_ext_dir() {
@@ -2193,6 +2247,10 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+
+  if [[ -n "$peers_json" && "$peers_json" != "{}" ]]; then
+    sync_a2a_tls_env "$config_dir"
+  fi
 }
 
 copy_openclaw_plugin_tree() {

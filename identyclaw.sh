@@ -860,14 +860,20 @@ cmd_chat() {
 cmd_ask() {
   local id="${1:?Usage: $0 ask agent-a|agent-b|agent-c \"message\"}"
   local message="${2:?Usage: $0 ask agent-a|agent-b|agent-c \"message\"}"
+  local container tls_env=()
   require_podman
   require_agent_running "$id"
+  load_env
+  container="$(agent_container "$id")"
+  if a2a_tls_skip_verify_enabled; then
+    tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
+  fi
   podman exec \
     -e LOG_LEVEL=error \
     -e SUPPRESS_NO_CONFIG_WARNING=true \
     -e SUPPRESS_STRICTNESS_CHECK=true \
-    -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
-    "$(agent_container "$id")" node dist/index.js agent \
+    "${tls_env[@]}" \
+    "$container" node dist/index.js agent \
     --agent main -m "$message"
 }
 
