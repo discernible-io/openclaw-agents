@@ -6,7 +6,7 @@
  *
  * Usage:
  *   node scripts/test-webhooks-p2p.mjs \
- *     --ext-dir /home/node/.openclaw/extensions/a2a \
+ *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --peer-creds /path/to/agent-a/near-credentials.json \
  *     --local https://webhook.discernible.io:7443
  */

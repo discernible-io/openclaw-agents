@@ -5,7 +5,7 @@
  *
  * Usage:
  *   node scripts/test-webhooks-testhola.mjs \
- *     --ext-dir /home/node/.openclaw/extensions/a2a \
+ *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near-credentials.json \
  *     --agent-base https://webhook.discernible.io:7443 \
  *     --api-base https://api.identyclaw.com

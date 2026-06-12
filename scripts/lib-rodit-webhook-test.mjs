@@ -88,7 +88,8 @@ function patchOutboundPeer(config, peerId, override) {
   const next = JSON.parse(JSON.stringify(config));
   const plugins = (next.plugins ??= {});
   const entries = (plugins.entries ??= {});
-  const a2a = (entries.a2a ??= {});
+  const pluginKey = entries["identyclaw-a2a"] ? "identyclaw-a2a" : "a2a";
+  const a2a = (entries[pluginKey] ??= {});
   const a2aConfig = (a2a.config ??= {});
   const outbound = (a2aConfig.outbound ??= {});
   const agents = (outbound.agents ??= {});
@@ -215,7 +216,7 @@ function applyNearEnvFromCreds(credsPath, openclawHome = "/home/node/.openclaw")
 
 /** P2P login_server against a live peer gateway (JWT for POST /a2a). */
 export async function acquireP2pJwtForPeer(peerBase, openclawHome = "/home/node/.openclaw") {
-  const ext = join(openclawHome, "extensions/a2a");
+  const ext = join(openclawHome, "extensions/identyclaw-a2a");
   const { defaultRoditPeerLogin } = await import(
     pathToFileURL(join(ext, "dist/auth/rodit-peer-login.js")).href
   );

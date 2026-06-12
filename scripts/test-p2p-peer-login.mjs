@@ -44,20 +44,23 @@ const creds = JSON.parse(readFileSync(process.env.NEAR_CREDENTIALS_FILE_PATH, "u
 process.env.IDENTYCLAW_ACCOUNT_ID = creds.implicit_account_id || creds.account_id;
 process.env.IDENTYCLAW_NEAR_PRIVATE_KEY = creds.private_key;
 
-const ext = join(ocDir, "extensions/a2a");
-if (!existsSync(join(ext, "dist/auth/rodit-peer-login.js"))) {
-    console.error("A2A plugin not found at", ext);
+const extCandidates = ["identyclaw-a2a", "a2a"];
+const extName = extCandidates.find((name) =>
+    existsSync(join(ocDir, "extensions", name, "dist/auth/rodit-peer-login.js")),
+);
+if (!extName) {
+    console.error("A2A plugin not found under", join(ocDir, "extensions"));
     process.exit(2);
 }
+const ext = join(ocDir, "extensions", extName);
 
 const { defaultRoditPeerLogin } = await import(join(ext, "dist/auth/rodit-peer-login.js"));
 const { createRoditOutboundAuthProvider } = await import(
     join(ext, "dist/auth/create-rodit-outbound-auth.js")
 );
 const require = createRequire(pathToFileURL(join(ext, "package.json")));
-const outboundCfg = JSON.parse(
-    readFileSync(join(ocDir, "openclaw.json"), "utf8"),
-).plugins.entries.a2a.config.outbound;
+const entries = JSON.parse(readFileSync(join(ocDir, "openclaw.json"), "utf8")).plugins.entries;
+const outboundCfg = (entries["identyclaw-a2a"] || entries.a2a).config.outbound;
 
 function decodeJwt(token) {
     return JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());

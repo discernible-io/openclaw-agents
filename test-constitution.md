@@ -82,7 +82,7 @@ Shared helpers: `scripts/lib-rodit-webhook-test.mjs` (receipts, outbound/inbound
 
 ## RODiT / SDK-First Policy
 
-Use **`@rodit/rodit-auth-be`** from the agent's A2A extension (`/home/node/.openclaw/extensions/a2a`) for valid signed flows — same path production peers use.
+Use **`@rodit/rodit-auth-be`** from the agent's A2A extension (`/home/node/.openclaw/extensions/identyclaw-a2a`) for valid signed flows — same path production peers use.
 
 For authenticated normal-client calls:
 - Prefer `RoditClient`, `login_server`, and SDK signing helpers loaded from the extension.
