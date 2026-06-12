@@ -20,6 +20,7 @@
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [to] Smoke-test A2A discovery + inbound auth (defaults: local → peer)
+#   test-a2a-auth [mode] Mediated + P2P JWT on /a2a (mode: mediated|p2p|both; default both)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Skips /api/testhola by default (SKIP_TESTHOLA=1); needs valid HOLA when enabled
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
@@ -453,6 +454,59 @@ cmd_test_a2a() {
   fi
 }
 
+cmd_test_a2a_auth() {
+  local local_id peer_id target mode container creds ext_dir failed=0
+  require_podman
+  load_env
+  local_id="$(resolve_local_agent_id)"
+  mode="${1:-both}"
+  case "$mode" in
+    mediated|p2p|both) ;;
+    *)
+      echo "Usage: $0 test-a2a-auth [mediated|p2p|both]" >&2
+      echo "  Tests RODiT JWT acceptance on POST /a2a (peer when configured, then local inbound)." >&2
+      exit 1
+      ;;
+  esac
+  peer_id="$(resolve_peer_agent_id "$local_id" 2>/dev/null || true)"
+  require_agent_running "$local_id"
+
+  container="$(agent_container "$local_id")"
+  creds="$(agent_near_credentials_in_container "$local_id")"
+  [[ -n "$creds" ]] || {
+    echo "No NEAR credentials in ${local_id} container (secrets/near-credentials/*.json)" >&2
+    exit 1
+  }
+  ext_dir="/home/node/.openclaw/extensions/a2a"
+  podman cp "${IDENTYCLAW_ROOT}/scripts/test-a2a-rodit-auth.mjs" "$container:/tmp/test-a2a-rodit-auth.mjs" >/dev/null
+
+  if [[ -n "$peer_id" && "$peer_id" != "$local_id" ]]; then
+    target="$(agent_a2a_public_base_url "$peer_id")"
+    [[ -n "$target" ]] || target="$(agent_ingress_base_url "$peer_id")"
+    [[ -n "$target" ]] || {
+      echo "No ingress URL for peer ${peer_id}" >&2
+      exit 1
+    }
+    echo "==> A2A RODiT auth (→ peer ${peer_id} at ${target}, mode=${mode})"
+    echo "    P2P uses peer /api/login only; mediated uses api.identyclaw.com"
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
+      --ext-dir "$ext_dir" --creds "$creds" --target "$target" --mode "$mode" || failed=1
+    echo ""
+  fi
+
+  target="$(agent_a2a_public_base_url "$local_id")"
+  [[ -n "$target" ]] || target="$(agent_ingress_base_url "$local_id")"
+  [[ -n "$target" ]] || {
+    echo "No ingress URL for local ${local_id}" >&2
+    exit 1
+  }
+  echo "==> A2A RODiT auth (→ local ${local_id} at ${target}, mode=${mode})"
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
+    --ext-dir "$ext_dir" --creds "$creds" --target "$target" --mode "$mode" || failed=1
+
+  return "$failed"
+}
+
 cmd_webhook_url() {
   local id="${1:?Usage: $0 webhook-url agent-a|agent-b|agent-c [hooks/wake|hooks/agent|hooks/name]}"
   local path="${2:-hooks/wake}"
@@ -716,6 +770,8 @@ cmd_test() {
 
   cmd_test_a2a "$local_id" "${peer_id:-$local_id}" || failed=1
   echo ""
+  cmd_test_a2a_auth both || failed=1
+  echo ""
   cmd_test_webhook "$local_id" || failed=1
   if [[ -n "$peer_id" && "$peer_id" != "$local_id" ]]; then
     echo ""
@@ -966,6 +1022,7 @@ main() {
     test-mail) cmd_test_mail "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
+    test-a2a-auth) cmd_test_a2a_auth "$@" ;;
     test-webhook) cmd_test_webhook "$@" ;;
     test-webhook-p2p) cmd_test_webhook_p2p "$@" ;;
     send-rodit-webhook) cmd_send_rodit_webhook "$@" ;;

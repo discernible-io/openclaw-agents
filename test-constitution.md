@@ -2,9 +2,11 @@
 
 Mission: verify each deployed **OpenClaw agent gateway** (A2A ingress, RODiT-signed webhooks, optional mail and IdentyClaw API touchpoints) behaves correctly on this host. Report **findings** (what happened vs what the agent stack requires). Diagnose and fix gateway, plugin, or test-harness gaps when findings show incorrect behavior.
 
+**Standards alignment:** Follow shared RODiT conventions in [`../docs/docs`](../docs/docs) — especially [`vocabulary-standard.md`](../docs/docs/vocabulary-standard.md) (development / main tiers), [`test-constitution.md`](../docs/docs/test-constitution.md) (findings-first, passed / not-passed), and [`allowed-fallback-standard.md`](../docs/docs/allowed-fallback-standard.md) (outbound `auto` auth: P2P first, mediated fallback must be observable in logs).
+
 **Out of scope here:** the IdentyClaw API deployment-time suite in the sibling [`clienttest-idc`](../clienttest-idc) repo (`target-swagger.json`, `SPEC_PERF_*`, `clienttest-idc-container`). Run that suite against `https://api.identyclaw.com` when validating API contract and performance gates.
 
-Terminology: test outcomes are only **`passed`** or **`not-passed`** (not "success/failure"). Scripts may print `PASS`/`FAIL` on stdout; treat `PASS` → `passed` and `FAIL` → `not-passed` in reports.
+Terminology: test outcomes are only **`passed`** or **`not-passed`** (not "success/failure"). Scripts may print `PASS`/`FAIL` or `OK`/`FAIL` on stdout; treat those as passed / not-passed in reports. Use **development** and **main** for deployment tiers (not prod / production).
 
 ## Core Workflow (Do This Every Run)
 
@@ -21,6 +23,7 @@ Terminology: test outcomes are only **`passed`** or **`not-passed`** (not "succe
    Equivalent per-suite commands (agent ids optional — defaults from `env.local`):
    ```bash
    ./identyclaw.sh test-a2a              # local → peer
+   ./identyclaw.sh test-a2a-auth         # mediated + P2P JWT on /a2a (peer + local inbound)
    ./identyclaw.sh test-webhook          # local ingress
    ./identyclaw.sh test-webhook-p2p      # local → peer
    ./identyclaw.sh test-mail             # local mailbox
@@ -48,6 +51,8 @@ These are the contracts this repo's tests enforce (not OpenAPI from `clienttest-
 | Surface | Should do | Should not do |
 | --- | --- | --- |
 | `POST /a2a` without `Authorization` | Return **401** | Accept unauthenticated JSON-RPC |
+| `POST /a2a` with mediated JWT (`login_server` → `api.identyclaw.com`) | Return **200** (or JSON-RPC error other than 401) when `inbound.auth.mode` is `mediated` or `dual` | Reject with **401** |
+| `POST /a2a` with P2P JWT (peer `{base}/api/login` only — no central API) | Return **200** (or JSON-RPC error other than 401) when mode is `p2p` or `dual` | Reject with **401** |
 | Agent-card discovery (`/.well-known/agent-card.json`) | Return **200** with reachable card when agent is up | 404/5xx while gateway is healthy |
 | `POST /hooks/wake` (and `/hooks/agent`) without RODiT origin signature | Return **400** or **401** | Accept unsigned or garbage `x-signature` |
 | `POST /hooks/*` with valid `@rodit/rodit-auth-be` signature | Return **200** / accepted webhook response | Reject a correctly signed peer payload |
@@ -63,6 +68,7 @@ Reference implementation for single-host webhook ingress: [`clienttest-idc`](../
 | --- | --- | --- |
 | `./identyclaw.sh test` | all wrappers below | Full constitution run; resolves local/peer from `env.local` |
 | `./identyclaw.sh test-a2a [from] [to]` | `identyclaw.sh` | Agent-card fetch both ways; unauthenticated `POST /a2a` → 401 (peer may be remote) |
+| `./identyclaw.sh test-a2a-auth [mode]` | `scripts/test-a2a-rodit-auth.mjs` | Mediated and/or P2P JWT accepted on peer and local `POST /a2a` (`mode`: `mediated`, `p2p`, `both`) |
 | `./identyclaw.sh test-webhook [id]` | `scripts/test-rodit-webhooks.mjs` (+ optional outbound, testhola) | Unsigned/invalid-sig rejection; signed ingress via `rodit-auth-be` |
 | `./identyclaw.sh test-webhook-p2p [sender] [receiver]` | `scripts/test-webhooks-p2p-suite.mjs` | Outbound + inbound P2P webhook receipts |
 | `./identyclaw.sh test-mail [id]` | Himalaya in container | IMAP connectivity |
