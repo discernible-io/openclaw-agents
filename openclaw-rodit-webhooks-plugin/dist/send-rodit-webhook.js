@@ -51,8 +51,8 @@ function resolveOutboundPeerBase(config, peerId) {
   const peer = config.plugins?.entries?.a2a?.config?.outbound?.agents?.[peerId];
   const cardUrl = peer?.url?.trim();
   const loginBase = peer?.loginBaseUrl?.trim();
-  if (cardUrl) return agentCardUrlToBase(cardUrl);
   if (loginBase) return loginBase.replace(/\/$/, "");
+  if (cardUrl) return agentCardUrlToBase(cardUrl);
   const known = Object.keys(config.plugins?.entries?.a2a?.config?.outbound?.agents ?? {});
   throw new Error(
     `Peer '${peerId}' not found in plugins.entries.a2a.config.outbound.agents` + (known.length ? ` (configured: ${known.join(", ")})` : "")

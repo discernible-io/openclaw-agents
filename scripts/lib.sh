@@ -1832,16 +1832,18 @@ build_a2a_peer_map() {
       peer_dir="$(agent_home "$peer_id")"
       agent_has_near_credentials "$peer_dir" || continue
     fi
+    local webhook_base
+    webhook_base="$(agent_ingress_base_url "$peer_id")"
     if [[ "$first" -eq 1 ]]; then
       first=0
     else
       peers_json+=","
     fi
-    if [[ -n "$public_base" ]]; then
-      peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\",\"loginBaseUrl\":\"${public_base}\"}"
-    else
-      peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\"}"
+    peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\""
+    if [[ -n "$webhook_base" ]]; then
+      peers_json+=",\"loginBaseUrl\":\"${webhook_base}\""
     fi
+    peers_json+="}"
   done
   peers_json+="}"
   echo "$peers_json"
