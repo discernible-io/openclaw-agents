@@ -135,11 +135,14 @@ ensure_agent_runtime() {
 
 start_agent_in_pod() {
   local id="$1"
-  local dir container gw_port z
+  local dir container gw_port z tls_env=()
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   gw_port="$(agent_internal_gateway_port "$id")"
   z="$(selinux_mount_suffix)"
+  if a2a_tls_skip_verify_enabled; then
+    tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
+  fi
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
   prepare_agent_state_for_gateway_start "$id" pod
@@ -153,6 +156,7 @@ start_agent_in_pod() {
     --restart unless-stopped \
     -e HOME=/home/node \
     -e OPENCLAW_NO_RESPAWN=1 \
+    "${tls_env[@]}" \
     --env-file "$dir/.env" \
     -v "$dir:/home/node/.openclaw:rw${z}" \
     -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \

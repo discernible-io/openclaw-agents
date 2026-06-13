@@ -183,11 +183,14 @@ start_one() {
     return 0
   fi
 
-  local dir container gw br z rt
+  local dir container gw br z rt tls_env=()
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   z="$(selinux_mount_suffix)"
   rt="$(podman_runtime_args)"
+  if a2a_tls_skip_verify_enabled; then
+    tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
+  fi
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run $0 init" >&2; exit 1; }
   [[ -f "$dir/openclaw.json" ]] || { echo "Missing config — run $0 init" >&2; exit 1; }
@@ -217,6 +220,7 @@ start_one() {
     $rt \
     -e HOME=/home/node \
     -e OPENCLAW_NO_RESPAWN=1 \
+    "${tls_env[@]}" \
     --env-file "$dir/.env" \
     -v "$dir:/home/node/.openclaw:rw${z}" \
     -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \

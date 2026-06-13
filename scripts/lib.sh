@@ -261,6 +261,12 @@ PY
   fi
 }
 
+# Extra podman -e flags for gateway containers (rodit-auth-be fetch to self-signed peer TLS).
+agent_gateway_podman_tls_env_args() {
+  a2a_tls_skip_verify_enabled || return 0
+  printf '%s\n' '-e' 'NODE_TLS_REJECT_UNAUTHORIZED=0'
+}
+
 agent_a2a_ext_dir() {
   echo "$1/extensions/$(a2a_plugin_id)"
 }
