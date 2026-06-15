@@ -1661,9 +1661,9 @@ ensure_agent_email_tooling() {
 
 ensure_discord_guild_channels() {
   local config_dir="$1"
-  local config="$config_dir/openclaw.json"
-  [[ -f "$config" ]] || return 0
-  python3 - "$config" <<'PY'
+  local container="${2:-}"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -1680,8 +1680,8 @@ changed = False
 
 guilds = discord.setdefault("guilds", {})
 guild = guilds.setdefault(guild_id, {})
-if guild.get("requireMention") is not False:
-    guild["requireMention"] = False
+if guild.get("requireMention") is not True:
+    guild["requireMention"] = True
     changed = True
 if guild.get("ignoreOtherMentions") is not True:
     guild["ignoreOtherMentions"] = True
@@ -1695,8 +1695,8 @@ ch = channels.setdefault(channel_id, {})
 if ch.get("enabled") is not True:
     ch["enabled"] = True
     changed = True
-if ch.get("requireMention") is not False:
-    ch["requireMention"] = False
+if ch.get("requireMention") is not True:
+    ch["requireMention"] = True
     changed = True
 if ch.get("ignoreOtherMentions") is not True:
     ch["ignoreOtherMentions"] = True
@@ -2937,7 +2937,7 @@ ensure_agent_bootstrap() {
   ensure_agent_email_tooling "$id" "$config_dir"
   ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
-  ensure_discord_guild_channels "$config_dir"
+  ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
