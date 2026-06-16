@@ -10,6 +10,8 @@
 #   set-password <id>    Set Migadu mailbox password (agent-a | agent-b | agent-c)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
 #   set-instagram <id>      Store Instagram username/password in secrets/ (survives rebuilds)
+#   set-twitter <id>        Store X/Twitter login + enable hourly DM polling via heartbeat
+#   set-twitter-cookies <id>  Store X session cookies (AUTH_TOKEN + CT0) for bird-twitter skill
 #   start [id|all]       Start one or both containers
 #   stop [id|all]        Stop containers
 #   restart [id|all]     Restart
@@ -163,6 +165,42 @@ cmd_set_instagram() {
   write_instagram_secrets "$dir" "$username" "$password"
   echo "Instagram credentials stored in ${dir}/secrets/instagram.* (mode 600)"
   echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_set_twitter() {
+  local id="${1:?Usage: $0 set-twitter agent-a|agent-b|agent-c [username]}"
+  local dir username password
+  dir="$(agent_home "$id")"
+  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  if [[ -n "${2:-}" ]]; then
+    username="$2"
+    read -r -s -p "Twitter/X password for ${id}: " password
+    echo
+  else
+    read -r -p "Twitter/X login (email or username) for ${id}: " username
+    read -r -s -p "Twitter/X password for ${id}: " password
+    echo
+  fi
+  write_twitter_secrets "$id" "$dir" "$username" "$password"
+  echo "Twitter credentials stored; hourly heartbeat polling enabled (HEARTBEAT.md + agents.defaults.heartbeat.every=1h)"
+  echo "For posting, set session cookies: $0 set-twitter-cookies ${id}"
+  echo "Restart to apply env: $0 restart ${id}"
+}
+
+cmd_set_twitter_cookies() {
+  local id="${1:?Usage: $0 set-twitter-cookies agent-a|agent-b|agent-c}"
+  local dir auth_token ct0
+  dir="$(agent_home "$id")"
+  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  read -r -s -p "Twitter auth_token cookie for ${id}: " auth_token
+  echo
+  read -r -s -p "Twitter ct0 cookie for ${id}: " ct0
+  echo
+  [[ -n "$auth_token" && -n "$ct0" ]] || { echo "empty cookie values" >&2; exit 1; }
+  write_twitter_bird_cookies "$id" "$dir" "$auth_token" "$ct0"
+  ensure_twitter_clawhub_skill "$id" "$dir"
+  echo "Twitter session cookies stored; bird-twitter skill enabled for ${id}"
+  echo "Restart to apply env: $0 restart ${id}"
 }
 
 start_one() {
@@ -1026,6 +1064,8 @@ main() {
     set-password) cmd_set_password "$@" ;;
     set-discord-token) cmd_set_discord_token "$@" ;;
     set-instagram) cmd_set_instagram "$@" ;;
+    set-twitter) cmd_set_twitter "$@" ;;
+    set-twitter-cookies) cmd_set_twitter_cookies "$@" ;;
     set-api-key) cmd_set_api_key "$@" ;;
     mirror) cmd_mirror "$@" ;;
     export-agent) cmd_export_agent "$@" ;;
