@@ -19,7 +19,7 @@ case "$tier" in
 esac
 
 load_env
-AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
+AGENT_IDS="${AGENT_IDS:-agent-a agent-b}"
 
 template="${REPO_ROOT}/nginx/nginx.${tier}.conf"
 [[ -f "$template" ]] || { echo "missing template: $template" >&2; exit 1; }
@@ -32,15 +32,11 @@ agent_default_host() {
   case "$tier:$id" in
     development:agent-a) echo "agent-a.dev.identyclaw.com" ;;
     development:agent-b) echo "agent-b.dev.identyclaw.com" ;;
-    development:agent-c) echo "agent-c.dev.identyclaw.com" ;;
     development:agent-d) echo "agent-d.dev.identyclaw.com" ;;
-    development:agent-e) echo "agent-e.dev.identyclaw.com" ;;
     development:agent-f) echo "agent-f.dev.identyclaw.com" ;;
     main:agent-a) echo "agent-a.identyclaw.com" ;;
     main:agent-b) echo "agent-b.identyclaw.com" ;;
-    main:agent-c) echo "agent-c.identyclaw.com" ;;
     main:agent-d) echo "agent-d.identyclaw.com" ;;
-    main:agent-e) echo "agent-e.identyclaw.com" ;;
     main:agent-f) echo "agent-f.identyclaw.com" ;;
     *) return 1 ;;
   esac

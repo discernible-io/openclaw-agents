@@ -14,7 +14,7 @@
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
 #   REPO_ROOT            Git checkout path (for identyclaw.sh init/bootstrap)
-#   AGENT_IDS            Space-separated list (default: agent-a agent-b agent-c)
+#   AGENT_IDS            Space-separated list (default: agent-a agent-b)
 #   SKIP_PLUGIN_UPDATE=1 Skip GitHub plugin clone/build/install (requires git + npm when unset)
 
 set -euo pipefail
@@ -50,7 +50,7 @@ POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
 
 ensure_app_layout
 load_env
-AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
+AGENT_IDS="${AGENT_IDS:-agent-a agent-b}"
 
 require_podman() {
   command -v podman >/dev/null 2>&1 || { echo "podman not found" >&2; exit 1; }
@@ -79,27 +79,12 @@ init_agent_if_missing() {
   local email display_name password gw_port dir
   dir="$(agent_home "$id")"
   load_env
-  case "$id" in
-    agent-a)
-      email="$AGENT_A_EMAIL"
-      display_name="$AGENT_A_DISPLAY_NAME"
-      password="${AGENT_A_PASSWORD:-}"
-      gw_port="$AGENT_A_GATEWAY_PORT"
-      ;;
-    agent-b)
-      email="$AGENT_B_EMAIL"
-      display_name="$AGENT_B_DISPLAY_NAME"
-      password="${AGENT_B_PASSWORD:-}"
-      gw_port="$AGENT_B_GATEWAY_PORT"
-      ;;
-    agent-c)
-      email="$AGENT_C_EMAIL"
-      display_name="$AGENT_C_DISPLAY_NAME"
-      password="${AGENT_C_PASSWORD:-}"
-      gw_port="$AGENT_C_GATEWAY_PORT"
-      ;;
-    *) echo "unknown agent: $id" >&2; return 1 ;;
-  esac
+  is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; return 1; }
+  email="$(agent_env_value "$id" EMAIL "")"
+  display_name="$(agent_env_value "$id" DISPLAY_NAME "$id")"
+  password="$(agent_env_value "$id" PASSWORD "")"
+  gw_port="$(agent_env_value "$id" GATEWAY_PORT "")"
+  [[ -n "$email" && -n "$gw_port" ]] || { echo "unknown agent: $id (set AGENT_*_EMAIL / GATEWAY_PORT in env.local)" >&2; return 1; }
 
   echo "==> Initializing ${id} at ${dir}"
   mkdir -p "$dir/workspace" "$dir/canvas" "$dir/cron" "$dir/.config" "$dir/secrets"
