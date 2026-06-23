@@ -133,7 +133,7 @@ if "dynamicPeersFromJwt" not in idx_text:
                     setDynamicPeerRegistrar(async (peerId, baseUrl) => {
                         const cardUrl = `${String(baseUrl).replace(/\\/$/, "")}/.well-known/agent-card.json`;
                         await outboundAgents.addAgent(peerId, cardUrl);
-                        api.logger.info(`[a2a] Registered dynamic outbound peer ${peerId} from inbound JWT`);
+                        api.logger.info(`[a2a] Registered dynamic outbound peer ${peerId} from inbound JWT (baseUrl=${baseUrl})`);
                     });
                 });
             }"""
@@ -142,4 +142,63 @@ if "dynamicPeersFromJwt" not in idx_text:
         idx_text = idx_text.replace(needle, registrar_hook, 1)
 
     index.write_text(idx_text, encoding="utf-8")
+
+# --- rodit-login-routes.js: log successful inbound P2P login for env.local harvest ---
+login_routes = ext / "dist/inbound/rodit-login-routes.js"
+if login_routes.is_file():
+    lr_text = login_routes.read_text(encoding="utf-8")
+    if "Inbound P2P login accepted" not in lr_text:
+        old_login = """                await client.login_client(expressReq, wrapExpressLikeResponse(res));
+            }
+            catch (error) {"""
+        new_login = """                await client.login_client(expressReq, wrapExpressLikeResponse(res));
+                if (res.statusCode === 200) {
+                    const user = bodyResult.body?.user ?? bodyResult.body?.data?.user ?? bodyResult.body;
+                    const tokenCandidates = [
+                        user?.token_id,
+                        user?.peerTokenId,
+                        user?.rodit_id,
+                        bodyResult.body?.token_id,
+                        bodyResult.body?.data?.token_id,
+                    ];
+                    const webhookCandidates = [
+                        user?.rodit_webhookurl,
+                        user?.rodit_webhook_url,
+                        user?.webhook_url,
+                    ];
+                    let tokenId = "";
+                    for (const candidate of tokenCandidates) {
+                        const text = String(candidate ?? "").trim();
+                        if (/^[A-Za-z][A-Za-z0-9]{11}$/.test(text)) {
+                            tokenId = text;
+                            break;
+                        }
+                    }
+                    let baseUrl = "";
+                    for (const candidate of webhookCandidates) {
+                        const raw = String(candidate ?? "").trim().replace(/\\/+$/, "");
+                        if (!raw) {
+                            continue;
+                        }
+                        try {
+                            const parsed = new URL(raw.includes("://") ? raw : `https://${raw}`);
+                            baseUrl = `${parsed.protocol}//${parsed.host}`;
+                            break;
+                        }
+                        catch {
+                            baseUrl = raw;
+                            break;
+                        }
+                    }
+                    if (tokenId) {
+                        const suffix = baseUrl ? ` baseUrl=${baseUrl}` : "";
+                        console.log(`[plugins] [a2a] Inbound P2P login accepted token_id=${tokenId}${suffix}`);
+                    }
+                }
+            }
+            catch (error) {"""
+        if old_login in lr_text:
+            login_routes.write_text(lr_text.replace(old_login, new_login, 1), encoding="utf-8")
+        else:
+            sys.stderr.write(f"patch-a2a-dynamic-peers: login_client block not found in {login_routes}\n")
 PY

@@ -34,6 +34,7 @@
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
 #   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins from ClawHub (pinned in env.local)
+#   sync-a2a-peers [id|all]  Update A2A_PEER_AGENTS / A2A_PEER_URLS from inbound P2P login logs
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
@@ -781,13 +782,20 @@ cmd_test_webhook_p2p() {
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$sender_container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-p2p-suite.mjs" "$sender_container:/tmp/test-webhooks-p2p-suite.mjs" >/dev/null
 
+  local sender_token_id
+  sender_token_id="$(agent_token_id "$sender")"
+  [[ -n "$sender_token_id" ]] || {
+    echo "Cannot resolve Passport token_id for ${sender} — probe NEAR creds / IDENTITYCLAW.md" >&2
+    exit 1
+  }
+
   echo "==> P2P webhook test (outbound + inbound via send_rodit_webhook)"
-  echo "    Outbound: ${sender} delivers → peer token_id=${peer_token_id} records"
-  echo "    Inbound:  peer delivers → ${sender} records"
+  echo "    Outbound: ${sender} (${sender_token_id}) delivers → peer token_id=${peer_token_id} records"
+  echo "    Inbound:  peer delivers → ${sender} (${sender_token_id}) records"
 
   local -a exec_args=(
     node /tmp/test-webhooks-p2p-suite.mjs
-    --local "$sender"
+    --local "$sender_token_id"
     --peer "$peer_token_id"
     --local-creds "$sender_creds"
     --local-base "$local_base"
@@ -823,12 +831,6 @@ cmd_test_webhook_p2p() {
       import { clearReceipts } from 'file:///tmp/lib-rodit-webhook-test.mjs';
       await clearReceipts('${local_base}');
     " >/dev/null
-    local sender_token_id
-    sender_token_id="$(agent_token_id "$sender")"
-    [[ -n "$sender_token_id" ]] || {
-      echo "FAIL  inbound: cannot resolve sender token_id for ${sender}" >&2
-      exit_code=1
-    }
     if [[ -n "$sender_token_id" ]]; then
     send_out="$(podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$receiver_container" node /tmp/send-rodit-webhook.mjs \
       --peer "$sender_token_id" --text "$marker" --delay 0 --creds "$receiver_creds" 2>&1)" || true
@@ -1049,6 +1051,33 @@ cmd_upgrade_plugins() {
   fi
 }
 
+cmd_sync_a2a_peers() {
+  require_podman
+  require_rootless_user
+  load_env
+  local target="${1:-all}" id synced=0
+  echo "==> Sync A2A peers from inbound P2P login logs"
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      if sync_a2a_peers_from_logs "$id"; then
+        synced=1
+        ensure_a2a_config "$id" "$(agent_home "$id")" "$(agent_container "$id")" || true
+      fi
+    done
+  else
+    sync_a2a_peers_from_logs "$target" || exit 1
+    synced=1
+    ensure_a2a_config "$target" "$(agent_home "$target")" "$(agent_container "$target")" || true
+  fi
+  if [[ "$synced" -eq 0 ]]; then
+    echo "No peers harvested — wait for a peer P2P login (/api/login or authenticated /a2a), then retry." >&2
+    echo "Requires IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 or IDENTYCLAW_A2A_OPEN_P2P=1." >&2
+    exit 1
+  fi
+  echo ""
+  echo "Updated $(identyclaw_env_file) — restart to apply: $0 restart ${target}"
+}
+
 cmd_onboard() {
   local id="${1:?Usage: $0 onboard agent-a|agent-b|agent-c}"
   shift
@@ -1137,6 +1166,7 @@ main() {
     ask) cmd_ask "$@" ;;
     onboard) cmd_onboard "$@" ;;
     upgrade-plugins) cmd_upgrade_plugins "$@" ;;
+    sync-a2a-peers) cmd_sync_a2a_peers "$@" ;;
     -h|--help|help|"") usage ;;
     *)
       echo "Unknown command: $cmd" >&2

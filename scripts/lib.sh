@@ -832,11 +832,36 @@ probe_rodit_own_token_id() {
 }
 
 # Resolve Passport token_id for a local deployment slug (AGENT_IDS only — not for A2A_PEER_AGENTS).
+probe_rodit_own_token_id_in_container() {
+  local container="$1"
+  local cred ext_dir probed
+  [[ -n "$container" ]] || return 1
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 1
+  cred="$(podman exec "$container" sh -c 'ls /home/node/.openclaw/secrets/near-credentials/*.json 2>/dev/null | head -1' || true)"
+  [[ -n "$cred" ]] || return 1
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman cp "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-token-id.mjs" "$container:/tmp/probe-rodit-own-token-id.mjs" >/dev/null 2>&1 || return 1
+  probed="$(
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
+      -e NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+      -e IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      "$container" node /tmp/probe-rodit-own-token-id.mjs "$ext_dir" "$cred" 2>/dev/null || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  is_passport_token_id "$probed" || return 1
+  echo "    (${container}: Passport token_id=${probed})" >&2
+  echo "$probed"
+}
+
 agent_token_id() {
   local deploy_id="$1"
-  local config_dir
+  local config_dir probed container
   config_dir="$(agent_home "$deploy_id")"
-  probe_rodit_own_token_id "$config_dir" 2>/dev/null || true
+  probed="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+  [[ -n "$probed" ]] && { echo "$probed"; return 0; }
+  container="$(agent_container "$deploy_id" 2>/dev/null || true)"
+  probe_rodit_own_token_id_in_container "$container" 2>/dev/null || true
 }
 
 # Map token_id → local deployment slug when this host runs that Passport (AGENT_IDS / agents/).
@@ -953,6 +978,256 @@ with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)
 PY
+}
+
+# Parse gateway logs + openclaw.json outbound.agents for Passport token_id peers.
+harvest_a2a_peers_json_from_agent() {
+  local id="$1"
+  local container dir config_dir logs agents_json self_token_id
+  load_env
+  container="$(agent_container "$id")"
+  dir="$(agent_home "$id")"
+  config_dir="$dir"
+  self_token_id="$(agent_token_id "$id" 2>/dev/null || true)"
+  logs=""
+  agents_json="{}"
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    logs="$(podman logs "$container" 2>&1 || true)"
+    agents_json="$(podman exec "$container" python3 - <<'PY' 2>/dev/null || echo '{}'
+import json
+from pathlib import Path
+from urllib.parse import urlparse
+
+path = Path("/home/node/.openclaw/openclaw.json")
+if not path.is_file():
+    raise SystemExit(0)
+data = json.loads(path.read_text(encoding="utf-8"))
+agents = (
+    data.get("plugins", {})
+    .get("entries", {})
+    .get("identyclaw-a2a", {})
+    .get("config", {})
+    .get("outbound", {})
+    .get("agents", {})
+)
+out = {}
+for token_id, card_url in (agents or {}).items():
+    text = str(card_url or "").strip()
+    if not text:
+        continue
+    if text.endswith("/.well-known/agent-card.json"):
+        base = text[: -len("/.well-known/agent-card.json")]
+    else:
+        parsed = urlparse(text if "://" in text else f"https://{text}")
+        base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else text.rstrip("/")
+    if base:
+        out[str(token_id)] = base.rstrip("/")
+print(json.dumps(out))
+PY
+)"
+  elif [[ -r "$config_dir/openclaw.json" ]]; then
+    agents_json="$(python3 - "$config_dir/openclaw.json" <<'PY' 2>/dev/null || echo '{}'
+import json, sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    print("{}")
+    raise SystemExit(0)
+data = json.loads(path.read_text(encoding="utf-8"))
+agents = (
+    data.get("plugins", {})
+    .get("entries", {})
+    .get("identyclaw-a2a", {})
+    .get("config", {})
+    .get("outbound", {})
+    .get("agents", {})
+)
+out = {}
+for token_id, card_url in (agents or {}).items():
+    text = str(card_url or "").strip()
+    if not text:
+        continue
+    if text.endswith("/.well-known/agent-card.json"):
+        base = text[: -len("/.well-known/agent-card.json")]
+    else:
+        parsed = urlparse(text if "://" in text else f"https://{text}")
+        base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else text.rstrip("/")
+    if base:
+        out[str(token_id)] = base.rstrip("/")
+print(json.dumps(out))
+PY
+)"
+  fi
+  A2A_PEER_LOGS="$logs" A2A_PEER_AGENTS_JSON="$agents_json" A2A_PEER_SELF_TOKEN_ID="${self_token_id:-}" python3 - <<'PY'
+import json, os, re
+
+peers = {}
+try:
+    peers.update(json.loads(os.environ.get("A2A_PEER_AGENTS_JSON", "{}") or "{}"))
+except Exception:
+    pass
+
+logs = os.environ.get("A2A_PEER_LOGS", "")
+patterns = [
+    re.compile(
+        r"\[a2a\] Registered dynamic outbound peer ([A-Za-z][A-Za-z0-9]{11}) from inbound JWT"
+        r"(?: \(baseUrl=(https?://[^)]+)\))?"
+    ),
+    re.compile(
+        r"\[a2a\] Inbound P2P login accepted token_id=([A-Za-z][A-Za-z0-9]{11})"
+        r"(?: baseUrl=(https?://\S+))?"
+    ),
+]
+for line in logs.splitlines():
+    for pat in patterns:
+        match = pat.search(line)
+        if not match:
+            continue
+        token_id = match.group(1)
+        base_url = (match.group(2) or "").strip().rstrip("/") if match.lastindex and match.lastindex >= 2 else ""
+        if base_url:
+            peers[token_id] = base_url
+        elif token_id not in peers:
+            peers[token_id] = ""
+
+self_token_id = os.environ.get("A2A_PEER_SELF_TOKEN_ID", "").strip()
+if self_token_id:
+    peers.pop(self_token_id, None)
+peers = {k: v for k, v in peers.items() if k}
+print(json.dumps(peers, sort_keys=True))
+PY
+}
+
+# Merge harvested peers into env.local (A2A_PEER_AGENTS + A2A_PEER_URLS).
+upsert_a2a_peers_in_env_local() {
+  local peers_json="${1:-{}}"
+  local env_file
+  env_file="$(identyclaw_env_file)"
+  [[ -n "$peers_json" && "$peers_json" != "{}" ]] || return 1
+  python3 - "$env_file" "$peers_json" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+try:
+    harvested = json.loads(sys.argv[2])
+except Exception:
+    raise SystemExit(1)
+if not isinstance(harvested, dict) or not harvested:
+    raise SystemExit(1)
+
+lines = []
+if env_file.is_file():
+  lines = env_file.read_text(encoding="utf-8").splitlines(keepends=True)
+
+agents = []
+urls = {}
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("A2A_PEER_AGENTS="):
+        value = stripped.split("=", 1)[1].strip()
+        agents = [p for p in value.split() if p]
+        continue
+    if stripped.startswith("A2A_PEER_URLS="):
+        raw = stripped.split("=", 1)[1].strip()
+        if raw:
+            try:
+                urls = json.loads(raw)
+            except Exception:
+                urls = {}
+        continue
+
+valid = {}
+for token_id, base_url in harvested.items():
+    token_id = str(token_id).strip()
+    if not token_id or not __import__("re").match(r"^[A-Za-z][A-Za-z0-9]{11}$", token_id):
+        continue
+    base_url = str(base_url or "").strip().rstrip("/")
+    if base_url:
+        valid[token_id] = base_url
+
+if not valid:
+    raise SystemExit(1)
+
+for token_id in agents:
+    if token_id in valid:
+        continue
+    if __import__("re").match(r"^[A-Za-z][A-Za-z0-9]{11}$", token_id):
+        valid.setdefault(token_id, urls.get(token_id, ""))
+
+agents_out = []
+seen = set()
+for token_id in list(agents) + sorted(valid):
+    if token_id in seen:
+        continue
+    if token_id not in valid:
+        continue
+    seen.add(token_id)
+    agents_out.append(token_id)
+
+for token_id, base_url in valid.items():
+    if base_url:
+        urls[token_id] = base_url
+
+def render(key, value):
+    if key == "A2A_PEER_URLS":
+        return f'A2A_PEER_URLS={json.dumps(urls, separators=(",", ":"))}\n'
+    if key == "A2A_PEER_AGENTS":
+        return f'A2A_PEER_AGENTS={" ".join(agents_out)}\n'
+    return None
+
+out = []
+replaced_agents = False
+replaced_urls = False
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("A2A_PEER_AGENTS="):
+        out.append(render("A2A_PEER_AGENTS", None))
+        replaced_agents = True
+        continue
+    if stripped.startswith("A2A_PEER_URLS="):
+        out.append(render("A2A_PEER_URLS", None))
+        replaced_urls = True
+        continue
+    out.append(line)
+
+if not replaced_agents:
+    if out and not out[-1].endswith("\n"):
+        out[-1] += "\n"
+    out.append(render("A2A_PEER_AGENTS", None))
+if not replaced_urls:
+    if out and not out[-1].endswith("\n"):
+        out[-1] += "\n"
+    out.append(render("A2A_PEER_URLS", None))
+
+env_file.parent.mkdir(parents=True, exist_ok=True)
+env_file.write_text("".join(out), encoding="utf-8")
+os.chmod(env_file, 0o600)
+print(json.dumps({"agents": agents_out, "urls": urls}, indent=2))
+PY
+}
+
+# Harvest inbound P2P peer logins and persist to env.local.
+sync_a2a_peers_from_logs() {
+  local id="${1:-}"
+  local peers_json updated=0
+  load_env
+  if [[ -z "$id" ]]; then
+    for id in $AGENT_IDS; do
+      sync_a2a_peers_from_logs "$id" && updated=1 || true
+    done
+    [[ "$updated" -eq 1 ]]
+    return $?
+  fi
+  peers_json="$(harvest_a2a_peers_json_from_agent "$id")"
+  [[ -n "$peers_json" && "$peers_json" != "{}" ]] || {
+    echo "    (${id}: no inbound P2P peers found in logs or openclaw.json)" >&2
+    return 1
+  }
+  echo "    (${id}: harvesting A2A peers from inbound P2P login logs)" >&2
+  upsert_a2a_peers_in_env_local "$peers_json"
 }
 
 rodit_self_configure_enabled() {
@@ -1645,7 +1920,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1692,7 +1967,10 @@ start_pod_agent() {
       echo "Already running: ${container} (use './identyclaw.sh restart ${id}' to bounce the gateway)"
       return 0
     fi
-    echo "==> ${id} already running in pod — restarting gateway"
+    echo "==> ${id} already running in pod — syncing A2A config and restarting gateway"
+    sync_a2a_peers_from_logs "$id" || true
+    ensure_agent_state_for_container_exec "$id"
+    sync_agent_plugin_configs "$id" "$dir" || true
     podman restart "$container" >/dev/null
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Restarted ${container}"
@@ -2597,6 +2875,53 @@ patch_webhooks_a2a_config_key_in_container() {
   done
 }
 
+webhooks_plugin_id() {
+  echo "identyclaw-webhooks"
+}
+
+agent_webhooks_ext_dir() {
+  echo "$1/extensions/$(webhooks_plugin_id)"
+}
+
+agent_webhooks_ext_dir_container() {
+  echo "/home/node/.openclaw/extensions/$(webhooks_plugin_id)"
+}
+
+webhooks_plugin_installed_version() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local pkg pkg_json
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    pkg="$(agent_webhooks_ext_dir_container)/package.json"
+    pkg_json="$(podman exec "$container" cat "$pkg" 2>/dev/null || true)"
+    [[ -n "$pkg_json" ]] || return 0
+    python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("version",""))' "$pkg_json" 2>/dev/null || true
+    return 0
+  fi
+  pkg="$(agent_webhooks_ext_dir "$config_dir")/package.json"
+  [[ -f "$pkg" ]] || return 0
+  python3 - "$pkg" <<'PY' 2>/dev/null || true
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+print(json.loads(path.read_text(encoding="utf-8")).get("version", ""))
+PY
+}
+
+webhooks_ext_ready() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local ext_dir
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec "$container" test \
+      -f "$(agent_webhooks_ext_dir_container)/openclaw.plugin.json" \
+      -a -f "$(agent_webhooks_ext_dir_container)/dist/index.js"
+    return $?
+  fi
+  ext_dir="$(agent_webhooks_ext_dir "$config_dir")"
+  [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]
+}
+
 install_identyclaw_webhooks_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
@@ -2613,14 +2938,21 @@ install_identyclaw_webhooks_plugin() {
 
   if [[ "$force" != "1" && -n "$desired_ver" && "$installed_ver" == "$desired_ver" ]] \
     && webhooks_ext_ready "$config_dir" "$container"; then
-    link_identyclaw_webhooks_plugin_deps "$ext_dir"
-    patch_webhooks_a2a_config_key "$ext_dir"
+    if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      link_identyclaw_webhooks_plugin_deps_in_container "$container" 2>/dev/null || true
+      patch_webhooks_a2a_config_key_in_container "$container"
+    else
+      link_identyclaw_webhooks_plugin_deps "$ext_dir"
+      patch_webhooks_a2a_config_key "$ext_dir"
+    fi
     return 0
   fi
 
   if [[ "$force" == "1" || ( -n "$desired_ver" && -n "$installed_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
     if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
-      podman exec "$container" rm -rf "$(agent_webhooks_ext_dir_container)" 2>/dev/null || true
+      podman exec "$container" rm -rf \
+        "$(agent_webhooks_ext_dir_container)" \
+        /home/node/.openclaw/.identyclaw-webhooks-plugin-build 2>/dev/null || true
     else
       rm -rf "$ext_dir" "$config_dir/.identyclaw-webhooks-plugin-build" 2>/dev/null || true
     fi
@@ -2641,7 +2973,7 @@ install_identyclaw_webhooks_plugin() {
   }
 
   if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    link_identyclaw_webhooks_plugin_deps_in_container "$container"
+    link_identyclaw_webhooks_plugin_deps_in_container "$container" 2>/dev/null || true
     patch_webhooks_a2a_config_key_in_container "$container"
   else
     link_identyclaw_webhooks_plugin_deps "$ext_dir"
@@ -2977,6 +3309,7 @@ upgrade_agent_plugins() {
     echo "IdentyClaw webhooks plugin install failed for ${id}" >&2
     return 1
   }
+  ensure_webhooks_plugin_config "$config_dir" "$container" || return 1
 
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     link_identyclaw_plugin_deps_in_container "$container"

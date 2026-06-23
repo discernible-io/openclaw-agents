@@ -7,7 +7,7 @@
  *
  * Usage:
  *   node scripts/test-webhooks-p2p-suite.mjs \
- *     --local agent-b --peer agent-a \
+ *     --local <local-passport-token-id> --peer <peer-passport-token-id> \
  *     --local-creds /path/to/local-near.json \
  *     --local-base https://agent-b.dev.identyclaw.com:7443 \
  *     --peer-base https://agent-a.dev.identyclaw.com:7443 \
@@ -41,7 +41,7 @@ const simulateInbound = process.argv.includes("--simulate-inbound");
 
 if (!localCredsPath || !peerBase || !peerId) {
   process.stderr.write(
-    "usage: test-webhooks-p2p-suite.mjs --local <id> --peer <id> " +
+    "usage: test-webhooks-p2p-suite.mjs --local <passport-token-id> --peer <passport-token-id> " +
       "--local-creds <near.json> --peer-base <https://peer:port> " +
       "[--local-base <https://local:port>] [--peer-creds <peer.json>] " +
       "[--config openclaw.json] [--skip-inbound] [--require-inbound]\n",
