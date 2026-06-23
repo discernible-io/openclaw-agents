@@ -121,8 +121,9 @@ ensure_tls_certs() {
   load_env
   cert_dir="$(identyclaw_app_dir)/certs"
   extra_sans=""
-  local h
-  for h in "${AGENT_A_PUBLIC_HOST}" "${AGENT_B_PUBLIC_HOST}" "${AGENT_C_PUBLIC_HOST}"; do
+  local h id
+  for id in ${AGENT_IDS:-agent-a}; do
+    h="$(agent_public_host "$id")"
     [[ -n "$h" ]] || continue
     [[ -n "$extra_sans" ]] && extra_sans+=","
     extra_sans+="DNS:${h}"
@@ -178,10 +179,14 @@ load_env() {
   AGENT_A_BRIDGE_PORT="${AGENT_A_BRIDGE_PORT:-18790}"
   AGENT_B_GATEWAY_PORT="${AGENT_B_GATEWAY_PORT:-18791}"
   AGENT_B_BRIDGE_PORT="${AGENT_B_BRIDGE_PORT:-18792}"
-  AGENT_C_EMAIL="${AGENT_C_EMAIL:-agent-c@identyclaw.com}"
-  AGENT_C_DISPLAY_NAME="${AGENT_C_DISPLAY_NAME:-Identyclaw Agent C}"
-  AGENT_C_GATEWAY_PORT="${AGENT_C_GATEWAY_PORT:-18793}"
-  AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
+  AGENT_D_EMAIL="${AGENT_D_EMAIL:-agent-d@identyclaw.com}"
+  AGENT_D_DISPLAY_NAME="${AGENT_D_DISPLAY_NAME:-Identyclaw Agent D}"
+  AGENT_D_GATEWAY_PORT="${AGENT_D_GATEWAY_PORT:-18795}"
+  AGENT_D_BRIDGE_PORT="${AGENT_D_BRIDGE_PORT:-18796}"
+  AGENT_F_EMAIL="${AGENT_F_EMAIL:-agent-f@identyclaw.com}"
+  AGENT_F_DISPLAY_NAME="${AGENT_F_DISPLAY_NAME:-Identyclaw Agent F}"
+  AGENT_F_GATEWAY_PORT="${AGENT_F_GATEWAY_PORT:-18799}"
+  AGENT_F_BRIDGE_PORT="${AGENT_F_BRIDGE_PORT:-18800}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
@@ -203,10 +208,42 @@ load_env() {
   IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
   AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
   AGENT_B_PUBLIC_HOST="${AGENT_B_PUBLIC_HOST:-agent-b.identyclaw.com}"
-  AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
+  AGENT_D_PUBLIC_HOST="${AGENT_D_PUBLIC_HOST:-agent-d.identyclaw.com}"
+  AGENT_F_PUBLIC_HOST="${AGENT_F_PUBLIC_HOST:-agent-f.identyclaw.com}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
-  AGENT_IDS="${AGENT_IDS:-agent-a agent-b agent-c}"
+  AGENT_IDS="${AGENT_IDS:-agent-a agent-b}"
+}
+
+# Map deployment slug agent-{letter} → env prefix AGENT_{LETTER} (e.g. agent-d → AGENT_D).
+agent_env_prefix() {
+  local id="$1"
+  if [[ "$id" =~ ^agent-([a-z])$ ]]; then
+    printf 'AGENT_%s' "$(echo "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')"
+    return 0
+  fi
+  return 1
+}
+
+is_valid_agent_id() {
+  [[ "$1" =~ ^agent-[a-z]$ ]]
+}
+
+agent_env_value() {
+  local id="$1" field="$2" default="${3:-}"
+  local prefix combined
+  prefix="$(agent_env_prefix "$id")" || { echo "$default"; return 1; }
+  combined="${prefix}_${field}"
+  echo "${!combined:-$default}"
+}
+
+agent_letter_ord() {
+  local id="$1"
+  if [[ "$id" =~ ^agent-([a-z])$ ]]; then
+    printf '%d' "'${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
 }
 
 a2a_plugin_id() {
@@ -610,14 +647,9 @@ agent_ingress_curl_resolve_args() {
 
 agent_a2a_public_base_url() {
   local id="$1"
-  load_env
   local explicit="" config_dir passport_url
-  case "$id" in
-    agent-a) explicit="${AGENT_A_A2A_PUBLIC_BASE_URL:-}" ;;
-    agent-b) explicit="${AGENT_B_A2A_PUBLIC_BASE_URL:-}" ;;
-    agent-c) explicit="${AGENT_C_A2A_PUBLIC_BASE_URL:-}" ;;
-    *) echo ""; return 0 ;;
-  esac
+  load_env
+  explicit="$(agent_env_value "$id" A2A_PUBLIC_BASE_URL "")"
   if [[ -n "$explicit" ]]; then
     echo "$explicit"
     return 0
@@ -655,12 +687,10 @@ agent_a2a_audience() {
     return 0
   fi
   local explicit=""
-  case "$id" in
-    agent-a) explicit="${AGENT_A_P2P_AUDIENCE:-${AGENT_A_A2P_AUDIENCE:-${AGENT_A_A2A_AUDIENCE:-}}}" ;;
-    agent-b) explicit="${AGENT_B_P2P_AUDIENCE:-${AGENT_B_A2P_AUDIENCE:-${AGENT_B_A2A_AUDIENCE:-}}}" ;;
-    agent-c) explicit="${AGENT_C_P2P_AUDIENCE:-${AGENT_C_A2P_AUDIENCE:-${AGENT_C_A2A_AUDIENCE:-}}}" ;;
-    *) echo ""; return 0 ;;
-  esac
+  explicit="$(agent_env_value "$id" P2P_AUDIENCE "")"
+  [[ -z "$explicit" ]] && explicit="$(agent_env_value "$id" A2P_AUDIENCE "")"
+  [[ -z "$explicit" ]] && explicit="$(agent_env_value "$id" A2A_AUDIENCE "")"
+  is_valid_agent_id "$id" || { echo ""; return 0; }
   if [[ -n "$explicit" ]]; then
     echo "$explicit"
     return 0
@@ -1347,21 +1377,9 @@ rodit_passport_webhook_port() {
 a2a_warn_legacy_auth_mode_env() {
   load_env
   local id="$1" explicit_in explicit_out inbound outbound
-  case "$id" in
-    agent-a)
-      explicit_in="${AGENT_A_A2A_INBOUND_AUTH_MODE:-}"
-      explicit_out="${AGENT_A_A2A_OUTBOUND_AUTH_MODE:-}"
-      ;;
-    agent-b)
-      explicit_in="${AGENT_B_A2A_INBOUND_AUTH_MODE:-}"
-      explicit_out="${AGENT_B_A2A_OUTBOUND_AUTH_MODE:-}"
-      ;;
-    agent-c)
-      explicit_in="${AGENT_C_A2A_INBOUND_AUTH_MODE:-}"
-      explicit_out="${AGENT_C_A2A_OUTBOUND_AUTH_MODE:-}"
-      ;;
-    *) return 0 ;;
-  esac
+  is_valid_agent_id "$id" || return 0
+  explicit_in="$(agent_env_value "$id" A2A_INBOUND_AUTH_MODE "")"
+  explicit_out="$(agent_env_value "$id" A2A_OUTBOUND_AUTH_MODE "")"
   inbound="${explicit_in:-${IDENTYCLAW_A2A_INBOUND_AUTH_MODE:-}}"
   outbound="${explicit_out:-${IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE:-}}"
   for val in "$inbound" "$outbound"; do
@@ -1505,35 +1523,28 @@ ensure_identyclaw_network() {
 
 agent_display_name() {
   load_env
-  case "$1" in
-    agent-a) echo "$AGENT_A_DISPLAY_NAME" ;;
-    agent-b) echo "$AGENT_B_DISPLAY_NAME" ;;
-    agent-c) echo "$AGENT_C_DISPLAY_NAME" ;;
-    *) echo "$1" ;;
-  esac
+  is_valid_agent_id "$1" || { echo "$1"; return 0; }
+  agent_env_value "$1" DISPLAY_NAME "$1"
 }
 
 agent_ports() {
-  local id="$1"
+  local id="$1" gw br
   load_env
-  case "$id" in
-    agent-a) echo "$AGENT_A_GATEWAY_PORT $AGENT_A_BRIDGE_PORT" ;;
-    agent-b) echo "$AGENT_B_GATEWAY_PORT $AGENT_B_BRIDGE_PORT" ;;
-    agent-c) echo "$AGENT_C_GATEWAY_PORT $AGENT_C_BRIDGE_PORT" ;;
-    *) echo "unknown agent: $id" >&2; exit 1 ;;
-  esac
+  is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; exit 1; }
+  gw="$(agent_env_value "$id" GATEWAY_PORT "")"
+  br="$(agent_env_value "$id" BRIDGE_PORT "")"
+  [[ -n "$gw" && -n "$br" ]] || { echo "unknown agent: $id (set AGENT_*_GATEWAY_PORT / BRIDGE_PORT in env.local)" >&2; exit 1; }
+  echo "$gw $br"
 }
 
 agent_internal_gateway_port() {
-  local id="$1"
+  local id="$1" ord_a ord_l
   load_env
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-    case "$id" in
-      agent-a) echo "18789" ;;
-      agent-b) echo "18791" ;;
-      agent-c) echo "18793" ;;
-      *) echo "unknown agent: $id" >&2; exit 1 ;;
-    esac
+    is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; exit 1; }
+    ord_a=$(printf '%d' "'a")
+    ord_l="$(agent_letter_ord "$id")" || { echo "unknown agent: $id" >&2; exit 1; }
+    echo $(( 18789 + (ord_l - ord_a) * 2 ))
   else
     echo "${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   fi
@@ -1573,12 +1584,11 @@ agent_public_host() {
   local id="$1"
   local host="" config_dir passport_host
   load_env
-  case "$id" in
-    agent-a) host="${AGENT_A_PUBLIC_HOST:-}" ;;
-    agent-b) host="${AGENT_B_PUBLIC_HOST:-}" ;;
-    agent-c) host="${AGENT_C_PUBLIC_HOST:-}" ;;
-    *) echo ""; return 0 ;;
-  esac
+  is_valid_agent_id "$id" && host="$(agent_env_value "$id" PUBLIC_HOST "")"
+  if ! is_valid_agent_id "$id"; then
+    echo ""
+    return 0
+  fi
   if [[ -n "$host" ]]; then
     echo "$host"
     return 0
@@ -1600,12 +1610,11 @@ agent_ingress_port() {
   local id="$1"
   load_env
   local explicit="" config_dir passport_port
-  case "$id" in
-    agent-a) explicit="${AGENT_A_INGRESS_PORT:-}" ;;
-    agent-b) explicit="${AGENT_B_INGRESS_PORT:-}" ;;
-    agent-c) explicit="${AGENT_C_INGRESS_PORT:-}" ;;
-    *) echo "${IDENTYCLAW_INGRESS_PORT}"; return 0 ;;
-  esac
+  if ! is_valid_agent_id "$id"; then
+    echo "${IDENTYCLAW_INGRESS_PORT}"
+    return 0
+  fi
+  explicit="$(agent_env_value "$id" INGRESS_PORT "")"
   if [[ -n "$explicit" ]]; then
     echo "$explicit"
     return 0
@@ -1828,7 +1837,7 @@ ensure_pod_agent_state_for_container() {
   local ids=("$@")
   local id dir
   if [[ ${#ids[@]} -eq 0 ]]; then
-    ids=(agent-a agent-b agent-c)
+    ids=(agent-a agent-b agent-d agent-f)
   fi
   for id in "${ids[@]}"; do
     dir="$(agent_home "$id")"
@@ -1848,7 +1857,7 @@ ensure_standalone_agent_state_for_container() {
   uid="$(id -u)"
   gid="$(id -g)"
   if [[ ${#ids[@]} -eq 0 ]]; then
-    ids=(agent-a agent-b agent-c)
+    ids=(agent-a agent-b agent-d agent-f)
   fi
   for id in "${ids[@]}"; do
     dir="$(agent_home "$id")"
@@ -1906,7 +1915,7 @@ ensure_pod_logs_for_container() {
 # Restore ownership so the deploy user can read/write agent state on the host.
 # Skip agents whose gateway is running — restore races with pod container uid (1000).
 restore_pod_agent_state_for_host() {
-  local ids="${1:-${AGENT_IDS:-agent-a agent-b agent-c}}"
+  AGENT_IDS="${1:-${AGENT_IDS:-agent-a agent-b}}"
   load_env
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
   [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
@@ -1957,7 +1966,7 @@ deploy_agent_ids_from_env() {
   else
     env_file="$(identyclaw_env_file)"
   fi
-  ids="${AGENT_IDS:-agent-a agent-b agent-c}"
+  ids="${AGENT_IDS:-agent-a agent-b}"
   if [[ -f "$env_file" ]]; then
     line="$(grep -E '^AGENT_IDS=' "$env_file" 2>/dev/null | head -1 || true)"
     if [[ -n "$line" ]]; then
@@ -2131,12 +2140,8 @@ EOF
 agent_mailbox() {
   local id="$1"
   load_env
-  case "$id" in
-    agent-a) echo "${AGENT_A_EMAIL}|${AGENT_A_DISPLAY_NAME}" ;;
-    agent-b) echo "${AGENT_B_EMAIL}|${AGENT_B_DISPLAY_NAME}" ;;
-    agent-c) echo "${AGENT_C_EMAIL}|${AGENT_C_DISPLAY_NAME}" ;;
-    *) echo "unknown agent: $id" >&2; return 1 ;;
-  esac
+  is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; return 1; }
+  echo "$(agent_env_value "$id" EMAIL "")|$(agent_env_value "$id" DISPLAY_NAME "$id")"
 }
 
 ensure_mail_secrets_from_env() {
@@ -2144,11 +2149,7 @@ ensure_mail_secrets_from_env() {
   local config_dir="$2"
   local password=""
   load_env
-  case "$id" in
-    agent-a) password="${AGENT_A_PASSWORD:-}" ;;
-    agent-b) password="${AGENT_B_PASSWORD:-}" ;;
-    agent-c) password="${AGENT_C_PASSWORD:-}" ;;
-  esac
+  is_valid_agent_id "$id" && password="$(agent_env_value "$id" PASSWORD "")"
   if [[ -n "$password" ]] && [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     write_secret_helpers "$config_dir" "$password"
     echo "    (${id}: Migadu password loaded from env.local → secrets/)" >&2
@@ -3437,34 +3438,22 @@ EOF
 agent_twitter_username() {
   local id="$1"
   load_env
-  case "$id" in
-    agent-a) echo "${AGENT_A_TWITTER_USERNAME:-}" ;;
-    agent-b) echo "${AGENT_B_TWITTER_USERNAME:-}" ;;
-    agent-c) echo "${AGENT_C_TWITTER_USERNAME:-}" ;;
-    *) echo "" ;;
-  esac
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  agent_env_value "$id" TWITTER_USERNAME ""
 }
 
 agent_twitter_bird_auth_token() {
   local id="$1"
   load_env
-  case "$id" in
-    agent-a) echo "${AGENT_A_TWITTER_AUTH_TOKEN:-}" ;;
-    agent-b) echo "${AGENT_B_TWITTER_AUTH_TOKEN:-}" ;;
-    agent-c) echo "${AGENT_C_TWITTER_AUTH_TOKEN:-}" ;;
-    *) echo "" ;;
-  esac
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  agent_env_value "$id" TWITTER_AUTH_TOKEN ""
 }
 
 agent_twitter_bird_ct0() {
   local id="$1"
   load_env
-  case "$id" in
-    agent-a) echo "${AGENT_A_TWITTER_CT0:-}" ;;
-    agent-b) echo "${AGENT_B_TWITTER_CT0:-}" ;;
-    agent-c) echo "${AGENT_C_TWITTER_CT0:-}" ;;
-    *) echo "" ;;
-  esac
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  agent_env_value "$id" TWITTER_CT0 ""
 }
 
 twitter_clawhub_skill_slug() {
@@ -4476,20 +4465,10 @@ ensure_twitter_secrets_from_env() {
   local config_dir="$2"
   local username="" password=""
   load_env
-  case "$id" in
-    agent-a)
-      username="${AGENT_A_TWITTER_USERNAME:-}"
-      password="${AGENT_A_TWITTER_PASSWORD:-}"
-      ;;
-    agent-b)
-      username="${AGENT_B_TWITTER_USERNAME:-}"
-      password="${AGENT_B_TWITTER_PASSWORD:-}"
-      ;;
-    agent-c)
-      username="${AGENT_C_TWITTER_USERNAME:-}"
-      password="${AGENT_C_TWITTER_PASSWORD:-}"
-      ;;
-  esac
+  if is_valid_agent_id "$id"; then
+    username="$(agent_env_value "$id" TWITTER_USERNAME "")"
+    password="$(agent_env_value "$id" TWITTER_PASSWORD "")"
+  fi
   if [[ -n "$username" && -n "$password" ]] && [[ ! -f "$config_dir/secrets/twitter.username" ]]; then
     write_twitter_secrets "$id" "$config_dir" "$username" "$password"
     echo "    (${id}: Twitter credentials loaded from env.local → secrets/)" >&2
@@ -4512,20 +4491,10 @@ ensure_instagram_secrets_from_env() {
   local config_dir="$2"
   local username="" password=""
   load_env
-  case "$id" in
-    agent-a)
-      username="${AGENT_A_INSTAGRAM_USERNAME:-}"
-      password="${AGENT_A_INSTAGRAM_PASSWORD:-}"
-      ;;
-    agent-b)
-      username="${AGENT_B_INSTAGRAM_USERNAME:-}"
-      password="${AGENT_B_INSTAGRAM_PASSWORD:-}"
-      ;;
-    agent-c)
-      username="${AGENT_C_INSTAGRAM_USERNAME:-}"
-      password="${AGENT_C_INSTAGRAM_PASSWORD:-}"
-      ;;
-  esac
+  if is_valid_agent_id "$id"; then
+    username="$(agent_env_value "$id" INSTAGRAM_USERNAME "")"
+    password="$(agent_env_value "$id" INSTAGRAM_PASSWORD "")"
+  fi
   if [[ -n "$username" && -n "$password" ]] && [[ ! -f "$config_dir/secrets/instagram.username" ]]; then
     write_instagram_secrets "$config_dir" "$username" "$password"
     echo "    (${id}: Instagram credentials loaded from env.local → secrets/)" >&2
@@ -5077,27 +5046,10 @@ write_agent_export_env_fragment() {
   mailbox="$(agent_mailbox "$id")"
   email="${mailbox%%|*}"
   display_name="${mailbox#*|}"
-  case "$id" in
-    agent-a)
-      prefix="AGENT_A"
-      password="${AGENT_A_PASSWORD:-}"
-      a2a_url="${AGENT_A_A2A_PUBLIC_BASE_URL:-}"
-      ;;
-    agent-b)
-      prefix="AGENT_B"
-      password="${AGENT_B_PASSWORD:-}"
-      a2a_url="${AGENT_B_A2A_PUBLIC_BASE_URL:-}"
-      ;;
-    agent-c)
-      prefix="AGENT_C"
-      password="${AGENT_C_PASSWORD:-}"
-      a2a_url="${AGENT_C_A2A_PUBLIC_BASE_URL:-}"
-      ;;
-    *)
-      echo "unknown agent: $id" >&2
-      return 1
-      ;;
-  esac
+  local prefix
+  prefix="$(agent_env_prefix "$id")" || { echo "unknown agent: $id" >&2; return 1; }
+  password="$(agent_env_value "$id" PASSWORD "")"
+  a2a_url="$(agent_env_value "$id" A2A_PUBLIC_BASE_URL "")"
   cat >"$fragment_path" <<EOF
 # Merge into $(identyclaw_app_dir)/env.local on the target host (chmod 600).
 # Secrets are inside the archive under secrets/ — passwords here are optional duplicates.
