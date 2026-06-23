@@ -1924,7 +1924,7 @@ restore_pod_agent_state_for_host() {
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
   [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
   local id dir container
-  for id in $ids; do
+  for id in $AGENT_IDS; do
     dir="$(agent_home "$id")"
     [[ -d "$dir" ]] || continue
     container="$(agent_container "$id")"
