@@ -130,7 +130,7 @@ cmd_init() {
 }
 
 cmd_set_password() {
-  local id="${1:?Usage: $0 set-password agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 set-password agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -143,7 +143,7 @@ cmd_set_password() {
 }
 
 cmd_set_discord_token() {
-  local id="${1:?Usage: $0 set-discord-token agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 set-discord-token agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -156,7 +156,7 @@ cmd_set_discord_token() {
 }
 
 cmd_set_instagram() {
-  local id="${1:?Usage: $0 set-instagram agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 set-instagram agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   local dir username password
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -169,7 +169,7 @@ cmd_set_instagram() {
 }
 
 cmd_set_twitter() {
-  local id="${1:?Usage: $0 set-twitter agent-a|agent-b|agent-c [username]}"
+  local id="${1:?Usage: $0 set-twitter agent-a|agent-b|agent-c|agent-d|agent-e|agent-f [username]}"
   local dir username password
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -189,7 +189,7 @@ cmd_set_twitter() {
 }
 
 cmd_set_twitter_cookies() {
-  local id="${1:?Usage: $0 set-twitter-cookies agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 set-twitter-cookies agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   local dir auth_token ct0
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -282,14 +282,14 @@ cmd_start() {
   ensure_agent_persistence
   local target="${1:-all}"
   case "$target" in
-    agent-a|agent-b|agent-c) start_one "$target" ;;
+    agent-a|agent-b|agent-c|agent-d|agent-e|agent-f) start_one "$target" ;;
     all)
       local id
       for id in $AGENT_IDS; do
         start_one "$id"
       done
       ;;
-    *) echo "Usage: $0 start [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 start [agent-a|agent-b|agent-c|agent-d|agent-e|agent-f|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -304,14 +304,14 @@ cmd_stop() {
   load_env
   local target="${1:-all}"
   case "$target" in
-    agent-a|agent-b|agent-c) stop_one "$target" ;;
+    agent-a|agent-b|agent-c|agent-d|agent-e|agent-f) stop_one "$target" ;;
     all)
       local id
       for id in $AGENT_IDS; do
         stop_one "$id"
       done
       ;;
-    *) echo "Usage: $0 stop [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 stop [agent-a|agent-b|agent-c|agent-d|agent-e|agent-f|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -321,14 +321,14 @@ cmd_restart() {
   local target="${1:-all}"
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     case "$target" in
-      agent-a|agent-b|agent-c) start_pod_agent "$target" restart ;;
+      agent-a|agent-b|agent-c|agent-d|agent-e|agent-f) start_pod_agent "$target" restart ;;
       all)
         local id
         for id in $AGENT_IDS; do
           start_pod_agent "$id" restart
         done
         ;;
-      *) echo "Usage: $0 restart [agent-a|agent-b|agent-c|all]" >&2; exit 1 ;;
+      *) echo "Usage: $0 restart [agent-a|agent-b|agent-c|agent-d|agent-e|agent-f|all]" >&2; exit 1 ;;
     esac
     return 0
   fi
@@ -402,7 +402,7 @@ cmd_status() {
 }
 
 cmd_logs() {
-  local id="${1:?Usage: $0 logs agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 logs agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   podman logs -f "$(agent_container "$id")"
 }
 
@@ -589,7 +589,7 @@ cmd_test_a2a_auth() {
 }
 
 cmd_webhook_url() {
-  local id="${1:?Usage: $0 webhook-url agent-a|agent-b|agent-c [hooks/wake|hooks/agent|hooks/name]}"
+  local id="${1:?Usage: $0 webhook-url agent-a|agent-b|agent-c|agent-d|agent-e|agent-f [hooks/wake|hooks/agent|hooks/name]}"
   local path="${2:-hooks/wake}"
   agent_webhook_url "$id" "$path"
 }
@@ -895,7 +895,7 @@ cmd_test() {
 }
 
 cmd_token() {
-  local id="${1:?Usage: $0 token agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 token agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   agent_gateway_token "$id"
 }
 
@@ -924,7 +924,7 @@ EOF
 }
 
 cmd_chat() {
-  local id="${1:?Usage: $0 chat agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 chat agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   shift
   require_podman
   require_agent_running "$id"
@@ -952,8 +952,8 @@ cmd_chat() {
 }
 
 cmd_ask() {
-  local id="${1:?Usage: $0 ask agent-a|agent-b|agent-c \"message\"}"
-  local message="${2:?Usage: $0 ask agent-a|agent-b|agent-c \"message\"}"
+  local id="${1:?Usage: $0 ask agent-a|agent-b|agent-c|agent-d|agent-e|agent-f \"message\"}"
+  local message="${2:?Usage: $0 ask agent-a|agent-b|agent-c|agent-d|agent-e|agent-f \"message\"}"
   local container tls_env=()
   require_podman
   require_agent_running "$id"
@@ -972,7 +972,7 @@ cmd_ask() {
 }
 
 cmd_set_api_key() {
-  local id="${1:?Usage: $0 set-api-key agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 set-api-key agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   local dir key
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -994,7 +994,7 @@ cmd_mirror() {
 }
 
 cmd_export_agent() {
-  local id="${1:?Usage: $0 export-agent agent-a|agent-b|agent-c [archive.tar.gz] [--with-browser] [--no-stop]}"
+  local id="${1:?Usage: $0 export-agent agent-a|agent-b|agent-c|agent-d|agent-e|agent-f [archive.tar.gz] [--with-browser] [--no-stop]}"
   shift || true
   require_rootless_user
   load_env
@@ -1019,15 +1019,15 @@ cmd_export_agent() {
 }
 
 cmd_import_agent() {
-  local id="${1:?Usage: $0 import-agent agent-a|agent-b|agent-c archive.tar.gz}"
-  local archive="${2:?Usage: $0 import-agent agent-a|agent-b|agent-c archive.tar.gz}"
+  local id="${1:?Usage: $0 import-agent agent-a|agent-b|agent-c|agent-d|agent-e|agent-f archive.tar.gz}"
+  local archive="${2:?Usage: $0 import-agent agent-a|agent-b|agent-c|agent-d|agent-e|agent-f archive.tar.gz}"
   require_rootless_user
   load_env
   import_agent_bundle "$id" "$archive"
 }
 
 cmd_configure() {
-  local id="${1:?Usage: $0 configure agent-a|agent-b|agent-c [openclaw configure flags...]}"
+  local id="${1:?Usage: $0 configure agent-a|agent-b|agent-c|agent-d|agent-e|agent-f [openclaw configure flags...]}"
   shift
   require_podman
   local container
@@ -1083,7 +1083,7 @@ cmd_sync_a2a_peers() {
 }
 
 cmd_onboard() {
-  local id="${1:?Usage: $0 onboard agent-a|agent-b|agent-c}"
+  local id="${1:?Usage: $0 onboard agent-a|agent-b|agent-c|agent-d|agent-e|agent-f}"
   shift
   require_podman
   require_rootless_user

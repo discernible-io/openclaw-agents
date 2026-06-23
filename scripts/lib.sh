@@ -122,7 +122,7 @@ ensure_tls_certs() {
   cert_dir="$(identyclaw_app_dir)/certs"
   extra_sans=""
   local h
-  for h in "${AGENT_A_PUBLIC_HOST}" "${AGENT_B_PUBLIC_HOST}" "${AGENT_C_PUBLIC_HOST}"; do
+  for h in "${AGENT_A_PUBLIC_HOST}" "${AGENT_B_PUBLIC_HOST}" "${AGENT_C_PUBLIC_HOST}" "${AGENT_D_PUBLIC_HOST}" "${AGENT_E_PUBLIC_HOST}" "${AGENT_F_PUBLIC_HOST}"; do
     [[ -n "$h" ]] || continue
     [[ -n "$extra_sans" ]] && extra_sans+=","
     extra_sans+="DNS:${h}"
@@ -182,8 +182,27 @@ load_env() {
   AGENT_C_DISPLAY_NAME="${AGENT_C_DISPLAY_NAME:-Identyclaw Agent C}"
   AGENT_C_GATEWAY_PORT="${AGENT_C_GATEWAY_PORT:-18793}"
   AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
+  AGENT_E_EMAIL="${AGENT_E_EMAIL:-agent-e@identyclaw.com}"
+  AGENT_E_DISPLAY_NAME="${AGENT_E_DISPLAY_NAME:-Agent E}"
+  AGENT_E_GATEWAY_PORT="${AGENT_E_GATEWAY_PORT:-18795}"
+  AGENT_E_BRIDGE_PORT="${AGENT_E_BRIDGE_PORT:-18796}"
+  AGENT_E_PUBLIC_HOST="${AGENT_E_PUBLIC_HOST:-}"
+  AGENT_D_EMAIL="${AGENT_D_EMAIL:-agent-d@identyclaw.com}"
+  AGENT_D_DISPLAY_NAME="${AGENT_D_DISPLAY_NAME:-Agent D}"
+  AGENT_D_GATEWAY_PORT="${AGENT_D_GATEWAY_PORT:-18793}"
+  AGENT_D_BRIDGE_PORT="${AGENT_D_BRIDGE_PORT:-18794}"
+  AGENT_D_PUBLIC_HOST="${AGENT_D_PUBLIC_HOST:-}"
+  AGENT_F_EMAIL="${AGENT_F_EMAIL:-agent-f@identyclaw.com}"
+  AGENT_F_DISPLAY_NAME="${AGENT_F_DISPLAY_NAME:-Agent F}"
+  AGENT_F_GATEWAY_PORT="${AGENT_F_GATEWAY_PORT:-18795}"
+  AGENT_F_BRIDGE_PORT="${AGENT_F_BRIDGE_PORT:-18796}"
+  AGENT_F_PUBLIC_HOST="${AGENT_F_PUBLIC_HOST:-}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
+  # OpenRouter model chain: two free models (June 2026 OpenRouter rankings), Grok as third.
+  OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/openrouter/owl-alpha}"
+  OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
+  OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/x-ai/grok-4.3}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
@@ -546,6 +565,11 @@ agent_container() {
   echo "openclaw-${1}"
 }
 
+# Known deployment slugs (agent-a … agent-z).
+is_deploy_agent_id() {
+  [[ "$1" =~ ^agent-[a-z]$ ]]
+}
+
 # True when id is listed in AGENT_IDS (runs on this host).
 agent_is_local() {
   local id="$1" local_id
@@ -616,6 +640,9 @@ agent_a2a_public_base_url() {
     agent-a) explicit="${AGENT_A_A2A_PUBLIC_BASE_URL:-}" ;;
     agent-b) explicit="${AGENT_B_A2A_PUBLIC_BASE_URL:-}" ;;
     agent-c) explicit="${AGENT_C_A2A_PUBLIC_BASE_URL:-}" ;;
+    agent-e) explicit="${AGENT_E_A2A_PUBLIC_BASE_URL:-}" ;;
+    agent-d) explicit="${AGENT_D_A2A_PUBLIC_BASE_URL:-}" ;;
+    agent-f) explicit="${AGENT_F_A2A_PUBLIC_BASE_URL:-}" ;;
     *) echo ""; return 0 ;;
   esac
   if [[ -n "$explicit" ]]; then
@@ -659,6 +686,9 @@ agent_a2a_audience() {
     agent-a) explicit="${AGENT_A_P2P_AUDIENCE:-${AGENT_A_A2P_AUDIENCE:-${AGENT_A_A2A_AUDIENCE:-}}}" ;;
     agent-b) explicit="${AGENT_B_P2P_AUDIENCE:-${AGENT_B_A2P_AUDIENCE:-${AGENT_B_A2A_AUDIENCE:-}}}" ;;
     agent-c) explicit="${AGENT_C_P2P_AUDIENCE:-${AGENT_C_A2P_AUDIENCE:-${AGENT_C_A2A_AUDIENCE:-}}}" ;;
+    agent-e) explicit="${AGENT_E_P2P_AUDIENCE:-${AGENT_E_A2P_AUDIENCE:-${AGENT_E_A2A_AUDIENCE:-}}}" ;;
+    agent-d) explicit="${AGENT_D_P2P_AUDIENCE:-${AGENT_D_A2P_AUDIENCE:-${AGENT_D_A2A_AUDIENCE:-}}}" ;;
+    agent-f) explicit="${AGENT_F_P2P_AUDIENCE:-${AGENT_F_A2P_AUDIENCE:-${AGENT_F_A2A_AUDIENCE:-}}}" ;;
     *) echo ""; return 0 ;;
   esac
   if [[ -n "$explicit" ]]; then
@@ -1360,6 +1390,18 @@ a2a_warn_legacy_auth_mode_env() {
       explicit_in="${AGENT_C_A2A_INBOUND_AUTH_MODE:-}"
       explicit_out="${AGENT_C_A2A_OUTBOUND_AUTH_MODE:-}"
       ;;
+    agent-e)
+      explicit_in="${AGENT_E_A2A_INBOUND_AUTH_MODE:-}"
+      explicit_out="${AGENT_E_A2A_OUTBOUND_AUTH_MODE:-}"
+      ;;
+    agent-d)
+      explicit_in="${AGENT_D_A2A_INBOUND_AUTH_MODE:-}"
+      explicit_out="${AGENT_D_A2A_OUTBOUND_AUTH_MODE:-}"
+      ;;
+    agent-f)
+      explicit_in="${AGENT_F_A2A_INBOUND_AUTH_MODE:-}"
+      explicit_out="${AGENT_F_A2A_OUTBOUND_AUTH_MODE:-}"
+      ;;
     *) return 0 ;;
   esac
   inbound="${explicit_in:-${IDENTYCLAW_A2A_INBOUND_AUTH_MODE:-}}"
@@ -1509,6 +1551,9 @@ agent_display_name() {
     agent-a) echo "$AGENT_A_DISPLAY_NAME" ;;
     agent-b) echo "$AGENT_B_DISPLAY_NAME" ;;
     agent-c) echo "$AGENT_C_DISPLAY_NAME" ;;
+    agent-e) echo "$AGENT_E_DISPLAY_NAME" ;;
+    agent-d) echo "$AGENT_D_DISPLAY_NAME" ;;
+    agent-f) echo "$AGENT_F_DISPLAY_NAME" ;;
     *) echo "$1" ;;
   esac
 }
@@ -1520,6 +1565,9 @@ agent_ports() {
     agent-a) echo "$AGENT_A_GATEWAY_PORT $AGENT_A_BRIDGE_PORT" ;;
     agent-b) echo "$AGENT_B_GATEWAY_PORT $AGENT_B_BRIDGE_PORT" ;;
     agent-c) echo "$AGENT_C_GATEWAY_PORT $AGENT_C_BRIDGE_PORT" ;;
+    agent-e) echo "$AGENT_E_GATEWAY_PORT $AGENT_E_BRIDGE_PORT" ;;
+    agent-d) echo "$AGENT_D_GATEWAY_PORT $AGENT_D_BRIDGE_PORT" ;;
+    agent-f) echo "$AGENT_F_GATEWAY_PORT $AGENT_F_BRIDGE_PORT" ;;
     *) echo "unknown agent: $id" >&2; exit 1 ;;
   esac
 }
@@ -1532,6 +1580,9 @@ agent_internal_gateway_port() {
       agent-a) echo "18789" ;;
       agent-b) echo "18791" ;;
       agent-c) echo "18793" ;;
+      agent-e) echo "18795" ;;
+      agent-d) echo "18793" ;;
+      agent-f) echo "18795" ;;
       *) echo "unknown agent: $id" >&2; exit 1 ;;
     esac
   else
@@ -1577,6 +1628,9 @@ agent_public_host() {
     agent-a) host="${AGENT_A_PUBLIC_HOST:-}" ;;
     agent-b) host="${AGENT_B_PUBLIC_HOST:-}" ;;
     agent-c) host="${AGENT_C_PUBLIC_HOST:-}" ;;
+    agent-e) host="${AGENT_E_PUBLIC_HOST:-}" ;;
+    agent-d) host="${AGENT_D_PUBLIC_HOST:-}" ;;
+    agent-f) host="${AGENT_F_PUBLIC_HOST:-}" ;;
     *) echo ""; return 0 ;;
   esac
   if [[ -n "$host" ]]; then
@@ -1604,6 +1658,9 @@ agent_ingress_port() {
     agent-a) explicit="${AGENT_A_INGRESS_PORT:-}" ;;
     agent-b) explicit="${AGENT_B_INGRESS_PORT:-}" ;;
     agent-c) explicit="${AGENT_C_INGRESS_PORT:-}" ;;
+    agent-e) explicit="${AGENT_E_INGRESS_PORT:-}" ;;
+    agent-d) explicit="${AGENT_D_INGRESS_PORT:-}" ;;
+    agent-f) explicit="${AGENT_F_INGRESS_PORT:-}" ;;
     *) echo "${IDENTYCLAW_INGRESS_PORT}"; return 0 ;;
   esac
   if [[ -n "$explicit" ]]; then
@@ -1828,7 +1885,7 @@ ensure_pod_agent_state_for_container() {
   local ids=("$@")
   local id dir
   if [[ ${#ids[@]} -eq 0 ]]; then
-    ids=(agent-a agent-b agent-c)
+    ids=(agent-a agent-b agent-c agent-d agent-e agent-f)
   fi
   for id in "${ids[@]}"; do
     dir="$(agent_home "$id")"
@@ -1848,7 +1905,7 @@ ensure_standalone_agent_state_for_container() {
   uid="$(id -u)"
   gid="$(id -g)"
   if [[ ${#ids[@]} -eq 0 ]]; then
-    ids=(agent-a agent-b agent-c)
+    ids=(agent-a agent-b agent-c agent-d agent-e agent-f)
   fi
   for id in "${ids[@]}"; do
     dir="$(agent_home "$id")"
@@ -2135,6 +2192,9 @@ agent_mailbox() {
     agent-a) echo "${AGENT_A_EMAIL}|${AGENT_A_DISPLAY_NAME}" ;;
     agent-b) echo "${AGENT_B_EMAIL}|${AGENT_B_DISPLAY_NAME}" ;;
     agent-c) echo "${AGENT_C_EMAIL}|${AGENT_C_DISPLAY_NAME}" ;;
+    agent-e) echo "${AGENT_E_EMAIL}|${AGENT_E_DISPLAY_NAME}" ;;
+    agent-d) echo "${AGENT_D_EMAIL}|${AGENT_D_DISPLAY_NAME}" ;;
+    agent-f) echo "${AGENT_F_EMAIL}|${AGENT_F_DISPLAY_NAME}" ;;
     *) echo "unknown agent: $id" >&2; return 1 ;;
   esac
 }
@@ -2148,6 +2208,9 @@ ensure_mail_secrets_from_env() {
     agent-a) password="${AGENT_A_PASSWORD:-}" ;;
     agent-b) password="${AGENT_B_PASSWORD:-}" ;;
     agent-c) password="${AGENT_C_PASSWORD:-}" ;;
+    agent-e) password="${AGENT_E_PASSWORD:-}" ;;
+    agent-d) password="${AGENT_D_PASSWORD:-}" ;;
+    agent-f) password="${AGENT_F_PASSWORD:-}" ;;
   esac
   if [[ -n "$password" ]] && [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     write_secret_helpers "$config_dir" "$password"
@@ -3452,6 +3515,9 @@ agent_twitter_bird_auth_token() {
     agent-a) echo "${AGENT_A_TWITTER_AUTH_TOKEN:-}" ;;
     agent-b) echo "${AGENT_B_TWITTER_AUTH_TOKEN:-}" ;;
     agent-c) echo "${AGENT_C_TWITTER_AUTH_TOKEN:-}" ;;
+    agent-e) echo "${AGENT_E_TWITTER_AUTH_TOKEN:-}" ;;
+    agent-d) echo "${AGENT_D_TWITTER_AUTH_TOKEN:-}" ;;
+    agent-f) echo "${AGENT_F_TWITTER_AUTH_TOKEN:-}" ;;
     *) echo "" ;;
   esac
 }
@@ -3463,6 +3529,9 @@ agent_twitter_bird_ct0() {
     agent-a) echo "${AGENT_A_TWITTER_CT0:-}" ;;
     agent-b) echo "${AGENT_B_TWITTER_CT0:-}" ;;
     agent-c) echo "${AGENT_C_TWITTER_CT0:-}" ;;
+    agent-e) echo "${AGENT_E_TWITTER_CT0:-}" ;;
+    agent-d) echo "${AGENT_D_TWITTER_CT0:-}" ;;
+    agent-f) echo "${AGENT_F_TWITTER_CT0:-}" ;;
     *) echo "" ;;
   esac
 }
@@ -4489,6 +4558,18 @@ ensure_twitter_secrets_from_env() {
       username="${AGENT_C_TWITTER_USERNAME:-}"
       password="${AGENT_C_TWITTER_PASSWORD:-}"
       ;;
+    agent-e)
+      username="${AGENT_E_TWITTER_USERNAME:-}"
+      password="${AGENT_E_TWITTER_PASSWORD:-}"
+      ;;
+    agent-d)
+      username="${AGENT_D_TWITTER_USERNAME:-}"
+      password="${AGENT_D_TWITTER_PASSWORD:-}"
+      ;;
+    agent-f)
+      username="${AGENT_F_TWITTER_USERNAME:-}"
+      password="${AGENT_F_TWITTER_PASSWORD:-}"
+      ;;
   esac
   if [[ -n "$username" && -n "$password" ]] && [[ ! -f "$config_dir/secrets/twitter.username" ]]; then
     write_twitter_secrets "$id" "$config_dir" "$username" "$password"
@@ -4524,6 +4605,18 @@ ensure_instagram_secrets_from_env() {
     agent-c)
       username="${AGENT_C_INSTAGRAM_USERNAME:-}"
       password="${AGENT_C_INSTAGRAM_PASSWORD:-}"
+      ;;
+    agent-e)
+      username="${AGENT_E_INSTAGRAM_USERNAME:-}"
+      password="${AGENT_E_INSTAGRAM_PASSWORD:-}"
+      ;;
+    agent-d)
+      username="${AGENT_D_INSTAGRAM_USERNAME:-}"
+      password="${AGENT_D_INSTAGRAM_PASSWORD:-}"
+      ;;
+    agent-f)
+      username="${AGENT_F_INSTAGRAM_USERNAME:-}"
+      password="${AGENT_F_INSTAGRAM_PASSWORD:-}"
       ;;
   esac
   if [[ -n "$username" && -n "$password" ]] && [[ ! -f "$config_dir/secrets/instagram.username" ]]; then
@@ -4574,6 +4667,7 @@ ensure_agent_bootstrap() {
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
+  ensure_openclaw_model_defaults "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
   fi
@@ -4760,6 +4854,36 @@ if changed:
 PY
 }
 
+ensure_openclaw_model_defaults() {
+  local config_dir="$1"
+  local container="${2:-}"
+  load_env
+  [[ -f "$config_dir/openclaw.json" ]] || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+primary, fb1, fb2 = sys.argv[2:5]
+fallbacks = [fb1, fb2]
+allowlist = {primary: {}, fb1: {}, fb2: {}}
+
+data = json.loads(path.read_text(encoding="utf-8"))
+defaults = data.setdefault("agents", {}).setdefault("defaults", {})
+defaults.setdefault("workspace", "/home/node/.openclaw/workspace")
+defaults["models"] = allowlist
+defaults["model"] = {"primary": primary, "fallbacks": fallbacks}
+
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+openrouter = plugins.setdefault("openrouter", {})
+openrouter["enabled"] = True
+
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+}
+
 write_openclaw_json() {
   local config_dir="$1"
   local gateway_port="$2"
@@ -4805,6 +4929,9 @@ write_openclaw_json() {
       },
       "discord": {
         "enabled": true
+      },
+      "openrouter": {
+        "enabled": true
       }
     }
   },
@@ -4812,10 +4939,16 @@ write_openclaw_json() {
     "defaults": {
       "workspace": "/home/node/.openclaw/workspace",
       "models": {
-        "openrouter/x-ai/grok-4.3": {}
+        "${OPENCLAW_MODEL_PRIMARY}": {},
+        "${OPENCLAW_MODEL_FALLBACK_1}": {},
+        "${OPENCLAW_MODEL_FALLBACK_2}": {}
       },
       "model": {
-        "primary": "openrouter/x-ai/grok-4.3"
+        "primary": "${OPENCLAW_MODEL_PRIMARY}",
+        "fallbacks": [
+          "${OPENCLAW_MODEL_FALLBACK_1}",
+          "${OPENCLAW_MODEL_FALLBACK_2}"
+        ]
       }
     }
   },
@@ -5092,6 +5225,21 @@ write_agent_export_env_fragment() {
       prefix="AGENT_C"
       password="${AGENT_C_PASSWORD:-}"
       a2a_url="${AGENT_C_A2A_PUBLIC_BASE_URL:-}"
+      ;;
+    agent-e)
+      prefix="AGENT_E"
+      password="${AGENT_E_PASSWORD:-}"
+      a2a_url="${AGENT_E_A2A_PUBLIC_BASE_URL:-}"
+      ;;
+    agent-d)
+      prefix="AGENT_D"
+      password="${AGENT_D_PASSWORD:-}"
+      a2a_url="${AGENT_D_A2A_PUBLIC_BASE_URL:-}"
+      ;;
+    agent-f)
+      prefix="AGENT_F"
+      password="${AGENT_F_PASSWORD:-}"
+      a2a_url="${AGENT_F_A2A_PUBLIC_BASE_URL:-}"
       ;;
     *)
       echo "unknown agent: $id" >&2

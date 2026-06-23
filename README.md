@@ -542,7 +542,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | Deploy mode | `pod` (`IDENTYCLAW_INGRESS_PORT=9443` in `env.local`) |
 | Gateway bind | `lan` (reachable from nginx sidecar inside the pod) |
 | Gateway auth | token |
-| Model | `openrouter/x-ai/grok-4.3` (OpenRouter API key, no fallbacks) |
+| Model | **Primary:** `openrouter/openrouter/owl-alpha` (free) → **fallback 1:** `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` (free) → **fallback 2:** `openrouter/x-ai/grok-4.3` |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
 | Memory | `qmd` |
@@ -562,7 +562,18 @@ Key `openclaw.json` excerpts (secrets redacted):
   },
   "agents": {
     "defaults": {
-      "model": { "primary": "openrouter/x-ai/grok-4.3" }
+      "models": {
+        "openrouter/openrouter/owl-alpha": {},
+        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {},
+        "openrouter/x-ai/grok-4.3": {}
+      },
+      "model": {
+        "primary": "openrouter/openrouter/owl-alpha",
+        "fallbacks": [
+          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "openrouter/x-ai/grok-4.3"
+        ]
+      }
     }
   },
   "tools": {

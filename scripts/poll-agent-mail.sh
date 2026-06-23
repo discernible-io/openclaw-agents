@@ -7,7 +7,7 @@ source "$ROOT/scripts/lib.sh"
 
 id="${1:-}"
 if [[ "$id" != "agent-a" && "$id" != "agent-b" && "$id" != "agent-c" ]]; then
-  echo "usage: $0 agent-a|agent-b|agent-c" >&2
+  echo "usage: $0 agent-a|agent-b|agent-c|agent-d|agent-e|agent-f" >&2
   exit 1
 fi
 
