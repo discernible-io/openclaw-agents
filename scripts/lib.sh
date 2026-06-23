@@ -693,6 +693,25 @@ probe_rodit_own_owner_id_in_container() {
   echo "$probed"
 }
 
+probe_rodit_own_token_id_in_container() {
+  local container="$1"
+  local cred ext_dir probed
+  [[ -n "$container" ]] || return 1
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 1
+  cred="$(podman exec "$container" sh -c 'ls /home/node/.openclaw/secrets/near-credentials/*.json 2>/dev/null | head -1' || true)"
+  [[ -n "$cred" ]] || return 1
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman cp "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-token-id.mjs" "$container:/tmp/probe-rodit-own-token-id.mjs" >/dev/null 2>&1 || return 1
+  probed="$(
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
+      node /tmp/probe-rodit-own-token-id.mjs "$ext_dir" "$cred" 2>/dev/null || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  is_passport_token_id "$probed" || return 1
+  echo "$probed"
+}
+
 # Legacy: mediated login_server JWT aud (pre–P2P-only plugin). Used by test scripts only.
 probe_rodit_inbound_audience() {
   local config_dir="$1"
