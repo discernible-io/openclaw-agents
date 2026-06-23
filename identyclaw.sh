@@ -22,7 +22,7 @@
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [to] Smoke-test A2A discovery + inbound auth (defaults: local → peer)
-#   test-a2a-auth [mode] Mediated + P2P JWT on /a2a (mode: mediated|p2p|both; default both)
+#   test-a2a-auth [mode] P2P JWT on /a2a (mode: p2p|mediated|both; default p2p)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Skips /api/testhola by default (SKIP_TESTHOLA=1); needs valid HOLA when enabled
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
@@ -509,12 +509,13 @@ cmd_test_a2a_auth() {
   require_podman
   load_env
   local_id="$(resolve_local_agent_id)"
-  mode="${1:-both}"
+  mode="${1:-p2p}"
   case "$mode" in
     mediated|p2p|both) ;;
     *)
-      echo "Usage: $0 test-a2a-auth [mediated|p2p|both]" >&2
+      echo "Usage: $0 test-a2a-auth [p2p|mediated|both]" >&2
       echo "  Tests RODiT JWT acceptance on POST /a2a (peer when configured, then local inbound)." >&2
+      echo "  Production requires p2p; mediated/both are legacy rejection probes." >&2
       exit 1
       ;;
   esac
@@ -538,7 +539,7 @@ cmd_test_a2a_auth() {
       exit 1
     }
     echo "==> A2A RODiT auth (→ peer ${peer_id} at ${target}, mode=${mode})"
-    echo "    P2P uses peer /api/login only; mediated uses api.identyclaw.com"
+    echo "    P2P uses peer /api/login; mediated probes expect 401 on P2P-only inbound"
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
       --ext-dir "$ext_dir" --creds "$creds" --target "$target" --mode "$mode" || failed=1
     echo ""
