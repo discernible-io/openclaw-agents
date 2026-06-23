@@ -22,7 +22,7 @@
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [to] Smoke-test A2A discovery + inbound auth (defaults: local → peer)
-#   test-a2a-auth [mode] P2P JWT on /a2a (mode: p2p|mediated|both; default p2p)
+#   test-a2a-auth         P2P JWT on /a2a (peer when configured, then local inbound)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Skips /api/testhola by default (SKIP_TESTHOLA=1); needs valid HOLA when enabled
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
@@ -33,7 +33,7 @@
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
-#   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw plugins from ClawHub (pinned in env.local)
+#   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins from ClawHub (pinned in env.local)
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
@@ -505,20 +505,10 @@ cmd_test_a2a() {
 }
 
 cmd_test_a2a_auth() {
-  local local_id peer_id target mode container creds ext_dir failed=0
+  local local_id peer_id target container creds ext_dir failed=0
   require_podman
   load_env
   local_id="$(resolve_local_agent_id)"
-  mode="${1:-p2p}"
-  case "$mode" in
-    mediated|p2p|both) ;;
-    *)
-      echo "Usage: $0 test-a2a-auth [p2p|mediated|both]" >&2
-      echo "  Tests RODiT JWT acceptance on POST /a2a (peer when configured, then local inbound)." >&2
-      echo "  Production requires p2p; mediated/both are legacy rejection probes." >&2
-      exit 1
-      ;;
-  esac
   peer_id="$(resolve_peer_agent_id "$local_id" 2>/dev/null || true)"
   require_agent_running "$local_id"
 
@@ -538,10 +528,10 @@ cmd_test_a2a_auth() {
       echo "No ingress URL for peer ${peer_id}" >&2
       exit 1
     }
-    echo "==> A2A RODiT auth (→ peer ${peer_id} at ${target}, mode=${mode})"
-    echo "    P2P uses peer /api/login; mediated probes expect 401 on P2P-only inbound"
+    echo "==> A2A RODiT auth (→ peer ${peer_id} at ${target})"
+    echo "    P2P login at peer /api/login, then POST /a2a"
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
-      --ext-dir "$ext_dir" --creds "$creds" --target "$target" --mode "$mode" || failed=1
+      --ext-dir "$ext_dir" --creds "$creds" --target "$target" || failed=1
     echo ""
   fi
 
@@ -551,9 +541,9 @@ cmd_test_a2a_auth() {
     echo "No ingress URL for local ${local_id}" >&2
     exit 1
   }
-  echo "==> A2A RODiT auth (→ local ${local_id} at ${target}, mode=${mode})"
+  echo "==> A2A RODiT auth (→ local ${local_id} at ${target})"
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
-    --ext-dir "$ext_dir" --creds "$creds" --target "$target" --mode "$mode" || failed=1
+    --ext-dir "$ext_dir" --creds "$creds" --target "$target" || failed=1
 
   return "$failed"
 }
@@ -821,7 +811,7 @@ cmd_test() {
 
   cmd_test_a2a "$local_id" "${peer_id:-$local_id}" || failed=1
   echo ""
-  cmd_test_a2a_auth both || failed=1
+  cmd_test_a2a_auth || failed=1
   echo ""
   cmd_test_webhook "$local_id" || failed=1
   if [[ -n "$peer_id" && "$peer_id" != "$local_id" ]]; then

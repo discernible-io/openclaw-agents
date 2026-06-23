@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 /**
- * Smoke-test A2A inbound auth with mediated and P2P RODiT JWTs.
+ * Smoke-test A2A inbound auth with P2P RODiT JWT.
  *
  * Usage:
  *   node scripts/test-a2a-rodit-auth.mjs \
  *     --ext-dir ../identyclaw-agents-app/agents/agent-b/extensions/identyclaw-a2a \
  *     --creds ../identyclaw-agents-app/agents/agent-b/secrets/near-credentials/*.json \
- *     --target https://agent-a.dev.identyclaw.com:7443 \
- *     --mode mediated|p2p|both
+ *     --target https://agent-b.dev.identyclaw.com:7443
  */
 import { createRequire } from "node:module";
 import { readFileSync, readdirSync } from "node:fs";
@@ -22,11 +21,10 @@ function arg(name, fallback = "") {
 const extDir = resolve(arg("--ext-dir", ""));
 let credPath = resolve(arg("--creds", ""));
 const targetBase = (arg("--target", "") || "").replace(/\/$/, "");
-const mode = arg("--mode", "both");
 
 if (!extDir || !targetBase) {
     process.stderr.write(
-        "usage: test-a2a-rodit-auth.mjs --ext-dir <a2a-plugin> --creds <near.json> --target <base-url> [--mode mediated|p2p|both]\n",
+        "usage: test-a2a-rodit-auth.mjs --ext-dir <a2a-plugin> --creds <near.json> --target <base-url>\n",
     );
     process.exit(2);
 }
@@ -67,15 +65,6 @@ const { RoditClient, login_server } = require("@rodit/rodit-auth-be");
 async function getOwnConfig() {
     const client = await RoditClient.create({ role: "client" });
     return client.getConfigOwnRodit();
-}
-
-async function mediatedJwt() {
-    const client = await RoditClient.create({ role: "client" });
-    const result = await client.login_server();
-    if (!result?.jwt_token) {
-        throw new Error(result?.error || "mediated login_server failed");
-    }
-    return result.jwt_token;
 }
 
 async function p2pJwt(peerBase) {
@@ -128,9 +117,9 @@ function decodeAud(jwt) {
     }
 }
 
-async function runOne(label, jwtFn) {
-    process.stdout.write(`\n==> ${label}\n`);
-    const jwt = await jwtFn();
+async function runP2pAuth() {
+    process.stdout.write("\n==> P2P login → A2A\n");
+    const jwt = await p2pJwt(targetBase);
     process.stdout.write(`    JWT aud: ${decodeAud(jwt)}\n`);
     const { status, body } = await postA2a(jwt);
     process.stdout.write(`    POST ${targetBase}/a2a → HTTP ${status}\n`);
@@ -138,20 +127,12 @@ async function runOne(label, jwtFn) {
         process.stdout.write(`    body: ${body}\n`);
     }
     if (status === 401 || status === 403) {
-        process.stderr.write(`FAIL: ${label} rejected (HTTP ${status})\n`);
+        process.stderr.write(`FAIL: P2P login → A2A rejected (HTTP ${status})\n`);
         return false;
     }
-    process.stdout.write(`OK: ${label} accepted (HTTP ${status})\n`);
+    process.stdout.write(`OK: P2P login → A2A accepted (HTTP ${status})\n`);
     return true;
 }
 
-const modes = mode === "both" ? ["mediated", "p2p"] : [mode];
-let ok = true;
-for (const m of modes) {
-    if (m === "mediated") {
-        ok = (await runOne("Mediated login → A2A", mediatedJwt)) && ok;
-    } else if (m === "p2p") {
-        ok = (await runOne("P2P login → A2A", () => p2pJwt(targetBase))) && ok;
-    }
-}
+const ok = await runP2pAuth();
 process.exit(ok ? 0 : 1);

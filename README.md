@@ -386,7 +386,7 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 |-------------|--------|---------|
 | **identyclaw** skill + `identyclaw-tools` plugin | [ClawHub: identyclaw/identyclaw](https://clawhub.ai/identyclaw/identyclaw) | HOLA verify/create, Passport lookup, DID, API workflows |
 | **identyclaw-a2a** plugin | [ClawHub: @identyclaw/openclaw-a2a-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-a2a-plugin) | Agent-to-agent messaging (`a2a_send_message`, tasks, files) with RODiT JWT auth |
-| **identyclaw-webhooks** plugin | [openclaw-identyclaw-webhooks-plugin](https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin) | RODiT-signed inbound webhooks + outbound `send_rodit_webhook` to configured peers |
+| **identyclaw-webhooks** plugin | [ClawHub: @identyclaw/openclaw-identyclaw-webhooks-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-identyclaw-webhooks-plugin) | RODiT-signed inbound webhooks + outbound `send_rodit_webhook` to configured peers |
 
 Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). List collaboration partners in `A2A_PEER_AGENTS` — they may run on this host (`AGENT_IDS`) or on remote machines.
 
@@ -797,7 +797,7 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks) |
 | `./identyclaw.sh test` | Full gateway suite (A2A, webhooks, mail — see local `test-constitution.md`) |
 | `./identyclaw.sh test-a2a [from] [to]` | Agent Card discovery + unauthenticated `/a2a` → 401 |
-| `./identyclaw.sh test-a2a-auth [mode]` | P2P JWT on `/a2a` (`p2p` default; `mediated`/`both` legacy negative probes) |
+| `./identyclaw.sh test-a2a-auth` | P2P JWT on `/a2a` (peer when configured, then local inbound) |
 | `./identyclaw.sh test-webhook [id]` | Webhook ingress (unsigned, invalid sig, signed) |
 | `./identyclaw.sh test-webhook-p2p [from] [to]` | Bidirectional P2P webhook receipts |
 | `./identyclaw.sh webhook-url agent-a [path]` | Print public HTTPS webhook URL |

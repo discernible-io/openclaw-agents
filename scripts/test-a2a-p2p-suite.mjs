@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * A2A P2P + mediated auth test suite (positive and negative cases).
+ * A2A P2P auth test suite (positive and negative cases).
  * Includes a P2P webhook section: local creds sign → peer /hooks/wake (+ optional reply).
  *
  * Usage:
@@ -113,13 +113,6 @@ async function fetchStatus(url, init = {}) {
 async function getOwnConfig() {
     const client = await RoditClient.create({ role: "client" });
     return client.getConfigOwnRodit();
-}
-
-async function mediatedJwt() {
-    const client = await RoditClient.create({ role: "client" });
-    const result = await client.login_server();
-    if (!result?.jwt_token) throw new Error(result?.error || "mediated login failed");
-    return result.jwt_token;
 }
 
 async function p2pJwt(peerBaseUrl) {
@@ -357,14 +350,11 @@ async function main() {
     if (peerBase) await runDiscovery(peerBase, "peer");
 
     // --- Positive auth on local ---
-    const localMediated = await runPositiveAuth(localBase, "local", mediatedJwt, "mediated JWT");
     const localP2p = await runPositiveAuth(localBase, "local", () => p2pJwt(localBase), "P2P JWT");
 
     // --- Positive auth on peer ---
-    let peerMediated = null;
     let peerP2p = null;
     if (peerBase) {
-        peerMediated = await runPositiveAuth(peerBase, "peer", mediatedJwt, "mediated JWT");
         peerP2p = await runPositiveAuth(peerBase, "peer", () => p2pJwt(peerBase), "P2P JWT");
     }
 
@@ -384,10 +374,6 @@ async function main() {
         garbage === 401 || garbage === 403,
         `HTTP ${garbage}`,
     );
-
-    if (localMediated) {
-        await runNegative(localBase, "local", "corrupted mediated JWT", corruptJwt(localMediated));
-    }
 
     // Wrong-peer JWT: P2P login to peer, use on local (aud mismatch)
     if (peerBase && peerP2p) {

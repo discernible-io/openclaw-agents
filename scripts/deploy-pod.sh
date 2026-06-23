@@ -233,6 +233,9 @@ ensure_pod_logs_for_container "$APP_DIR/logs/nginx"
 ensure_tls_certs
 normalize_tls_certs
 
+NGINX_CONF="${APP_DIR}/nginx/nginx.conf"
+bash "$REPO_ROOT/scripts/render-nginx-conf.sh" "$DEPLOY_TIER" "$NGINX_CONF"
+
 z="$(selinux_mount_suffix)"
 echo "==> Start nginx sidecar"
 podman run -d \
@@ -242,6 +245,7 @@ podman run -d \
   --restart unless-stopped \
   -v "$APP_DIR/certs:/app/certs:ro${z}" \
   -v "$APP_DIR/logs/nginx:/var/log/nginx${z}" \
+  -v "$NGINX_CONF:/etc/nginx/nginx.conf:ro${z}" \
   "$NGINX_IMAGE"
 
 podman ps -a --filter "pod=${POD_NAME}"
