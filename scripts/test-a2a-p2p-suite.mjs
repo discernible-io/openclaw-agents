@@ -9,7 +9,7 @@
  *     --creds /path/to/near-credentials.json \
  *     --local https://agent-b.dev.identyclaw.com:7443 \
  *     --peer https://agent-a.dev.identyclaw.com:7443 \
- *     [--peer-id agent-a] [--local-id agent-b] \
+ *     [--peer-id <passport-token-id>] [--local-id agent-b] \
  *     [--peer-creds /path/to/peer-near.json] \
  *     [--config /home/node/.openclaw/openclaw.json] \
  *     [--skip-webhooks]
@@ -265,7 +265,7 @@ async function runWebhookSection() {
         process.stdout.write("\n  Outbound: we deliver webhooks to peer\n");
 
         if (!peerId) {
-            recordSkip("webhook", "outbound: we sent send_rodit_webhook to peer", "no --peer-id (outbound.agents key)");
+            recordSkip("webhook", "outbound: we sent send_rodit_webhook to peer", "no --peer-id (Passport token_id / outbound.agents key)");
             recordSkip("webhook", "outbound: peer recorded our webhook", "no --peer-id");
         } else {
             try {

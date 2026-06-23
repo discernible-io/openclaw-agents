@@ -50,7 +50,8 @@ How many gateways run on a machine is controlled in `~/identyclaw-agents-app/env
 | Variable | Purpose |
 |----------|---------|
 | `AGENT_IDS` | Space-separated list of agents **started on this host** (`start all`, `stop all`, `restart all`, `enable-boot`, pod deploy, test suites) |
-| `A2A_PEER_AGENTS` | Agents this deployment may collaborate with (local peers on the same host **or** remote peers on other hosts) |
+| `A2A_PEER_AGENTS` | Collaboration partners as Passport **token_id** values (space-separated) |
+| `A2A_PEER_URLS` | JSON map `token_id` → `https://peer-host:port` gateway base (required for each peer in `A2A_PEER_AGENTS`) |
 
 Default (if unset): `AGENT_IDS=agent-a agent-b agent-c`.
 
@@ -63,9 +64,13 @@ AGENT_IDS=agent-a
 # Two agents on one host
 AGENT_IDS=agent-a agent-b
 
-# Split across hosts — each machine runs one agent, peers wired for A2A
-# Host 1 env.local:  AGENT_IDS=agent-a    A2A_PEER_AGENTS=agent-a agent-b
-# Host 2 env.local:  AGENT_IDS=agent-b    A2A_PEER_AGENTS=agent-a agent-b
+# Split across hosts — each machine runs one agent; peers identified by Passport token_id
+# Host 1 env.local:  AGENT_IDS=agent-a
+#   A2A_PEER_AGENTS=<agent-b-token-id>
+#   A2A_PEER_URLS={"<agent-b-token-id>":"https://agent-b.identyclaw.com:9443"}
+# Host 2 env.local:  AGENT_IDS=agent-b
+#   A2A_PEER_AGENTS=<agent-a-token-id>
+#   A2A_PEER_URLS={"<agent-a-token-id>":"https://agent-a.identyclaw.com:9443"}
 ```
 
 `./identyclaw.sh init` seeds state directories for **agent-a, agent-b, and agent-c** from `env.example`. Agents not listed in `AGENT_IDS` are simply not started — you can leave their mailbox passwords and API keys unset until you need them.
@@ -388,12 +393,12 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 | **identyclaw-a2a** plugin | [ClawHub: @identyclaw/openclaw-a2a-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-a2a-plugin) | Agent-to-agent messaging (`a2a_send_message`, tasks, files) with RODiT JWT auth |
 | **identyclaw-webhooks** plugin | [ClawHub: @identyclaw/openclaw-identyclaw-webhooks-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-identyclaw-webhooks-plugin) | RODiT-signed inbound webhooks + outbound `send_rodit_webhook` to configured peers |
 
-Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). List collaboration partners in `A2A_PEER_AGENTS` — they may run on this host (`AGENT_IDS`) or on remote machines.
+Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). List collaboration partners in `A2A_PEER_AGENTS` as Passport **token_id** values; set `A2A_PEER_URLS` with each peer's public gateway base URL.
 
 ```bash
 # After adding near-credentials for local agents and listing peers in A2A_PEER_AGENTS:
 ./identyclaw.sh restart agent-a agent-b    # or: ./identyclaw.sh restart all
-./identyclaw.sh test-a2a agent-a agent-b   # same-host smoke when both are in AGENT_IDS
+./identyclaw.sh test-a2a              # local discovery + peer token_id from A2A_PEER_AGENTS
 ./identyclaw.sh test              # full suite (see local test-constitution.md if present)
 ```
 
@@ -440,7 +445,7 @@ Peer collaboration uses **two HTTP surfaces**. They are complementary, not inter
 
 | Tool | Action |
 |------|--------|
-| `a2a_get_agents` | List configured outbound peers |
+| `a2a_get_agents` | List configured outbound peers (keys are Passport `token_id`) |
 | `a2a_get_agent` | Read a peer's skills/capabilities from its Agent Card |
 | `a2a_send_message` | Send **text and files**; returns `context_id` / `task_id` |
 | `a2a_get_task` | Poll long-running peer tasks |
@@ -449,9 +454,9 @@ Peer collaboration uses **two HTTP surfaces**. They are complementary, not inter
 
 A2A is **not text-only**: the plugin supports messages, file attachments (plugin docs: ~**1 MB** outbound), long-running tasks, streaming (Agent Card: `streaming: true`), and artifacts. Inbound JSON-RPC body limit: **1 MB**.
 
-**Outbound limits:** peers must appear in `plugins.entries.identyclaw-a2a.config.outbound.agents` (from `A2A_PEER_AGENTS`). Outbound auth is **P2P-only**: per-peer JWT from `{loginBaseUrl}/api/login`.
+**Outbound limits:** peers must appear in `plugins.entries.identyclaw-a2a.config.outbound.agents` keyed by Passport **token_id** (from `A2A_PEER_AGENTS` + `A2A_PEER_URLS`). Outbound auth is **P2P-only**: per-peer JWT from `{loginBaseUrl}/api/login`.
 
-**Inbound limits:** JWT validated per `inbound.auth` (`issuer`, `audience` = own passport `owner_id`). Sender identity from JWT `rodit_id` / `token_id`; conversations keyed by sender + `context_id`.
+**Inbound limits:** JWT validated per `inbound.auth` (`issuer`, `audience` = own passport `owner_id`). Sender identity from JWT `token_id` (`identityClaim`); conversations keyed by sender + `context_id`.
 
 **Forbidden via A2A**
 

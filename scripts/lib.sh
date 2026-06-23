@@ -184,7 +184,7 @@ load_env() {
   AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
-  A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-agent-a agent-b}"
+  A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
@@ -572,24 +572,26 @@ resolve_local_agent_id() {
   echo "agent-a"
 }
 
-# Remote peer for cross-host suites: first A2A_PEER_AGENTS entry not in AGENT_IDS.
-# Override: IDENTYCLAW_PEER_AGENT=agent-a in env.local.
-resolve_peer_agent_id() {
-  local local_id="${1:-$(resolve_local_agent_id)}"
-  local p
+# First peer Passport token_id from A2A_PEER_AGENTS (not the local agent's own token_id).
+# Override: IDENTYCLAW_PEER_TOKEN_ID=<token_id> in env.local.
+resolve_peer_token_id() {
+  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
+  local self_token_id p
   load_env
-  if [[ -n "${IDENTYCLAW_PEER_AGENT:-}" ]]; then
-    echo "$IDENTYCLAW_PEER_AGENT"
+  if [[ -n "${IDENTYCLAW_PEER_TOKEN_ID:-}" ]]; then
+    is_passport_token_id "$IDENTYCLAW_PEER_TOKEN_ID" || {
+      echo "IDENTYCLAW_PEER_TOKEN_ID must be a Passport token_id (12 characters)" >&2
+      return 1
+    }
+    echo "$IDENTYCLAW_PEER_TOKEN_ID"
     return 0
   fi
+  self_token_id="$(agent_token_id "$local_deploy_id")"
   for p in $A2A_PEER_AGENTS; do
-    if ! agent_is_local "$p"; then
-      echo "$p"
-      return 0
-    fi
-  done
-  for p in $A2A_PEER_AGENTS; do
-    [[ "$p" != "$local_id" ]] && { echo "$p"; return 0; }
+    is_passport_token_id "$p" || continue
+    [[ -n "$self_token_id" && "$p" == "$self_token_id" ]] && continue
+    echo "$p"
+    return 0
   done
   return 1
 }
@@ -779,6 +781,180 @@ probe_rodit_own_owner_id() {
   echo "$probed"
 }
 
+# True when ref is a Passport token_id (12-char), not a deployment slug like agent-a.
+is_passport_token_id() {
+  local ref="${1:-}"
+  [[ -n "$ref" ]] || return 1
+  [[ "$ref" == agent-* ]] && return 1
+  [[ "$ref" =~ ^[A-Za-z][A-Za-z0-9]{11}$ ]]
+}
+
+# Own passport token_id — canonical A2A peer identity (12-char Passport ID).
+probe_rodit_own_token_id() {
+  local config_dir="$1"
+  local cred_file ext_dir cache cred_stat probed cached_key cached_id
+  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
+  ext_dir="$(agent_a2a_ext_dir "$config_dir")"
+  [[ -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]] || return 1
+
+  load_env
+  sync_quiet_plugin_env "$config_dir"
+
+  cache="$config_dir/.rodit-own-token-id"
+  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  if [[ -n "$cred_stat" && -f "$cache" ]]; then
+    read -r cached_key cached_id <"$cache" || true
+    if [[ "$cached_key" == "$cred_stat" && -n "$cached_id" ]]; then
+      echo "$cached_id"
+      return 0
+    fi
+  fi
+
+  command -v node >/dev/null 2>&1 || return 1
+  probed="$(
+    NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-token-id.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
+      || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  [[ -n "$probed" ]] || return 1
+  is_passport_token_id "$probed" || return 1
+
+  if [[ -n "$cred_stat" ]]; then
+    printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
+    chmod 600 "$cache" 2>/dev/null || true
+  fi
+  echo "    (${config_dir##*/}: Passport token_id=${probed})" >&2
+  echo "$probed"
+}
+
+# Resolve Passport token_id for a local deployment slug (AGENT_IDS only — not for A2A_PEER_AGENTS).
+agent_token_id() {
+  local deploy_id="$1"
+  local config_dir
+  config_dir="$(agent_home "$deploy_id")"
+  probe_rodit_own_token_id "$config_dir" 2>/dev/null || true
+}
+
+# Map token_id → local deployment slug when this host runs that Passport (AGENT_IDS / agents/).
+find_deploy_id_for_token_id() {
+  local token_id="$1" id config_dir probed app_dir entry
+  [[ -n "$token_id" ]] || return 1
+  is_passport_token_id "$token_id" || return 1
+  load_env
+  for id in $AGENT_IDS; do
+    [[ "$id" == agent-* ]] || continue
+    config_dir="$(agent_home "$id")"
+    agent_has_near_credentials "$config_dir" || continue
+    probed="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+    [[ "$probed" == "$token_id" ]] && { echo "$id"; return 0; }
+  done
+  app_dir="$(identyclaw_app_dir)/agents"
+  if [[ -d "$app_dir" ]]; then
+    for entry in "$app_dir"/*/; do
+      [[ -d "$entry" ]] || continue
+      id="$(basename "$entry")"
+      [[ "$id" == agent-* ]] || continue
+      agent_has_near_credentials "$entry" || continue
+      probed="$(probe_rodit_own_token_id "$entry" 2>/dev/null || true)"
+      [[ "$probed" == "$token_id" ]] && { echo "$id"; return 0; }
+    done
+  fi
+  return 1
+}
+
+# Public HTTPS base for a peer token_id (A2A_PEER_URLS in env.local).
+a2a_peer_public_base_url() {
+  local token_id="$1"
+  [[ -n "$token_id" ]] || return 1
+  is_passport_token_id "$token_id" || return 1
+  load_env
+  local url_json="${A2A_PEER_URLS:-}"
+  [[ -n "$url_json" ]] || return 1
+  A2A_PEER_TOKEN_ID="$token_id" A2A_PEER_URLS_JSON="$url_json" python3 - <<'PY'
+import json, os, sys
+try:
+    data = json.loads(os.environ["A2A_PEER_URLS_JSON"])
+    url = str(data.get(os.environ["A2A_PEER_TOKEN_ID"], "")).strip().rstrip("/")
+    if url:
+        print(url)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+a2a_peer_agent_card_url() {
+  local token_id="$1"
+  local public_base
+  public_base="$(a2a_peer_public_base_url "$token_id")"
+  [[ -n "$public_base" ]] || return 1
+  echo "${public_base%/}/.well-known/agent-card.json"
+}
+
+a2a_peer_a2a_endpoint_url() {
+  local token_id="$1"
+  local public_base
+  public_base="$(a2a_peer_public_base_url "$token_id")"
+  [[ -n "$public_base" ]] || return 1
+  echo "${public_base%/}/a2a"
+}
+
+# Passport token_ids listed in A2A_PEER_AGENTS (invalid entries omitted with warning).
+a2a_configured_peer_token_ids() {
+  local ref out="" invalid=0
+  load_env
+  for ref in $A2A_PEER_AGENTS; do
+    if ! is_passport_token_id "$ref"; then
+      echo "    (A2A_PEER_AGENTS: ignore invalid peer ref \"${ref}\" — must be Passport token_id)" >&2
+      invalid=1
+      continue
+    fi
+    if [[ -z "$out" ]]; then
+      out="$ref"
+    else
+      out="$out $ref"
+    fi
+  done
+  [[ "$invalid" -eq 0 ]] || true
+  echo "$out"
+}
+
+warn_invalid_a2a_peer_agents() {
+  local ref
+  load_env
+  for ref in $A2A_PEER_AGENTS; do
+    is_passport_token_id "$ref" && continue
+    echo "    (A2A_PEER_AGENTS: \"${ref}\" is not a Passport token_id — ignored; set A2A_PEER_URLS for each peer)" >&2
+  done
+}
+
+sync_rodit_token_id_env() {
+  local config_dir="$1"
+  local env_file="$config_dir/.env"
+  local token_id
+  token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+  [[ -n "$token_id" ]] || return 0
+  python3 - "$env_file" "$token_id" <<'PY'
+import os, sys
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+token_id = sys.argv[2]
+lines = []
+if env_file.is_file():
+    with open(env_file, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("IDENTYCLAW_TOKEN_ID=")]
+lines.append(f"IDENTYCLAW_TOKEN_ID={token_id}\n")
+env_file.parent.mkdir(parents=True, exist_ok=True)
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+}
+
 rodit_self_configure_enabled() {
   load_env
   [[ "${IDENTYCLAW_RODIT_SELF_CONFIGURE:-1}" != "0" ]]
@@ -923,18 +1099,22 @@ near_credentials_container_path() {
 }
 
 # Peer NEAR creds for cross-host P2P webhook tests (private key signs, remote agent verifies).
-# Canonical: ${IDENTYCLAW_APP_DIR}/agents/<peer-id>/secrets/near-credentials/*.json
+# Accepts Passport token_id — resolves to a local agents/<deploy-id>/ dir when present.
 peer_near_credentials_path() {
-  local peer_id="$1"
-  local cred legacy_dir
+  local peer_ref="$1"
+  local deploy_id cred legacy_dir
   load_env
-  cred="$(agent_near_credentials_host_path "$peer_id")"
+  if is_passport_token_id "$peer_ref"; then
+    deploy_id="$(find_deploy_id_for_token_id "$peer_ref" 2>/dev/null || true)"
+    [[ -n "$deploy_id" ]] && peer_ref="$deploy_id"
+  fi
+  cred="$(agent_near_credentials_host_path "$peer_ref")"
   if [[ -n "$cred" ]]; then
     printf '%s' "$cred"
     return 0
   fi
   # Legacy layout (pre agents/-only migration).
-  legacy_dir="$(identyclaw_app_dir)/secrets/peer-credentials/${peer_id}"
+  legacy_dir="$(identyclaw_app_dir)/secrets/peer-credentials/${peer_ref}"
   cred="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1 || true)"
   [[ -n "$cred" ]] && printf '%s' "$cred"
   return 0
@@ -1862,7 +2042,11 @@ write_agent_identyclaw_doc() {
   mkdir -p "$config_dir/workspace"
   if agent_has_near_credentials "$config_dir"; then
     has_a2a="yes"
-    peers="$A2A_PEER_AGENTS"
+    peers="$(a2a_configured_peer_token_ids)"
+  fi
+  local own_token_id=""
+  if [[ "$has_a2a" == "yes" ]]; then
+    own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
   fi
   cat >"$config_dir/workspace/IDENTYCLAW.md" <<EOF
 # IdentyClaw identity + A2A peer messaging
@@ -1896,6 +2080,11 @@ For outbound HOLA, prefer \`identyclaw_create_hola\` (plugin v1.3.0+) or follow 
 - **Auth:** RODiT / Passport JWT (no static A2A API keys). Outbound login uses \`IDENTYCLAW_*\` env vars; inbound validates \`iss\` + \`aud\` + \`token_id\`.
 - **Display name:** ${display_name}
 EOF
+  if [[ -n "$own_token_id" ]]; then
+    cat >>"$config_dir/workspace/IDENTYCLAW.md" <<EOF
+- **Passport token_id (this agent):** \`${own_token_id}\` — use as the canonical A2A peer id in \`a2a_send_message\`, \`send_rodit_webhook\`, and \`outbound.agents\`.
+EOF
+  fi
   if [[ "$has_a2a" == "yes" ]]; then
     local open_p2p_note=""
     if a2a_open_p2p_enabled; then
@@ -1903,20 +2092,20 @@ EOF
 - **Open P2P:** inbound accepts any Passport holder via \`POST /api/login\` + \`POST /a2a\`. Outbound peers are registered dynamically from inbound JWT \`rodit_webhookurl\` (no \`A2A_PEER_AGENTS\` required for callbacks)."
     elif a2a_dynamic_peers_from_jwt_enabled; then
       open_p2p_note="
-- **Dynamic peers:** outbound entries are upserted from inbound JWT \`rodit_webhookurl\` after successful auth."
+- **Dynamic peers:** outbound entries are upserted from inbound JWT \`rodit_webhookurl\` after successful auth (keyed by Passport \`token_id\`)."
     fi
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<EOF
-- **Configured peers:** ${peers} (static bootstrap list; see \`plugins.entries.identyclaw-a2a.config.outbound.agents\`).${open_p2p_note}
+- **Configured peers (Passport token_id):** ${peers:-none} — keys in \`plugins.entries.identyclaw-a2a.config.outbound.agents\`; URLs from \`A2A_PEER_URLS\` in env.local.${open_p2p_note}
 
 ### A2A tools
 
 | Tool | Purpose |
 |------|---------|
-| \`a2a_get_agents\` | List configured remote agents |
-| \`a2a_send_message\` | Send message/files to a peer; returns \`context_id\` / \`task_id\` |
+| \`a2a_get_agents\` | List configured remote agents (Passport \`token_id\` keys) |
+| \`a2a_send_message\` | Send message/files to a peer by \`token_id\`; returns \`context_id\` / \`task_id\` |
 | \`a2a_get_task\` | Poll long-running peer tasks |
 | \`a2a_update_agent_card\` | Update this agent’s public Agent Card |
-| \`send_rodit_webhook\` | After a delay (default 10s), sign and POST \`/hooks/wake\` to a peer from \`outbound.agents\` |
+| \`send_rodit_webhook\` | After a delay (default 10s), sign and POST \`/hooks/wake\` to a peer \`token_id\` from \`outbound.agents\` |
 
 For unknown senders: \`identyclaw_verify_hola\` before trusting chat claims. Open P2P inbound does not replace HOLA for impersonation checks. To message a never-seen peer proactively, use \`identyclaw_get_agent_identity\` / \`identyclaw_list_agents\` for discovery; they must expose a public Agent Card and accept P2P login.
 EOF
@@ -2060,29 +2249,31 @@ ensure_agent_identyclaw_tooling() {
 
 build_a2a_peer_map() {
   local self_id="$1"
+  local self_config_dir self_token_id
   load_env
-  local peer_id peers_json="{"
+  warn_invalid_a2a_peer_agents
+  self_config_dir="$(agent_home "$self_id")"
+  self_token_id="$(probe_rodit_own_token_id "$self_config_dir" 2>/dev/null || true)"
+
+  local peer_token_id public_base card_url peers_json="{"
   local first=1
-  for peer_id in $A2A_PEER_AGENTS; do
-    [[ "$peer_id" == "$self_id" ]] && continue
-    local public_base
-    public_base="$(agent_a2a_public_base_url "$peer_id")"
-    if [[ -z "$public_base" ]]; then
-      local peer_dir
-      peer_dir="$(agent_home "$peer_id")"
-      agent_has_near_credentials "$peer_dir" || continue
+  for peer_token_id in $A2A_PEER_AGENTS; do
+    is_passport_token_id "$peer_token_id" || continue
+    [[ -n "$self_token_id" && "$peer_token_id" == "$self_token_id" ]] && continue
+
+    public_base="$(a2a_peer_public_base_url "$peer_token_id")"
+    card_url="$(a2a_peer_agent_card_url "$peer_token_id" 2>/dev/null || true)"
+    if [[ -z "$public_base" || -z "$card_url" ]]; then
+      echo "    (${self_id}: skip peer ${peer_token_id} — no URL in A2A_PEER_URLS)" >&2
+      continue
     fi
-    local webhook_base
-    webhook_base="$(agent_ingress_base_url "$peer_id")"
     if [[ "$first" -eq 1 ]]; then
       first=0
     else
       peers_json+=","
     fi
-    peers_json+="\"${peer_id}\":{\"url\":\"$(agent_agent_card_url "$peer_id")\""
-    if [[ -n "$webhook_base" ]]; then
-      peers_json+=",\"loginBaseUrl\":\"${webhook_base}\""
-    fi
+    peers_json+="\"${peer_token_id}\":{\"url\":\"${card_url}\""
+    peers_json+=",\"loginBaseUrl\":\"${public_base}\""
     peers_json+="}"
   done
   peers_json+="}"
@@ -2104,10 +2295,12 @@ ensure_a2a_config() {
 
   a2a_warn_legacy_auth_mode_env "$id"
 
-  local audience display_name public_base_url peers_json dynamic_peers_from_jwt
+  local audience display_name public_base_url peers_json dynamic_peers_from_jwt own_token_id
   audience="$(agent_a2a_audience "$id" "$config_dir" "$container")"
   display_name="$(agent_display_name "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
+  own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+  sync_rodit_token_id_env "$config_dir"
   peers_json="$(build_a2a_peer_map "$id")"
   dynamic_peers_from_jwt="0"
   if a2a_dynamic_peers_from_jwt_enabled; then
@@ -2116,7 +2309,7 @@ ensure_a2a_config() {
 
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$audience" "$display_name" "$public_base_url" "$peers_json" \
-    "$IDENTYCLAW_API_BASE_URL" "$dynamic_peers_from_jwt" <<'PY'
+    "$IDENTYCLAW_API_BASE_URL" "$dynamic_peers_from_jwt" "$own_token_id" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -2127,6 +2320,7 @@ public_base_url = sys.argv[4]
 peers = json.loads(sys.argv[5])
 issuer = sys.argv[6]
 dynamic_peers_from_jwt = sys.argv[7] == "1"
+own_token_id = sys.argv[8] if len(sys.argv) > 8 else ""
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -2160,7 +2354,7 @@ desired_auth = {
     "provider": "rodit",
     "issuer": issuer,
     "audience": audience,
-    "identityClaim": "rodit_id",
+    "identityClaim": "token_id",
 }
 for key, value in desired_auth.items():
     if auth.get(key) != value:
@@ -2182,8 +2376,11 @@ card = inbound.setdefault("agentCard", {})
 if card.get("name") != display_name:
     card["name"] = display_name
     changed = True
-if card.get("description") != f"{display_name} (IdentyClaw A2A)":
-    card["description"] = f"{display_name} (IdentyClaw A2A)"
+card_desc = f"{display_name} (IdentyClaw A2A)"
+if own_token_id:
+    card_desc = f"{display_name} (IdentyClaw A2A, token_id={own_token_id})"
+if card.get("description") != card_desc:
+    card["description"] = card_desc
     changed = True
 
 if public_base_url:

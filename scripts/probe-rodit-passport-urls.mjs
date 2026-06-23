@@ -4,7 +4,7 @@
  * Used at bootstrap to self-configure public ingress base from metadata.webhook_url.
  *
  * Usage: probe-rodit-passport-urls.mjs <plugin-ext-dir> <host-path-to-near-credentials.json>
- * Prints one JSON line: { webhook_url, api_base, owner_id, host, port }
+ * Prints one JSON line: { webhook_url, api_base, owner_id, token_id, host, port }
  */
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
@@ -66,6 +66,7 @@ const meta = own?.own_rodit?.metadata ?? {};
 const parsed = parseWebhookBase(meta.webhook_url);
 const apiBase = String(meta.subjectuniqueidentifier_url || "").trim().replace(/\/+$/, "");
 const ownerId = String(own?.own_rodit?.owner_id || "").trim();
+const tokenId = String(own?.own_rodit?.token_id || "").trim();
 
 process.stdout.write(
   JSON.stringify({
@@ -74,5 +75,6 @@ process.stdout.write(
     port: parsed.port,
     api_base: apiBase,
     owner_id: ownerId,
+    token_id: tokenId,
   }),
 );

@@ -3,7 +3,7 @@
  * CLI: sign and POST /hooks/wake to an A2A outbound peer after a delay.
  *
  * Usage:
- *   node scripts/send-rodit-webhook.mjs --peer agent-a [--text "ping"] [--delay 10]
+ *   node scripts/send-rodit-webhook.mjs --peer <token_id> [--text "ping"] [--delay 10]
  *     [--config /home/node/.openclaw/openclaw.json]
  *
  * Requires NEAR_CREDENTIALS_FILE_PATH (or --creds) and outbound.agents under
@@ -27,7 +27,7 @@ const credsPath = arg("--creds", process.env.NEAR_CREDENTIALS_FILE_PATH || "");
 
 if (!peerId) {
   process.stderr.write(
-    "usage: send-rodit-webhook.mjs --peer <agent-id> [--text msg] [--delay seconds] " +
+    "usage: send-rodit-webhook.mjs --peer <passport-token-id> [--text msg] [--delay seconds] " +
       "[--path hooks/wake] [--config openclaw.json] [--creds near.json]\n",
   );
   process.exit(2);

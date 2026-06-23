@@ -21,12 +21,12 @@
 #   test                 Run gateway test suites (agents from env.local AGENT_IDS / A2A_PEER_AGENTS)
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
-#   test-a2a [from] [to] Smoke-test A2A discovery + inbound auth (defaults: local → peer)
+#   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
 #   test-a2a-auth         P2P JWT on /a2a (peer when configured, then local inbound)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Skips /api/testhola by default (SKIP_TESTHOLA=1); needs valid HOLA when enabled
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
-#   send-rodit-webhook <id> <peer> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents)
+#   send-rodit-webhook <id> <peer-token-id> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents key)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
 #   set-api-key <id>     Store OpenRouter API key (validated) for an agent
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
@@ -453,6 +453,35 @@ a2a_fetch_agent_card() {
   curl -sk "${resolve[@]}" "$url"
 }
 
+a2a_fetch_peer_agent_card() {
+  local runner_id="$1" peer_token_id="$2"
+  local url container curl_flags=(-sk)
+  url="$(a2a_peer_agent_card_url "$peer_token_id")"
+  [[ -n "$url" ]] || {
+    echo "No agent card URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
+    return 1
+  }
+  if agent_container_running "$runner_id"; then
+    container="$(agent_container "$runner_id")"
+    podman exec "$container" curl "${curl_flags[@]}" "$url"
+    return 0
+  fi
+  curl -sk "$url"
+}
+
+a2a_probe_unauth_post_url() {
+  local label="$1" a2a_url="$2"
+  local code
+  code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$a2a_url" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{"id":"smoke"}}')"
+  if [[ "$code" != "401" ]]; then
+    echo "FAIL: POST /a2a without auth on ${label} returned HTTP ${code}, expected 401 (${a2a_url})" >&2
+    return 1
+  fi
+  echo "OK: unauthenticated POST /a2a on ${label} rejected (HTTP 401)"
+}
+
 a2a_probe_unauth_post() {
   local id="$1"
   local code a2a_url resolve=()
@@ -469,47 +498,58 @@ a2a_probe_unauth_post() {
 }
 
 cmd_test_a2a() {
-  local from_id to_id
+  local from_id peer_token_id self_token_id
   require_podman
   load_env
   from_id="${1:-$(resolve_local_agent_id)}"
-  to_id="${2:-}"
-  if [[ -z "$to_id" ]]; then
-    to_id="$(resolve_peer_agent_id "$from_id" 2>/dev/null || true)"
-    to_id="${to_id:-$from_id}"
+  peer_token_id="${2:-}"
+  if [[ -z "$peer_token_id" ]]; then
+    peer_token_id="$(resolve_peer_token_id "$from_id" 2>/dev/null || true)"
   fi
   require_agent_running "$from_id"
+  self_token_id="$(agent_token_id "$from_id")"
 
-  echo "==> A2A smoke (from=${from_id}, to=${to_id})"
+  echo "==> A2A smoke (local=${from_id}, self token_id=${self_token_id:-unknown})"
 
-  echo "==> Discovery: ${from_id} → ${to_id}"
-  a2a_fetch_agent_card "$from_id" "$to_id"
-  echo ""
+  if [[ -n "$peer_token_id" ]]; then
+    is_passport_token_id "$peer_token_id" || {
+      echo "Peer must be a Passport token_id (got: ${peer_token_id})" >&2
+      exit 1
+    }
+    echo "==> Discovery: peer token_id=${peer_token_id}"
+    a2a_fetch_peer_agent_card "$from_id" "$peer_token_id"
+    echo ""
+  else
+    echo "==> Skip peer discovery (no A2A_PEER_AGENTS / IDENTYCLAW_PEER_TOKEN_ID)"
+    echo ""
+  fi
 
-  echo "==> Discovery: ${to_id} → ${from_id}"
-  a2a_fetch_agent_card "$to_id" "$from_id"
+  echo "==> Discovery: local ${from_id}"
+  a2a_fetch_agent_card "$from_id" "$from_id"
   echo ""
 
   echo "==> Inbound auth (expect HTTP 401 without Bearer token)"
-  a2a_probe_unauth_post "$to_id"
-  if [[ "$from_id" != "$to_id" ]]; then
-    a2a_probe_unauth_post "$from_id"
+  a2a_probe_unauth_post "$from_id"
+  if [[ -n "$peer_token_id" ]]; then
+    local peer_a2a_url
+    peer_a2a_url="$(a2a_peer_a2a_endpoint_url "$peer_token_id")"
+    [[ -n "$peer_a2a_url" ]] && a2a_probe_unauth_post_url "peer:${peer_token_id}" "$peer_a2a_url"
   fi
 
   echo ""
   echo "A2A smoke passed (discovery + inbound auth gate)."
-  if [[ "$from_id" != "$to_id" ]]; then
+  if [[ -n "$peer_token_id" ]]; then
     echo "For end-to-end RODiT messaging, run:"
-    echo "  $0 ask ${from_id} 'Use a2a_send_message to ping ${to_id} and report the task id'"
+    echo "  $0 ask ${from_id} 'Use a2a_send_message to ping ${peer_token_id} and report the task id'"
   fi
 }
 
 cmd_test_a2a_auth() {
-  local local_id peer_id target container creds ext_dir failed=0
+  local local_id peer_token_id target container creds ext_dir failed=0
   require_podman
   load_env
   local_id="$(resolve_local_agent_id)"
-  peer_id="$(resolve_peer_agent_id "$local_id" 2>/dev/null || true)"
+  peer_token_id="$(resolve_peer_token_id "$local_id" 2>/dev/null || true)"
   require_agent_running "$local_id"
 
   container="$(agent_container "$local_id")"
@@ -521,14 +561,13 @@ cmd_test_a2a_auth() {
   ext_dir="$(agent_a2a_ext_dir_container)"
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-a2a-rodit-auth.mjs" "$container:/tmp/test-a2a-rodit-auth.mjs" >/dev/null
 
-  if [[ -n "$peer_id" && "$peer_id" != "$local_id" ]]; then
-    target="$(agent_a2a_public_base_url "$peer_id")"
-    [[ -n "$target" ]] || target="$(agent_ingress_base_url "$peer_id")"
+  if [[ -n "$peer_token_id" ]]; then
+    target="$(a2a_peer_public_base_url "$peer_token_id")"
     [[ -n "$target" ]] || {
-      echo "No ingress URL for peer ${peer_id}" >&2
+      echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
       exit 1
     }
-    echo "==> A2A RODiT auth (→ peer ${peer_id} at ${target})"
+    echo "==> A2A RODiT auth (→ peer token_id=${peer_token_id} at ${target})"
     echo "    P2P login at peer /api/login, then POST /a2a"
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
       --ext-dir "$ext_dir" --creds "$creds" --target "$target" || failed=1
@@ -603,27 +642,24 @@ cmd_test_webhook() {
       --path hooks/wake
   fi
 
-  local peer_id="" p
+  local peer_token_id="" p
   for p in $A2A_PEER_AGENTS; do
-    if [[ "$p" != "$id" ]]; then
-      peer_id="$p"
-      break
-    fi
+    is_passport_token_id "$p" || continue
+    [[ "$p" != "$(agent_token_id "$id")" ]] && { peer_token_id="$p"; break; }
   done
-  if [[ -n "$peer_id" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+  if [[ -n "$peer_token_id" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
     local peer_base container_creds
-    peer_base="$(agent_a2a_public_base_url "$peer_id")"
-    [[ -n "$peer_base" ]] || peer_base="$(agent_ingress_base_url "$peer_id")"
+    peer_base="$(a2a_peer_public_base_url "$peer_token_id")"
     container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
     if [[ -n "$peer_base" && -n "$container_creds" ]]; then
       echo ""
-      echo "==> Outbound: send_rodit_webhook smoke (${id} → ${peer_id})"
+      echo "==> Outbound: send_rodit_webhook smoke (${id} → ${peer_token_id})"
       podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
       podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node -e "
         import { runOutboundWebhookToPeer } from 'file:///tmp/lib-rodit-webhook-test.mjs';
         const r = await runOutboundWebhookToPeer({
           localId: '${id}',
-          peerId: '${peer_id}',
+          peerId: '${peer_token_id}',
           localCredsPath: '${container_creds}',
           peerBase: '${peer_base}',
           markerPrefix: 'test-webhook-outbound',
@@ -668,12 +704,16 @@ cmd_test_webhook() {
 }
 
 cmd_send_rodit_webhook() {
-  local id="${1:?Usage: $0 send-rodit-webhook agent-b agent-a [message]}"
-  local peer="${2:?Usage: $0 send-rodit-webhook agent-b agent-a [message]}"
+  local id="${1:?Usage: $0 send-rodit-webhook agent-b <peer-token-id> [message]}"
+  local peer_token_id="${2:?Usage: $0 send-rodit-webhook agent-b <peer-token-id> [message]}"
   local text="${3:-}"
   local delay="${SEND_RODIT_WEBHOOK_DELAY:-10}"
   require_podman
   load_env
+  is_passport_token_id "$peer_token_id" || {
+    echo "Peer must be a Passport token_id (got: ${peer_token_id})" >&2
+    exit 1
+  }
   require_agent_running "$id"
 
   local container creds ext_dir
@@ -686,35 +726,39 @@ cmd_send_rodit_webhook() {
 
   podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" "$container:/tmp/send-rodit-webhook.mjs" >/dev/null
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/send-rodit-webhook.mjs \
-    --peer "$peer" \
+    --peer "$peer_token_id" \
     --delay "$delay" \
     --creds "$creds" \
     ${text:+--text "$text"}
 }
 
 cmd_test_webhook_p2p() {
-  local sender receiver
+  local sender peer_token_id
   require_podman
   load_env
   sender="${1:-$(resolve_local_agent_id)}"
-  receiver="${2:-}"
-  if [[ -z "$receiver" ]]; then
-    receiver="$(resolve_peer_agent_id "$sender" 2>/dev/null || true)"
-    [[ -n "$receiver" ]] || {
-      echo "No peer agent in A2A_PEER_AGENTS for ${sender} — set IDENTYCLAW_PEER_AGENT or pass receiver id" >&2
+  peer_token_id="${2:-}"
+  if [[ -z "$peer_token_id" ]]; then
+    peer_token_id="$(resolve_peer_token_id "$sender" 2>/dev/null || true)"
+    [[ -n "$peer_token_id" ]] || {
+      echo "No peer token_id in A2A_PEER_AGENTS for ${sender} — set IDENTYCLAW_PEER_TOKEN_ID or pass token_id" >&2
       exit 1
     }
   fi
+  is_passport_token_id "$peer_token_id" || {
+    echo "Peer must be a Passport token_id (got: ${peer_token_id})" >&2
+    exit 1
+  }
   require_agent_running "$sender"
 
   local sender_container sender_creds receiver_base local_base peer_creds ext_dir
+  local receiver_deploy_id reverse_via_container=0
   sender_container="$(agent_container "$sender")"
-  receiver_base="$(agent_a2a_public_base_url "$receiver")"
-  [[ -n "$receiver_base" ]] || receiver_base="$(agent_ingress_base_url "$receiver")"
+  receiver_base="$(a2a_peer_public_base_url "$peer_token_id")"
   local_base="$(agent_a2a_public_base_url "$sender")"
   [[ -n "$local_base" ]] || local_base="$(agent_ingress_base_url "$sender")"
   [[ -n "$receiver_base" ]] || {
-    echo "No ingress URL for ${receiver} — set AGENT_*_A2A_PUBLIC_BASE_URL or AGENT_*_PUBLIC_HOST in env.local" >&2
+    echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
     exit 1
   }
 
@@ -724,24 +768,27 @@ cmd_test_webhook_p2p() {
     exit 1
   }
 
-  peer_creds="$(peer_near_credentials_path "$receiver")"
-  local receiver_container reverse_via_container=0
-  receiver_container="$(agent_container "$receiver")"
-  if podman ps --format '{{.Names}}' | grep -qx "$receiver_container"; then
-    reverse_via_container=1
+  peer_creds="$(peer_near_credentials_path "$peer_token_id")"
+  receiver_deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
+  local receiver_container
+  if [[ -n "$receiver_deploy_id" ]]; then
+    receiver_container="$(agent_container "$receiver_deploy_id")"
+    if podman ps --format '{{.Names}}' | grep -qx "$receiver_container"; then
+      reverse_via_container=1
+    fi
   fi
 
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$sender_container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-p2p-suite.mjs" "$sender_container:/tmp/test-webhooks-p2p-suite.mjs" >/dev/null
 
   echo "==> P2P webhook test (outbound + inbound via send_rodit_webhook)"
-  echo "    Outbound: ${sender} delivers → ${receiver} records"
-  echo "    Inbound:  ${receiver} delivers → ${sender} records"
+  echo "    Outbound: ${sender} delivers → peer token_id=${peer_token_id} records"
+  echo "    Inbound:  peer delivers → ${sender} records"
 
   local -a exec_args=(
     node /tmp/test-webhooks-p2p-suite.mjs
     --local "$sender"
-    --peer "$receiver"
+    --peer "$peer_token_id"
     --local-creds "$sender_creds"
     --local-base "$local_base"
     --peer-base "$receiver_base"
@@ -760,24 +807,31 @@ cmd_test_webhook_p2p() {
   local exit_code=0
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" "${exec_args[@]}" || exit_code=$?
 
-  if [[ "$reverse_via_container" -eq 1 && -n "$local_base" ]]; then
+  if [[ "$reverse_via_container" -eq 1 && -n "$local_base" && -n "$receiver_deploy_id" ]]; then
     echo ""
-    echo "--- Inbound: we receive webhooks from peer (${receiver} container) ---"
+    echo "--- Inbound: we receive webhooks from peer (${receiver_deploy_id} container) ---"
     local receiver_creds marker send_out verify_script
-    receiver_creds="$(agent_near_credentials_in_container "$receiver")"
+    receiver_creds="$(agent_near_credentials_in_container "$receiver_deploy_id")"
     [[ -n "$receiver_creds" ]] || {
-      echo "FAIL  inbound: peer sent send_rodit_webhook to us — no NEAR creds in ${receiver} container" >&2
+      echo "FAIL  inbound: peer sent send_rodit_webhook to us — no NEAR creds in ${receiver_deploy_id} container" >&2
       exit 1
     }
-    marker="inbound-${receiver}-to-${sender}-$(date +%s)"
+    marker="inbound-${peer_token_id}-to-${sender}-$(date +%s)"
     podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" "$receiver_container:/tmp/send-rodit-webhook.mjs" >/dev/null
     podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$sender_container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" node -e "
       import { clearReceipts } from 'file:///tmp/lib-rodit-webhook-test.mjs';
       await clearReceipts('${local_base}');
     " >/dev/null
+    local sender_token_id
+    sender_token_id="$(agent_token_id "$sender")"
+    [[ -n "$sender_token_id" ]] || {
+      echo "FAIL  inbound: cannot resolve sender token_id for ${sender}" >&2
+      exit_code=1
+    }
+    if [[ -n "$sender_token_id" ]]; then
     send_out="$(podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$receiver_container" node /tmp/send-rodit-webhook.mjs \
-      --peer "$sender" --text "$marker" --delay 0 --creds "$receiver_creds" 2>&1)" || true
+      --peer "$sender_token_id" --text "$marker" --delay 0 --creds "$receiver_creds" 2>&1)" || true
     if echo "$send_out" | grep -q '"ok": true'; then
       echo "PASS  inbound: peer sent send_rodit_webhook to us — $(echo "$send_out" | grep -o '"requestId": "[^"]*"' | head -1)"
     else
@@ -794,32 +848,33 @@ NODE
     podman cp "$verify_script" "$sender_container:/tmp/verify-webhook-receipt.mjs" >/dev/null
     rm -f "$verify_script"
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" node /tmp/verify-webhook-receipt.mjs || exit_code=1
+    fi
   fi
 
   return "$exit_code"
 }
 
 cmd_test() {
-  local local_id peer_id failed=0
+  local local_id peer_token_id failed=0
   load_env
   local_id="$(resolve_local_agent_id)"
-  peer_id="$(resolve_peer_agent_id "$local_id" 2>/dev/null || true)"
-  echo "==> Test constitution (local=${local_id}${peer_id:+, peer=${peer_id}})"
+  peer_token_id="$(resolve_peer_token_id "$local_id" 2>/dev/null || true)"
+  echo "==> Test constitution (local=${local_id}${peer_token_id:+, peer token_id=${peer_token_id}})"
   echo "    AGENT_IDS=${AGENT_IDS}"
   echo "    A2A_PEER_AGENTS=${A2A_PEER_AGENTS}"
   echo ""
 
-  cmd_test_a2a "$local_id" "${peer_id:-$local_id}" || failed=1
+  cmd_test_a2a "$local_id" "${peer_token_id:-}" || failed=1
   echo ""
   cmd_test_a2a_auth || failed=1
   echo ""
   cmd_test_webhook "$local_id" || failed=1
-  if [[ -n "$peer_id" && "$peer_id" != "$local_id" ]]; then
+  if [[ -n "$peer_token_id" ]]; then
     echo ""
-    cmd_test_webhook_p2p "$local_id" "$peer_id" || failed=1
+    cmd_test_webhook_p2p "$local_id" "$peer_token_id" || failed=1
   else
     echo ""
-    echo "==> Skip test-webhook-p2p (no remote peer configured)"
+    echo "==> Skip test-webhook-p2p (no peer token_id in A2A_PEER_AGENTS)"
   fi
   echo ""
   cmd_test_mail "$local_id" || failed=1

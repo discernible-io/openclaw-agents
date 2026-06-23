@@ -39,15 +39,41 @@ export function resolveInboundWebhookUrl(payload) {
     return "";
 }
 
+/** Passport token_id (12-char) — canonical outbound peer key. */
+export function resolveInboundPeerTokenId(result) {
+    const payload = result?.webhookPayload;
+    if (payload && typeof payload === "object") {
+        for (const candidate of [payload.token_id, payload.peerTokenId, payload.rodit_id]) {
+            const text = String(candidate || "").trim();
+            if (isPassportTokenId(text)) {
+                return text;
+            }
+        }
+    }
+    const label = String(result?.label || "").trim();
+    if (isPassportTokenId(label)) {
+        return label;
+    }
+    return label;
+}
+
+export function isPassportTokenId(value) {
+    return /^[A-Za-z][A-Za-z0-9]{11}$/.test(String(value || "").trim());
+}
+
 export function registerDynamicPeerFromInbound(result) {
-    if (!registrar || !result?.ok || !result.label) {
+    if (!registrar || !result?.ok) {
+        return;
+    }
+    const peerTokenId = resolveInboundPeerTokenId(result);
+    if (!peerTokenId) {
         return;
     }
     const webhookUrl = resolveInboundWebhookUrl(result.webhookPayload);
     if (!webhookUrl) {
         return;
     }
-    void registrar(result.label, webhookUrl).catch((err) => {
-        console.error(`[a2a] dynamic peer registration failed for ${result.label}: ${String(err)}`);
+    void registrar(peerTokenId, webhookUrl).catch((err) => {
+        console.error(`[a2a] dynamic peer registration failed for ${peerTokenId}: ${String(err)}`);
     });
 }
