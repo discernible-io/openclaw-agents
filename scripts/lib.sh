@@ -189,9 +189,9 @@ load_env() {
   AGENT_F_BRIDGE_PORT="${AGENT_F_BRIDGE_PORT:-18800}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
-  # OpenRouter model chain: two free models (June 2026 OpenRouter rankings), Grok as third.
-  OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/openrouter/owl-alpha}"
-  OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
+  # OpenRouter model chain: two free models first, Grok as paid fallback (override in env.local).
+  OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
+  OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder:free}"
   OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/x-ai/grok-4.3}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).

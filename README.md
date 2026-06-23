@@ -542,7 +542,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | Deploy mode | `pod` (`IDENTYCLAW_INGRESS_PORT=9443` in `env.local`) |
 | Gateway bind | `lan` (reachable from nginx sidecar inside the pod) |
 | Gateway auth | token |
-| Model | **Primary:** `openrouter/openrouter/owl-alpha` (free) → **fallback 1:** `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` (free) → **fallback 2:** `openrouter/x-ai/grok-4.3` |
+| Model | **Primary:** `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` (free) → **fallback 1:** `openrouter/qwen/qwen3-coder:free` (free) → **fallback 2:** `openrouter/x-ai/grok-4.3` |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
 | Memory | `qmd` |
@@ -563,14 +563,14 @@ Key `openclaw.json` excerpts (secrets redacted):
   "agents": {
     "defaults": {
       "models": {
-        "openrouter/openrouter/owl-alpha": {},
         "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {},
+        "openrouter/qwen/qwen3-coder:free": {},
         "openrouter/x-ai/grok-4.3": {}
       },
       "model": {
-        "primary": "openrouter/openrouter/owl-alpha",
+        "primary": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
         "fallbacks": [
-          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "openrouter/qwen/qwen3-coder:free",
           "openrouter/x-ai/grok-4.3"
         ]
       }
