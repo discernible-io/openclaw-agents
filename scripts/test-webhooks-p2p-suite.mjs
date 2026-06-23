@@ -29,6 +29,7 @@ function arg(name, fallback = "") {
 const configPath = resolve(arg("--config", process.env.OPENCLAW_CONFIG || "/home/node/.openclaw/openclaw.json"));
 const pluginDir = resolve(arg("--plugin-dir", "/home/node/.openclaw/extensions/identyclaw-webhooks/dist"));
 const localId = arg("--local", arg("--sender", "local"));
+const localTokenId = arg("--local-token-id", "");
 const peerId = arg("--peer", arg("--receiver", "peer"));
 const localCredsPath = arg("--local-creds", arg("--signer-creds", ""));
 const peerCredsPath = arg("--peer-creds", arg("--reverse-signer-creds", ""));
@@ -123,6 +124,7 @@ if (skipInbound) {
           })
         : await runInboundWebhookFromLivePeer({
             localId,
+            localTokenId: localTokenId || undefined,
             peerId,
             peerBase,
             localBase,

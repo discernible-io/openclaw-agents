@@ -271,6 +271,7 @@ export async function requestLivePeerSendRoditWebhook(opts) {
 export async function runInboundWebhookFromLivePeer(opts) {
   const {
     localId,
+    localTokenId,
     peerId,
     peerBase,
     localBase,
@@ -295,7 +296,7 @@ export async function runInboundWebhookFromLivePeer(opts) {
   const a2a = await requestLivePeerSendRoditWebhook({
     peerBase,
     jwt,
-    localOutboundPeerId: localId,
+    localOutboundPeerId: localTokenId || localId,
     marker,
     delaySeconds,
     hookPath,

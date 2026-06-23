@@ -785,6 +785,9 @@ cmd_test_webhook_p2p() {
   echo "    Outbound: ${sender} delivers → peer token_id=${peer_token_id} records"
   echo "    Inbound:  peer delivers → ${sender} records"
 
+  local sender_token_id
+  sender_token_id="$(probe_rodit_own_token_id_in_container "$sender_container" 2>/dev/null || true)"
+
   local -a exec_args=(
     node /tmp/test-webhooks-p2p-suite.mjs
     --local "$sender"
@@ -794,6 +797,7 @@ cmd_test_webhook_p2p() {
     --peer-base "$receiver_base"
     --path hooks/wake
   )
+  [[ -n "$sender_token_id" ]] && exec_args+=(--local-token-id "$sender_token_id")
 
   if [[ "$reverse_via_container" -eq 1 ]]; then
     exec_args+=(--skip-inbound)
