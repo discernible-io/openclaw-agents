@@ -6,8 +6,8 @@
  *   NODE_TLS_REJECT_UNAUTHORIZED=0 node test-p2p-peer-suite.mjs
  *
  * Env overrides:
- *   PEER_A_BASE  default https://webhook.dihola.io:7443  (Juanelo)
- *   PEER_B_BASE  default https://webhook.discernible.io:7443  (Archimedes)
+ *   PEER_A_BASE  default https://agent-a.dev.identyclaw.com:7443  (agent-a)
+ *   PEER_B_BASE  default https://agent-b.dev.identyclaw.com:7443  (agent-b)
  */
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -16,8 +16,8 @@ import { join } from "node:path";
 import https from "node:https";
 
 // In pod: nginx listens on 4443 (host maps 9443→4443 for agent-a). Use 4443 from containers.
-const PEER_A = (process.env.PEER_A_BASE || "https://webhook.dihola.io:7443").replace(/\/$/, "");
-const PEER_B = (process.env.PEER_B_BASE || "https://webhook.discernible.io:7443").replace(/\/$/, "");
+const PEER_A = (process.env.PEER_A_BASE || "https://agent-a.dev.identyclaw.com:7443").replace(/\/$/, "");
+const PEER_B = (process.env.PEER_B_BASE || "https://agent-b.dev.identyclaw.com:7443").replace(/\/$/, "");
 
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
 process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
@@ -175,8 +175,8 @@ function expect401(status, body) {
 }
 
 console.log("P2P / dual-mode A2A test suite");
-console.log(`  Local (Juanelo):  ${PEER_A}`);
-console.log(`  Peer  (Archimedes): ${PEER_B}`);
+console.log(`  Local (agent-a):  ${PEER_A}`);
+console.log(`  Peer  (agent-b): ${PEER_B}`);
 console.log(`  Inbound mode: ${inbound.mode}, p2pAudience: ${inbound.p2pAudience?.slice(0, 16)}…`);
 console.log("");
 
@@ -220,12 +220,12 @@ await runCase("P3", "positive", "Auto outbound auth → POST peer-b /a2a", async
     expect2xx(r.status, r.body);
 });
 
-await runCase("P4", "positive", "P2P login → POST local /a2a (Juanelo inbound)", async () => {
+await runCase("P4", "positive", "P2P login → POST local /a2a (agent-a inbound)", async () => {
     const r = await postA2a(`${PEER_A}/a2a`, jwtP2pA, "p2p-to-a");
     expect2xx(r.status, r.body);
 });
 
-await runCase("P5", "positive", "Mediated login → POST local /a2a (Juanelo dual inbound)", async () => {
+await runCase("P5", "positive", "Mediated login → POST local /a2a (agent-a dual inbound)", async () => {
     const r = await postA2a(`${PEER_A}/a2a`, jwtMediated, "mediated-to-a");
     expect2xx(r.status, r.body);
 });

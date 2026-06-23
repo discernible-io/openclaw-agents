@@ -17,6 +17,8 @@ Mailbox passwords are **not** required for `init`, `build-image`, or `start` —
 
 ## Repository vs app directory
 
+This repository is **code-only** — safe to clone publicly. Runtime secrets, TLS material, and per-agent state never belong in the git checkout.
+
 The **git checkout** holds scripts and image definitions only. **Config, TLS, and agent state** live in a sibling app directory (default `../identyclaw-agents-app`):
 
 | Path | Purpose |
@@ -65,7 +67,7 @@ When Migadu passwords are ready:
 
 The local image pins `ghcr.io/openclaw/openclaw:2026.5.27-slim` and pre-installs `@openclaw/discord` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
-- **Pod mode** (dedalo43): Agent A UI: `https://agent-a.identyclaw.com:9443/` — token: `./identyclaw.sh token agent-a`
+- **Pod mode**: Agent A UI: `https://agent-a.identyclaw.com:9443/` — token: `./identyclaw.sh token agent-a`
 - **Standalone dev**: Agent A UI: http://127.0.0.1:18789/ — Agent B: http://127.0.0.1:18791/
 
 See [Accessing agents (CLI and browser)](#accessing-agents-cli-and-browser) for terminal chat and remote laptop access.
@@ -348,11 +350,11 @@ Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport cred
 # After adding near-credentials for agent-a and agent-b:
 ./identyclaw.sh restart agent-a agent-b
 ./identyclaw.sh test-a2a agent-a agent-b
-./identyclaw.sh test              # full suite — see test-constitution.md
+./identyclaw.sh test              # full suite (see local test-constitution.md if present)
 ./identyclaw.sh ask agent-a 'Verify any inbound HOLA with identyclaw_verify_hola; use a2a_send_message for peer agent-b'
 ```
 
-See [`security-compliance-improvements.md`](security-compliance-improvements.md#a2a-agent-to-agent-communication-agent-a--agent-b) for RODiT JWT details and production ingress. For agents on **different machines**, follow [Cross-machine A2A (Option A)](security-compliance-improvements.md#cross-machine-a2a-option-a) (public HTTPS on **9443**).
+RODiT JWT details, production ingress, and cross-machine A2A (Option A — public HTTPS on **9443**) are documented in local operator docs (`security-compliance-improvements.md`, not in this repo).
 
 #### Where the contract is defined
 
@@ -363,7 +365,7 @@ Unlike the IdentyClaw API (authoritative OpenAPI in `api-docs/swagger.json` / [`
 | Wire protocol | [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) | JSON-RPC on `POST /a2a`, Agent Card at `GET /.well-known/agent-card.json`, tasks/messages/artifacts |
 | Implementation | `identyclaw-a2a` plugin (`openclaw.plugin.json`, `a2afork.md`) | RODiT JWT auth, P2P `/api/login`, outbound peer map, plugin tools |
 | Webhooks | `identyclaw-webhooks` plugin | Signed `POST /hooks/*`, outbound `send_rodit_webhook` |
-| Deployment | [`test-constitution.md`](test-constitution.md) | Expected behavior on this host (401 without auth, signed webhook rejection, receipts, etc.) |
+| Deployment | local `test-constitution.md` | Expected behavior on this host (401 without auth, signed webhook rejection, receipts, etc.) |
 | Runtime | `~/identyclaw-agents-app/agents/<id>/openclaw.json` | Per-agent inbound/outbound auth modes, peer URLs, audiences |
 
 Deployed Agent Cards advertise **`protocolVersion: "0.3.0"`** (OpenClaw A2A plugin binding). Validate deployments with `./identyclaw.sh test` — not against IdentyClaw API swagger.
@@ -386,7 +388,7 @@ Peer collaboration uses **two HTTP surfaces**. They are complementary, not inter
 | Request | Auth | Allowed? |
 |---------|------|----------|
 | `GET /.well-known/agent-card.json` | None (public discovery) | Yes |
-| `GET /api/login/timestamp`, `POST /api/login` | Passport sign (P2P) | Yes when inbound mode is `p2p` or `dual` |
+| `GET /api/login/timestamp`, `POST /api/login` | Passport sign (P2P) | Yes — bootstrap enables `roditLogin` when inbound auth is RODiT |
 | `POST /a2a` | `Authorization: Bearer <RODiT JWT>` | Yes — JSON-RPC A2A operations |
 | `POST /a2a` without Bearer | — | **No** → HTTP **401** (`allowUnauthenticated` is never enabled by bootstrap) |
 | `POST /a2a` to arbitrary hosts | — | **No** — only configured peers in `outbound.agents` |
@@ -404,9 +406,9 @@ Peer collaboration uses **two HTTP surfaces**. They are complementary, not inter
 
 A2A is **not text-only**: the plugin supports messages, file attachments (plugin docs: ~**1 MB** outbound), long-running tasks, streaming (Agent Card: `streaming: true`), and artifacts. Inbound JSON-RPC body limit: **1 MB**.
 
-**Outbound limits:** peers must appear in `plugins.entries.identyclaw-a2a.config.outbound.agents` (from `A2A_PEER_AGENTS`). Outbound auth: `mediated`, `p2p`, or `auto` (P2P first, mediated fallback — see [`allowed-fallback-standard.md`](../docs/docs/allowed-fallback-standard.md)).
+**Outbound limits:** peers must appear in `plugins.entries.identyclaw-a2a.config.outbound.agents` (from `A2A_PEER_AGENTS`). Outbound auth is **P2P-only**: per-peer JWT from `{loginBaseUrl}/api/login`.
 
-**Inbound limits:** JWT validated per `inbound.auth` (`issuer`, `audience`, `p2pAudience`, mode `mediated` / `p2p` / `dual`). Sender identity from JWT `token_id`; conversations keyed by sender + `context_id`.
+**Inbound limits:** JWT validated per `inbound.auth` (`issuer`, `audience` = own passport `owner_id`). Sender identity from JWT `rodit_id` / `token_id`; conversations keyed by sender + `context_id`.
 
 **Forbidden via A2A**
 
@@ -449,13 +451,13 @@ A2A is **not text-only**: the plugin supports messages, file attachments (plugin
 
 | Credential | Unlocks |
 |------------|---------|
-| **A2A inbound JWT** | `POST /a2a` only |
+| **A2A inbound JWT** | `POST /a2a` only (P2P-issued, `aud` = receiver `owner_id`) |
 | **Webhook RODiT signature** | `POST /hooks/*` only |
 | **Gateway token** | Control UI / operator — **not** for peers |
-| **IdentyClaw API JWT** (`login_server`) | Mediated A2A + `identyclaw_*` API tools |
-| **P2P JWT** (peer `/api/login`) | Direct peer A2A when inbound mode allows |
+| **IdentyClaw API JWT** (`login_server`) | `identyclaw_*` API tools (HOLA, identity) — **not** used for A2A wire auth |
+| **P2P JWT** (peer `/api/login`) | Direct peer A2A |
 
-Rotating one credential does not automatically revoke the others. See [Trust boundaries](security-compliance-improvements.md#trust-boundaries-do-not-conflate) in `security-compliance-improvements.md`.
+Rotating one credential does not automatically revoke the others. See trust-boundary notes in local `security-compliance-improvements.md` (operator doc, not in this repo).
 
 #### Collaboration summary
 
@@ -472,18 +474,18 @@ Rotating one credential does not automatically revoke the others. See [Trust bou
 
 **Typical flow:** (1) public Agent Card discovery → (2) optional HOLA trust via `identyclaw-tools` → (3) ongoing work via **`a2a_send_message`** → (4) optional **`send_rodit_webhook`** wake when a lightweight signed ping is enough.
 
-**Verify:** `./identyclaw.sh test` (see [`test-constitution.md`](test-constitution.md)) — A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail.
+**Verify:** `./identyclaw.sh test` — A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail (suites defined in local `test-constitution.md` when present).
 
-### Agent A (configured — dedalo43 / Juanelo)
+### Agent A (example production pod setup)
 
-Onboarded 2026-05-23. Customer-support oriented setup with email + OpenRouter + DuckDuckGo (Spain). **Production pod** on dedalo43 (`IDENTYCLAW_DEPLOY_MODE=pod`).
+Reference configuration for a customer-support oriented agent with email + OpenRouter + DuckDuckGo. **Production pod** uses `IDENTYCLAW_DEPLOY_MODE=pod` in `env.local`.
 
 | Setting | Value |
 |---------|--------|
 | State dir | `~/identyclaw-agents-app/agents/agent-a` |
 | Container | `openclaw-agent-a` (in `identyclaw-agents-pod` with `identyclaw-nginx`) |
-| Display name | Juanelo |
-| Mailbox | `juanelo@agenthood.me` (Migadu) |
+| Display name | Identyclaw Agent A (override via `AGENT_A_DISPLAY_NAME`) |
+| Mailbox | `agent-a@identyclaw.com` (Migadu) |
 | **Ingress port (public)** | **9443** — `https://agent-a.identyclaw.com:9443` |
 | Gateway port (pod-internal) | **18789** (UI/API), **18790** (bridge) — nginx upstream only |
 | Control UI | `https://agent-a.identyclaw.com:9443/` (or `curl -sk -H 'Host: agent-a.identyclaw.com' https://127.0.0.1:9443/` until DNS is live) |
@@ -547,7 +549,7 @@ Key `openclaw.json` excerpts (secrets redacted):
 }
 ```
 
-Webhooks use the same ingress hostname — no extra port. On dedalo43 (pod): `POST https://agent-a.identyclaw.com:9443/hooks/wake` with **RODiT origin signature** (`x-signature` + `x-timestamp` via `@rodit/rodit-auth-be`) — same pattern as [`clienttest-idc`](../clienttest-idc). No `hooks.token` or HMAC. Standalone dev uses host port **18789**. See [Troubleshooting](#webhooks-and-port-conflicts-two-agents).
+Webhooks use the same ingress hostname — no extra port. In pod mode: `POST https://agent-a.identyclaw.com:9443/hooks/wake` with **RODiT origin signature** (`x-signature` + `x-timestamp` via `@rodit/rodit-auth-be`) — same pattern as [`clienttest-idc`](../clienttest-idc). No `hooks.token` or HMAC. Standalone dev uses host port **18789**. See [Troubleshooting](#webhooks-and-port-conflicts-two-agents).
 
 **Standalone dev** (other hosts or local loopback): `PUBLISH_HOST=127.0.0.1`, Control UI at `http://127.0.0.1:18789/`, `./identyclaw.sh start agent-a`.
 
@@ -649,7 +651,7 @@ Migadu’s web UI lists **SMTP port 465 + TLS**. Himalaya in the OpenClaw image 
 
 Also ensure:
 
-- `message.send.backend.login` and `From:` match the mailbox (e.g. `juanelo@agenthood.me`)
+- `message.send.backend.login` and `From:` match the mailbox (e.g. `agent-a@identyclaw.com`)
 - Password is in `~/identyclaw-agents-app/agents/agent-a/secrets/` via `./identyclaw.sh set-password agent-a` (do not paste passwords into `config.toml`)
 
 Quick check: `./identyclaw.sh test-mail agent-a` (IMAP) then send with `sh scripts/himalaya-send.sh …` inside the container.
@@ -750,9 +752,9 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh chat agent-a` | Interactive terminal chat |
 | `./identyclaw.sh ask agent-a "..."` | One-shot message to an agent |
 | `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks) |
-| `./identyclaw.sh test` | Full gateway suite ([`test-constitution.md`](test-constitution.md): A2A, webhooks, mail) |
+| `./identyclaw.sh test` | Full gateway suite (A2A, webhooks, mail — see local `test-constitution.md`) |
 | `./identyclaw.sh test-a2a [from] [to]` | Agent Card discovery + unauthenticated `/a2a` → 401 |
-| `./identyclaw.sh test-a2a-auth [mode]` | Mediated/P2P JWT on `/a2a` (`mediated`, `p2p`, or `both`) |
+| `./identyclaw.sh test-a2a-auth [mode]` | P2P JWT on `/a2a` (`p2p` default; `mediated`/`both` legacy negative probes) |
 | `./identyclaw.sh test-webhook [id]` | Webhook ingress (unsigned, invalid sig, signed) |
 | `./identyclaw.sh test-webhook-p2p [from] [to]` | Bidirectional P2P webhook receipts |
 | `./identyclaw.sh webhook-url agent-a [path]` | Print public HTTPS webhook URL |
@@ -763,10 +765,10 @@ Production HTTPS ingress exists primarily for **A2A** (`POST /a2a`, agent-card d
 
 | Branch | Primary health host | Agent hosts |
 |--------|---------------------|-------------|
-| `development` | `agent-a.dihola.io:4443` | `agent-b.dihola.io`, `agent-c.dihola.io` |
+| `development` | `agent-a.dev.identyclaw.com:4443` | `agent-b.dev.identyclaw.com`, `agent-c.dev.identyclaw.com` |
 | `main` | `agent-a.identyclaw.com:9443` | `agent-b.identyclaw.com`, `agent-c.identyclaw.com` |
 
-Deploy layout: **nginx sidecar** on **9443** (main) or **4443** (development) — TLS, subdomain → gateway upstream — plus OpenClaw containers on pod-local ports 18789 / 18791 / 18793. See [`security-compliance-improvements.md`](security-compliance-improvements.md#production-ingress-cicd--nginx-tls-sidecar) for A2A/webhook URL tables and [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
+Deploy layout: **nginx sidecar** on **9443** (main) or **4443** (development) — TLS, subdomain → gateway upstream — plus OpenClaw containers on pod-local ports 18789 / 18791 / 18793. A2A/webhook URL tables are in local `security-compliance-improvements.md`; see [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
 
 ### Webhook URLs (production)
 
@@ -778,7 +780,7 @@ Each agent has its own HTTPS base. External senders must hit the **correct subdo
 | agent-b | `https://agent-b.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
 | agent-c | `https://agent-c.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
 
-Use `agent-*.dihola.io` on the development branch. Register the base URL in RODiT token metadata `webhook_url` (same field as [`clienttest-idc`](../clienttest-idc) uses for `https://webhook.discernible.io:7443`).
+Use `agent-*.dev.identyclaw.com` on the development branch. Register the base URL in RODiT token metadata `webhook_url` (same field pattern as a single-host webhook service on `https://webhook.example.com:7443`).
 
 ```bash
 ./identyclaw.sh webhook-url agent-a

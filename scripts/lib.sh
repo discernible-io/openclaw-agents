@@ -70,7 +70,7 @@ deploy_tier_health_domain() {
     [[ -n "$host" ]] && { printf '%s' "$host"; return 0; }
   done
   case "$1" in
-    development) printf 'webhook.discernible.io' ;;
+    development) printf 'agent-a.dev.identyclaw.com' ;;
     main) printf 'agent-a.identyclaw.com' ;;
     *) return 1 ;;
   esac
@@ -595,39 +595,32 @@ agent_a2a_audience() {
   load_env
   local explicit=""
   case "$id" in
-    agent-a) explicit="${AGENT_A_A2A_AUDIENCE:-}" ;;
-    agent-b) explicit="${AGENT_B_A2A_AUDIENCE:-}" ;;
-    agent-c) explicit="${AGENT_C_A2A_AUDIENCE:-}" ;;
+    agent-a) explicit="${AGENT_A_A2A_AUDIENCE:-${AGENT_A_P2P_AUDIENCE:-${AGENT_A_A2P_AUDIENCE:-}}}" ;;
+    agent-b) explicit="${AGENT_B_A2A_AUDIENCE:-${AGENT_B_P2P_AUDIENCE:-${AGENT_B_A2P_AUDIENCE:-}}}" ;;
+    agent-c) explicit="${AGENT_C_A2A_AUDIENCE:-${AGENT_C_P2P_AUDIENCE:-${AGENT_C_A2P_AUDIENCE:-}}}" ;;
     *) echo ""; return 0 ;;
   esac
   if [[ -n "$explicit" ]]; then
     echo "$explicit"
     return 0
   fi
-  if [[ -n "${IDENTYCLAW_A2A_JWT_AUDIENCE:-}" ]]; then
-    echo "$IDENTYCLAW_A2A_JWT_AUDIENCE"
+  if [[ -n "${IDENTYCLAW_A2A_JWT_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-${IDENTYCLAW_A2P_AUDIENCE:-}}}" ]]; then
+    echo "${IDENTYCLAW_A2A_JWT_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-${IDENTYCLAW_A2P_AUDIENCE:-}}}"
     return 0
   fi
   if [[ -n "$config_dir" ]]; then
     local probed=""
-    probed="$(probe_rodit_inbound_audience "$config_dir" 2>/dev/null || true)"
+    probed="$(probe_rodit_own_owner_id "$config_dir" 2>/dev/null || true)"
     if [[ -n "$probed" ]]; then
       echo "$probed"
       return 0
     fi
   fi
-  local public_url
-  public_url="$(agent_a2a_public_base_url "$id")"
-  if [[ -n "$public_url" ]]; then
-    echo "    (${id}: inbound JWT audience falling back to public URL — set AGENT_*_A2A_AUDIENCE or ensure A2A plugin is built for login_server probe)" >&2
-    echo "$public_url"
-  else
-    echo "http://$(agent_container "$id"):$(agent_internal_gateway_port "$id")"
-  fi
+  echo "    (${id}: inbound JWT audience unknown — set AGENT_*_A2A_AUDIENCE or ensure NEAR creds for owner_id probe)" >&2
+  echo ""
 }
 
-# Resolve inbound JWT audience from live IdentyClaw login_server (rodit-auth-be mutual-auth contract).
-# Any peer with a valid Passport on the same IdentyClaw deployment can call POST /a2a — no outbound peer list required.
+# Legacy: mediated login_server JWT aud (pre–P2P-only plugin). Used by test scripts only.
 probe_rodit_inbound_audience() {
   local config_dir="$1"
   local cred_file ext_dir cache cache_key cached_key cached_aud probed cred_stat
@@ -810,71 +803,34 @@ rodit_passport_webhook_port() {
   rodit_passport_json_field "$1" "port"
 }
 
-agent_a2a_inbound_auth_mode() {
+a2a_warn_legacy_auth_mode_env() {
   load_env
-  local id="$1" explicit=""
+  local id="$1" explicit_in explicit_out inbound outbound
   case "$id" in
-    agent-a) explicit="${AGENT_A_A2A_INBOUND_AUTH_MODE:-}" ;;
-    agent-b) explicit="${AGENT_B_A2A_INBOUND_AUTH_MODE:-}" ;;
-    agent-c) explicit="${AGENT_C_A2A_INBOUND_AUTH_MODE:-}" ;;
+    agent-a)
+      explicit_in="${AGENT_A_A2A_INBOUND_AUTH_MODE:-}"
+      explicit_out="${AGENT_A_A2A_OUTBOUND_AUTH_MODE:-}"
+      ;;
+    agent-b)
+      explicit_in="${AGENT_B_A2A_INBOUND_AUTH_MODE:-}"
+      explicit_out="${AGENT_B_A2A_OUTBOUND_AUTH_MODE:-}"
+      ;;
+    agent-c)
+      explicit_in="${AGENT_C_A2A_INBOUND_AUTH_MODE:-}"
+      explicit_out="${AGENT_C_A2A_OUTBOUND_AUTH_MODE:-}"
+      ;;
+    *) return 0 ;;
   esac
-  if [[ -n "$explicit" ]]; then
-    echo "$explicit"
-    return 0
-  fi
-  if a2a_open_p2p_enabled; then
-    echo "p2p"
-    return 0
-  fi
-  echo "${IDENTYCLAW_A2A_INBOUND_AUTH_MODE:-mediated}"
-}
-
-agent_a2a_outbound_auth_mode() {
-  load_env
-  local id="$1" explicit=""
-  case "$id" in
-    agent-a) explicit="${AGENT_A_A2A_OUTBOUND_AUTH_MODE:-}" ;;
-    agent-b) explicit="${AGENT_B_A2A_OUTBOUND_AUTH_MODE:-}" ;;
-    agent-c) explicit="${AGENT_C_A2A_OUTBOUND_AUTH_MODE:-}" ;;
-  esac
-  if [[ -n "$explicit" ]]; then
-    echo "$explicit"
-    return 0
-  fi
-  if a2a_open_p2p_enabled; then
-    echo "p2p"
-    return 0
-  fi
-  echo "${IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE:-mediated}"
-}
-
-# Inbound P2P JWT aud = own RODiT owner_id (override via AGENT_*_P2P_AUDIENCE).
-agent_a2a_p2p_audience() {
-  local id="$1"
-  local config_dir="${2:-}"
-  load_env
-  local explicit=""
-  case "$id" in
-    agent-a) explicit="${AGENT_A_A2P_AUDIENCE:-${AGENT_A_P2P_AUDIENCE:-}}" ;;
-    agent-b) explicit="${AGENT_B_A2P_AUDIENCE:-${AGENT_B_P2P_AUDIENCE:-}}" ;;
-    agent-c) explicit="${AGENT_C_A2P_AUDIENCE:-${AGENT_C_P2P_AUDIENCE:-}}" ;;
-    *) echo ""; return 0 ;;
-  esac
-  if [[ -n "$explicit" ]]; then
-    echo "$explicit"
-    return 0
-  fi
-  if [[ -n "${IDENTYCLAW_A2P_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-}}" ]]; then
-    echo "${IDENTYCLAW_A2P_AUDIENCE:-${IDENTYCLAW_P2P_AUDIENCE:-}}"
-    return 0
-  fi
-  if [[ -n "$config_dir" ]]; then
-    local probed=""
-    probed="$(probe_rodit_own_owner_id "$config_dir" 2>/dev/null || true)"
-    if [[ -n "$probed" ]]; then
-      echo "$probed"
-    fi
-  fi
+  inbound="${explicit_in:-${IDENTYCLAW_A2A_INBOUND_AUTH_MODE:-}}"
+  outbound="${explicit_out:-${IDENTYCLAW_A2A_OUTBOUND_AUTH_MODE:-}}"
+  for val in "$inbound" "$outbound"; do
+    [[ -z "$val" ]] && continue
+    case "$val" in
+      mediated|dual|auto|p2p)
+        echo "    (${id}: A2A auth mode \"${val}\" is ignored — identyclaw-a2a plugin uses P2P only; unset IDENTYCLAW_A2A_*_AUTH_MODE)" >&2
+        ;;
+    esac
+  done
 }
 
 agent_agent_card_url() {
@@ -1138,7 +1094,7 @@ agent_ingress_base_url() {
 }
 
 # Pod agents resolve their public ingress host to loopback so self-tests hit nginx in-pod
-# (container DNS may differ from the host; e.g. webhook.discernible.io:7443).
+# (container DNS may differ from the host; e.g. agent-b.dev.identyclaw.com:7443).
 pod_agent_ingress_host_args() {
   local id="$1" host
   load_env
@@ -2075,19 +2031,13 @@ ensure_a2a_config() {
     sync_identyclaw_env "$config_dir"
   fi
 
-  local audience display_name public_base_url peers_json inbound_auth_mode outbound_auth_mode p2p_audience dynamic_peers_from_jwt
+  a2a_warn_legacy_auth_mode_env "$id"
+
+  local audience display_name public_base_url peers_json dynamic_peers_from_jwt
   audience="$(agent_a2a_audience "$id" "$config_dir")"
   display_name="$(agent_display_name "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
   peers_json="$(build_a2a_peer_map "$id")"
-  inbound_auth_mode="$(agent_a2a_inbound_auth_mode "$id")"
-  outbound_auth_mode="$(agent_a2a_outbound_auth_mode "$id")"
-  p2p_audience=""
-  case "$inbound_auth_mode" in
-    p2p|dual)
-      p2p_audience="$(agent_a2a_p2p_audience "$id" "$config_dir")"
-      ;;
-  esac
   dynamic_peers_from_jwt="0"
   if a2a_dynamic_peers_from_jwt_enabled; then
     dynamic_peers_from_jwt="1"
@@ -2095,8 +2045,7 @@ ensure_a2a_config() {
 
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$audience" "$display_name" "$public_base_url" "$peers_json" \
-    "$IDENTYCLAW_API_BASE_URL" "$inbound_auth_mode" "$outbound_auth_mode" "$p2p_audience" \
-    "$dynamic_peers_from_jwt" <<'PY'
+    "$IDENTYCLAW_API_BASE_URL" "$dynamic_peers_from_jwt" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -2106,10 +2055,7 @@ display_name = sys.argv[3]
 public_base_url = sys.argv[4]
 peers = json.loads(sys.argv[5])
 issuer = sys.argv[6]
-inbound_auth_mode = sys.argv[7] or "mediated"
-outbound_auth_mode = sys.argv[8] or "mediated"
-p2p_audience = sys.argv[9] or ""
-dynamic_peers_from_jwt = sys.argv[10] == "1"
+dynamic_peers_from_jwt = sys.argv[7] == "1"
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -2141,32 +2087,25 @@ if inbound.get("allowUnauthenticated") is not False:
 auth = inbound.setdefault("auth", {})
 desired_auth = {
     "provider": "rodit",
-    "mode": inbound_auth_mode,
     "issuer": issuer,
     "audience": audience,
     "identityClaim": "rodit_id",
 }
-if p2p_audience and inbound_auth_mode in ("p2p", "dual"):
-    desired_auth["p2pAudience"] = p2p_audience
 for key, value in desired_auth.items():
     if auth.get(key) != value:
         auth[key] = value
         changed = True
-for stale in ("p2pAudience", "p2pIssuer"):
-    if inbound_auth_mode not in ("p2p", "dual") and stale in auth:
+for stale in ("mode", "p2pAudience", "p2pIssuer"):
+    if stale in auth:
         del auth[stale]
         changed = True
 
-if inbound_auth_mode in ("p2p", "dual"):
-    rodit_login = inbound.setdefault("roditLogin", {})
-    desired_login = {"enabled": True, "loginMode": "promiscuous"}
-    for key, value in desired_login.items():
-        if rodit_login.get(key) != value:
-            rodit_login[key] = value
-            changed = True
-elif "roditLogin" in inbound:
-    del inbound["roditLogin"]
-    changed = True
+rodit_login = inbound.setdefault("roditLogin", {})
+desired_login = {"enabled": True, "loginMode": "promiscuous"}
+for key, value in desired_login.items():
+    if rodit_login.get(key) != value:
+        rodit_login[key] = value
+        changed = True
 
 card = inbound.setdefault("agentCard", {})
 if card.get("name") != display_name:
@@ -2187,17 +2126,15 @@ elif "publicBaseUrl" in inbound:
 out_auth = outbound.setdefault("auth", {})
 desired_out_auth = {
     "provider": "rodit",
-    "mode": outbound_auth_mode,
-    "credentialsEnv": {
-        "accountId": "IDENTYCLAW_ACCOUNT_ID",
-        "privateKey": "IDENTYCLAW_NEAR_PRIVATE_KEY",
-        "baseUrl": "IDENTYCLAW_BASE_URL",
-    },
     "jwtCacheTtlSeconds": 300,
 }
 for key, value in desired_out_auth.items():
     if out_auth.get(key) != value:
         out_auth[key] = value
+        changed = True
+for stale in ("mode", "credentialsEnv"):
+    if stale in out_auth:
+        del out_auth[stale]
         changed = True
 
 if outbound.get("tlsSkipVerify") is not True:
@@ -2353,19 +2290,16 @@ patch_a2a_plugin() {
   if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container" \
     && [[ ! -r "${ext_dir}/dist/auth/rodit-inbound.js" ]]; then
     ext_dir="$(agent_a2a_ext_dir_container)"
-    podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-dual-inbound.sh" "$container:/tmp/patch-a2a-dual-inbound.sh" >/dev/null 2>&1 || true
     podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-tool-params.sh" "$container:/tmp/patch-a2a-tool-params.sh" >/dev/null 2>&1 || true
     podman exec "$container" mkdir -p /tmp/identyclaw-patch/scripts 2>/dev/null || true
     podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-dynamic-peers.sh" "$container:/tmp/identyclaw-patch/scripts/patch-a2a-dynamic-peers.sh" >/dev/null 2>&1 || true
     podman cp "${IDENTYCLAW_ROOT}/scripts/a2a-dynamic-peer-registry.js" "$container:/tmp/identyclaw-patch/scripts/a2a-dynamic-peer-registry.js" >/dev/null 2>&1 || true
-    podman exec "$container" bash /tmp/patch-a2a-dual-inbound.sh "$ext_dir/dist/auth/rodit-inbound.js" 2>/dev/null || true
     podman exec "$container" bash /tmp/patch-a2a-tool-params.sh "$ext_dir/dist/outbound/tools.js" 2>/dev/null || true
     if a2a_dynamic_peers_from_jwt_enabled; then
       podman exec "$container" env IDENTYCLAW_ROOT=/tmp/identyclaw-patch bash /tmp/identyclaw-patch/scripts/patch-a2a-dynamic-peers.sh "$ext_dir" 2>/dev/null || true
     fi
     return 0
   fi
-  patch_a2a_dual_inbound "$ext_dir"
   patch_a2a_tool_params "$ext_dir"
   patch_a2a_dynamic_peers "$ext_dir"
 }
@@ -3342,7 +3276,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 slug = sys.argv[2]
 block = f"""
-## LinkedIn (Archimedes)
+## LinkedIn (agent-b)
 
 - **Post on LinkedIn:** `{slug}` + ClawLink (`clawlink-plugin`) — read **`LINKEDIN.md`**
 - **Connect:** https://claw-link.dev/dashboard?add=linkedin (OAuth, no API keys in chat)
@@ -3440,7 +3374,7 @@ workspace = "/home/node/.openclaw/workspace"
 tools_path = os.path.join(workspace, "TOOLS.md")
 agents_path = os.path.join(workspace, "AGENTS.md")
 tools_block = f"""
-## LinkedIn (Archimedes)
+## LinkedIn (agent-b)
 
 - **Post on LinkedIn:** `{slug}` + ClawLink (`clawlink-plugin`) — read **`LINKEDIN.md`**
 - **Connect:** https://claw-link.dev/dashboard?add=linkedin (OAuth, no API keys in chat)
@@ -3675,7 +3609,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 slug, bird_bin = sys.argv[2], sys.argv[3]
 block = f"""
-## X / Twitter (Archimedes)
+## X / Twitter (agent-b)
 
 - **Post on x.com:** `{slug}` + `bird` CLI — read **`TWITTER.md`**
 - **Command:** `{bird_bin} tweet "…"`
@@ -3788,7 +3722,7 @@ bird_bin = "workspace/node_modules/.bin/bird"
 tools_path = os.path.join(workspace, "TOOLS.md")
 agents_path = os.path.join(workspace, "AGENTS.md")
 tools_block = f"""
-## X / Twitter (Archimedes)
+## X / Twitter (agent-b)
 
 - **Post on x.com:** `{slug}` + `bird` CLI — read **`TWITTER.md`**
 - **Command:** `{bird_bin} tweet "…"`
@@ -4091,7 +4025,7 @@ os.chmod(path, 0o600)
 PY
 }
 
-# Let @Juanelo / @Archimedes reach the other gateway when a bot message @mentions them.
+# Let peer agents reach the other gateway when a bot message @mentions them.
 # Keep rootless agents running after logout (linger) and across reboot (podman-restart).
 ensure_agent_persistence() {
   local user linger

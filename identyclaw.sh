@@ -18,7 +18,7 @@
 #   enable-boot          One-time: linger + podman-restart + recreate agents (survives reboot)
 #   status               Show podman + health URLs
 #   logs <id>            Follow logs
-#   test                 Run test-constitution.md suites (agents from env.local AGENT_IDS / A2A_PEER_AGENTS)
+#   test                 Run gateway test suites (agents from env.local AGENT_IDS / A2A_PEER_AGENTS)
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [to] Smoke-test A2A discovery + inbound auth (defaults: local → peer)

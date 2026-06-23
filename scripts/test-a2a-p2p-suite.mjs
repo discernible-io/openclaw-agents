@@ -7,8 +7,8 @@
  *   node scripts/test-a2a-p2p-suite.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near-credentials.json \
- *     --local https://webhook.discernible.io:7443 \
- *     --peer https://webhook.dihola.io:7443 \
+ *     --local https://agent-b.dev.identyclaw.com:7443 \
+ *     --peer https://agent-a.dev.identyclaw.com:7443 \
  *     [--peer-id agent-a] [--local-id agent-b] \
  *     [--peer-creds /path/to/peer-near.json] \
  *     [--config /home/node/.openclaw/openclaw.json] \

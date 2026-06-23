@@ -6,7 +6,7 @@
  *   node scripts/test-a2a-rodit-auth.mjs \
  *     --ext-dir ../identyclaw-agents-app/agents/agent-b/extensions/identyclaw-a2a \
  *     --creds ../identyclaw-agents-app/agents/agent-b/secrets/near-credentials/*.json \
- *     --target https://webhook.dihola.io:7443 \
+ *     --target https://agent-a.dev.identyclaw.com:7443 \
  *     --mode mediated|p2p|both
  */
 import { createRequire } from "node:module";

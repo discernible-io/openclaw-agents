@@ -1,5 +1,9 @@
 # Identyclaw repo — code only. Runtime config/agent state live in ../identyclaw-agents-app/.
 
+# --- Operator docs (local / app dir — not published) ---
+security-compliance-improvements.md
+test-constitution.md
+
 # --- Secrets / local env ---
 env.local
 env.local.fragment*
