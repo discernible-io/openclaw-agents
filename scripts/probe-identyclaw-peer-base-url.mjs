@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 /**
- * Resolve a peer Passport token_id to a public gateway base from on-chain RODiT
- * metadata.webhook_url (same field as probe-rodit-passport-urls.mjs and P2P JWT rodit_webhookurl).
+ * Resolve a peer Passport token_id to a public gateway base.
+ *
+ * 1. IdentyClaw API GET /api/identity/token/{tokenId}/full → metadata.webhook_url
+ * 2. Fallback: on-chain RODiT metadata.webhook_url (nearorg_rpc_tokenfromroditid)
  *
  * Usage: probe-identyclaw-peer-base-url.mjs <plugin-ext-dir> <credentials.json> <peer-token-id>
  * Prints one line: https://host:port (gateway base, no path)
  */
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { peerRoditToGatewayBase } from "./lib-peer-gateway-url.mjs";
+import { resolvePeerGatewayBase } from "./lib-peer-gateway-url.mjs";
 
 const pluginExtDir = process.argv[2];
 const credPath = process.argv[3];
@@ -49,23 +51,37 @@ const pkgPath = join(pluginExtDir, "package.json");
 const require = createRequire(pathToFileURL(pkgPath));
 const { RoditClient } = require("@rodit/rodit-auth-be");
 
-let publicBase;
-try {
+let fetchIdentityFull = null;
+const apiClientPath = join(pluginExtDir, "dist/auth/identyclaw-api-client.js");
+if (existsSync(apiClientPath)) {
+  const { fetchTokenIdentityFull } = await import(pathToFileURL(apiClientPath).href);
+  fetchIdentityFull = (tokenId) =>
+    fetchTokenIdentityFull(tokenId, {
+      logLevel: process.env.LOG_LEVEL || "error",
+      identityApiBaseUrl: process.env.IDENTYCLAW_BASE_URL,
+    });
+}
+
+async function fetchPeerRoditByTokenId(tokenId) {
   const client = await RoditClient.create({ role: "client" });
-  const peerRodit = await client
-    .getBlockchainService()
-    .nearorg_rpc_tokenfromroditid(peerTokenId);
-  publicBase = peerRoditToGatewayBase(peerRodit);
+  return client.getBlockchainService().nearorg_rpc_tokenfromroditid(tokenId);
+}
+
+let result;
+try {
+  result = await resolvePeerGatewayBase(peerTokenId, {
+    fetchIdentityFull,
+    fetchPeerRoditByTokenId,
+  });
 } catch (err) {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message.includes("no RODiT on chain")) {
-    process.stderr.write(`no RODiT on chain for token_id ${peerTokenId}\n`);
-  } else if (message.includes("no usable metadata.webhook_url")) {
-    process.stderr.write(`${message}\n`);
-  } else {
-    process.stderr.write(`${message}\n`);
-  }
+  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 }
 
-process.stdout.write(publicBase);
+if (result.source === "chain") {
+  process.stderr.write(
+    `(${peerTokenId}: peer base from on-chain metadata.webhook_url — API /full had no usable webhook_url)\n`,
+  );
+}
+
+process.stdout.write(result.base);

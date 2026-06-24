@@ -467,7 +467,7 @@ a2a_fetch_peer_agent_card() {
   url="$(a2a_peer_agent_card_url "$peer_token_id" "$resolver_dir")"
   [[ -n "$url" ]] || {
     if a2a_resolve_peers_by_token_id_enabled; then
-      echo "No agent card URL for peer token_id ${peer_token_id} — RODiT metadata.webhook_url lookup failed (check NEAR creds and on-chain passport)" >&2
+      echo "No agent card URL for peer token_id ${peer_token_id} — API /full and on-chain metadata.webhook_url lookup failed (check IDENTYCLAW_BASE_URL, NEAR creds, passport)" >&2
     else
       echo "No agent card URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
     fi
@@ -536,10 +536,10 @@ cmd_test_a2a() {
       if a2a_peer_public_base_url_from_env_map "$peer_token_id" >/dev/null 2>&1; then
         echo "    base=${peer_base} (A2A_PEER_URLS)"
       else
-        echo "    base=${peer_base} (RODiT metadata.webhook_url / registry)"
+        echo "    base=${peer_base} (API /full metadata.webhook_url / registry / chain fallback)"
       fi
     elif a2a_resolve_peers_by_token_id_enabled; then
-      echo "    (RODiT metadata.webhook_url lookup failed — check NEAR creds and on-chain passport)" >&2
+      echo "    (API /full and on-chain metadata.webhook_url lookup failed — check IDENTYCLAW_BASE_URL, NEAR creds, passport)" >&2
     fi
     a2a_fetch_peer_agent_card "$from_id" "$peer_token_id"
     echo ""
@@ -590,7 +590,7 @@ cmd_test_a2a_auth() {
     target="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$local_id")")"
     [[ -n "$target" ]] || {
       if a2a_resolve_peers_by_token_id_enabled; then
-        echo "No URL for peer token_id ${peer_token_id} — RODiT metadata.webhook_url lookup failed" >&2
+        echo "No URL for peer token_id ${peer_token_id} — API /full and on-chain metadata.webhook_url lookup failed" >&2
       else
         echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
       fi
@@ -788,7 +788,7 @@ cmd_test_webhook_p2p() {
   [[ -n "$local_base" ]] || local_base="$(agent_ingress_base_url "$sender")"
   [[ -n "$receiver_base" ]] || {
     if a2a_resolve_peers_by_token_id_enabled; then
-      echo "No URL for peer token_id ${peer_token_id} — RODiT metadata.webhook_url lookup failed" >&2
+      echo "No URL for peer token_id ${peer_token_id} — API /full and on-chain metadata.webhook_url lookup failed" >&2
     else
       echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
     fi
