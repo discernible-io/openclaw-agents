@@ -1076,17 +1076,25 @@ agents = (
     .get("agents", {})
 )
 out = {}
-for token_id, card_url in (agents or {}).items():
-    text = str(card_url or "").strip()
-    if not text:
-        continue
-    if text.endswith("/.well-known/agent-card.json"):
-        base = text[: -len("/.well-known/agent-card.json")]
+
+def peer_entry_base(peer):
+    if isinstance(peer, dict):
+        text = str(peer.get("url") or peer.get("loginBaseUrl") or "").strip()
     else:
-        parsed = urlparse(text if "://" in text else f"https://{text}")
-        base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else text.rstrip("/")
+        text = str(peer or "").strip()
+    if not text:
+        return ""
+    if text.endswith("/.well-known/agent-card.json"):
+        return text[: -len("/.well-known/agent-card.json")].rstrip("/")
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    if parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return text.rstrip("/")
+
+for token_id, peer in (agents or {}).items():
+    base = peer_entry_base(peer)
     if base:
-        out[str(token_id)] = base.rstrip("/")
+        out[str(token_id)] = base
 print(json.dumps(out))
 PY
 )"
@@ -1121,17 +1129,25 @@ agents = (
     .get("agents", {})
 )
 out = {}
-for token_id, card_url in (agents or {}).items():
-    text = str(card_url or "").strip()
-    if not text:
-        continue
-    if text.endswith("/.well-known/agent-card.json"):
-        base = text[: -len("/.well-known/agent-card.json")]
+
+def peer_entry_base(peer):
+    if isinstance(peer, dict):
+        text = str(peer.get("url") or peer.get("loginBaseUrl") or "").strip()
     else:
-        parsed = urlparse(text if "://" in text else f"https://{text}")
-        base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else text.rstrip("/")
+        text = str(peer or "").strip()
+    if not text:
+        return ""
+    if text.endswith("/.well-known/agent-card.json"):
+        return text[: -len("/.well-known/agent-card.json")].rstrip("/")
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    if parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return text.rstrip("/")
+
+for token_id, peer in (agents or {}).items():
+    base = peer_entry_base(peer)
     if base:
-        out[str(token_id)] = base.rstrip("/")
+        out[str(token_id)] = base
 print(json.dumps(out))
 PY
 )"
