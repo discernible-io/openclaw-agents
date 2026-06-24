@@ -955,6 +955,17 @@ find_deploy_id_for_token_id() {
   return 1
 }
 
+find_deploy_id_for_config_dir() {
+  local config_dir="$1" id
+  [[ -n "$config_dir" ]] || return 1
+  load_env
+  for id in $AGENT_IDS; do
+    [[ "$id" == agent-* ]] || continue
+    [[ "$(agent_home "$id")" == "$config_dir" ]] && { echo "$id"; return 0; }
+  done
+  return 1
+}
+
 # Plugin ext dir with deps for IdentyClaw API login (identyclaw-tools preferred).
 a2a_api_probe_ext_dir() {
   local config_dir="$1"
@@ -970,6 +981,50 @@ a2a_api_probe_ext_dir() {
     return 0
   fi
   return 1
+}
+
+a2a_api_probe_ext_dir_container() {
+  local container="$1"
+  local tools_dir a2a_dir
+  [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container" || return 1
+  tools_dir="$(agent_identyclaw_tools_ext_dir_container)"
+  if podman exec "$container" test -f "$tools_dir/node_modules/tweetnacl/package.json" 2>/dev/null \
+    || podman exec "$container" test -f "$tools_dir/package.json" 2>/dev/null; then
+    echo "$tools_dir"
+    return 0
+  fi
+  a2a_dir="$(agent_a2a_ext_dir_container)"
+  if podman exec "$container" test -f "$a2a_dir/node_modules/@rodit/rodit-auth-be/package.json" 2>/dev/null; then
+    echo "$a2a_dir"
+    return 0
+  fi
+  return 1
+}
+
+probe_identyclaw_peer_public_base_url_in_container() {
+  local container="$1"
+  local token_id="$2"
+  local cred ext_dir probed
+  [[ -n "$container" && -n "$token_id" ]] || return 1
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 1
+  is_passport_token_id "$token_id" || return 1
+  a2a_resolve_peers_by_token_id_enabled || return 1
+  cred="$(podman exec "$container" sh -c 'ls /home/node/.openclaw/secrets/near-credentials/*.json 2>/dev/null | head -1' || true)"
+  [[ -n "$cred" ]] || return 1
+  ext_dir="$(a2a_api_probe_ext_dir_container "$container")" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
+    "$container:/tmp/probe-identyclaw-peer-base-url.mjs" >/dev/null 2>&1 || return 1
+  load_env
+  probed="$(
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
+      -e IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      "$container" \
+      node /tmp/probe-identyclaw-peer-base-url.mjs "$ext_dir" "$cred" "$token_id" 2>/dev/null || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  [[ -n "$probed" && "$probed" == https://* ]] || return 1
+  echo "$probed"
 }
 
 # Public base from persisted A2A plugin registry (resolvePeersByTokenId / inbound JWT).
@@ -1015,24 +1070,31 @@ PY
 probe_identyclaw_peer_public_base_url() {
   local config_dir="$1"
   local token_id="$2"
-  local cred_file ext_dir probed
+  local cred_file ext_dir probed deploy_id container
   [[ -n "$config_dir" && -n "$token_id" ]] || return 1
   is_passport_token_id "$token_id" || return 1
   a2a_resolve_peers_by_token_id_enabled || return 1
   cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
-  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
-  ext_dir="$(a2a_api_probe_ext_dir "$config_dir")" || return 1
-  command -v node >/dev/null 2>&1 || return 1
-  load_env
-  probed="$(
-    IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
-      node "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
-      "$ext_dir" "$cred_file" "$token_id" 2>/dev/null || true
-  )"
-  probed="${probed//$'\n'/}"
-  probed="${probed//$'\r'/}"
-  [[ -n "$probed" && "$probed" == https://* ]] || return 1
-  echo "$probed"
+  ext_dir="$(a2a_api_probe_ext_dir "$config_dir" 2>/dev/null || true)"
+  if [[ -n "$cred_file" && -f "$cred_file" && -n "$ext_dir" ]] && command -v node >/dev/null 2>&1; then
+    load_env
+    probed="$(
+      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+        node "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
+        "$ext_dir" "$cred_file" "$token_id" 2>/dev/null || true
+    )"
+    probed="${probed//$'\n'/}"
+    probed="${probed//$'\r'/}"
+    if [[ -n "$probed" && "$probed" == https://* ]]; then
+      echo "$probed"
+      return 0
+    fi
+  fi
+  deploy_id="$(find_deploy_id_for_config_dir "$config_dir" 2>/dev/null || true)"
+  if [[ -n "$deploy_id" ]]; then
+    container="$(agent_container "$deploy_id" 2>/dev/null || true)"
+    probe_identyclaw_peer_public_base_url_in_container "$container" "$token_id" 2>/dev/null || true
+  fi
 }
 
 a2a_peer_public_base_url_from_env_map() {

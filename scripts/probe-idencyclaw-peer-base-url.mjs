@@ -38,7 +38,8 @@ const apiBase = (process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com"
 const pkgPath = join(pluginExtDir, "package.json");
 const require = createRequire(pathToFileURL(pkgPath));
 const nacl = require("tweetnacl");
-const bs58 = require("bs58");
+const bs58mod = require("bs58");
+const bs58 = bs58mod.default || bs58mod;
 
 function secretKeyBytes(nearPrivateKey) {
   const body = nearPrivateKey.replace(/^ed25519:/, "").trim();
