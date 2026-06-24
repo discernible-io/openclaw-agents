@@ -53,7 +53,7 @@ How many gateways run on a machine is controlled in `~/identyclaw-agents-app/env
 | `A2A_PEER_AGENTS` | Collaboration partners as Passport **token_id** values (space-separated) — used for smoke tests and optional bootstrap seeding; **URLs are not configured here** |
 | `IDENTYCLAW_PEER_TOKEN_ID` | Optional single peer `token_id` for `./identyclaw.sh test-a2a` when `A2A_PEER_AGENTS` lists multiple peers |
 
-Peer gateway bases are resolved from the **IdentyClaw API** (`contactUri` via `GET /api/identity/token/{tokenId}/full`) when `IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1` or `IDENTYCLAW_A2A_OPEN_P2P=1` is set. Optional static override: `A2A_PEER_URLS` JSON map (`token_id` → `https://peer-host:port`).
+Peer gateway bases are resolved from on-chain Passport **`metadata.webhook_url`** (NEAR `rodit_token` lookup via `@rodit/rodit-auth-be`) when `IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1` or `IDENTYCLAW_A2A_OPEN_P2P=1` is set. Optional static override: `A2A_PEER_URLS` JSON map (`token_id` → `https://peer-host:port`).
 
 Default (if unset): `AGENT_IDS=agent-a agent-b agent-c`.
 
@@ -399,7 +399,7 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 
 Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars).
 
-**A2A peer discovery:** list partner Passport **token_id** values in `A2A_PEER_AGENTS` (for smoke tests and optional seeding). Peer gateway URLs are fetched from the IdentyClaw API (`contactUri`) when dynamic resolution is enabled — you do not maintain `A2A_PEER_URLS` unless you need a static override.
+**A2A peer discovery:** list partner Passport **token_id** values in `A2A_PEER_AGENTS` (for smoke tests and optional seeding). Peer gateway URLs are read from on-chain **`metadata.webhook_url`** when dynamic resolution is enabled — you do not maintain `A2A_PEER_URLS` unless you need a static override.
 
 Enable API-based peer URL resolution (pick one in `env.local`):
 
@@ -479,7 +479,7 @@ Peer collaboration uses **two HTTP surfaces**. They are complementary, not inter
 
 A2A is **not text-only**: the plugin supports messages, file attachments (plugin docs: ~**1 MB** outbound), long-running tasks, streaming (Agent Card: `streaming: true`), and artifacts. Inbound JSON-RPC body limit: **1 MB**.
 
-**Outbound limits:** outbound peers are keyed by Passport **token_id**. With `resolvePeersByTokenId` (a2a plugin 0.4.0+), the plugin resolves each peer’s gateway from IdentyClaw API identity (`contactUri`) or from inbound JWT `rodit_webhookurl`; bootstrap and `./identyclaw.sh test-a2a` use the same API lookup. Static `A2A_PEER_URLS` overrides API when set. Outbound auth is **P2P-only**: per-peer JWT from `{loginBaseUrl}/api/login`.
+**Outbound limits:** outbound peers are keyed by Passport **token_id**. Bootstrap and `./identyclaw.sh test-a2a` resolve each peer’s gateway from on-chain **`metadata.webhook_url`** (same field as webhooks and P2P JWT `rodit_webhookurl`). Inbound P2P can also register peers dynamically. Static `A2A_PEER_URLS` overrides lookup when set. Outbound auth is **P2P-only**: per-peer JWT from `{loginBaseUrl}/api/login`.
 
 **Inbound limits:** JWT validated per `inbound.auth` (`issuer`, `audience` = own passport `owner_id`). Sender identity from JWT `token_id` (`identityClaim`); conversations keyed by sender + `context_id`.
 

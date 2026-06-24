@@ -970,18 +970,18 @@ find_deploy_id_for_config_dir() {
   return 1
 }
 
-# Plugin ext dir with deps for IdentyClaw API login (identyclaw-tools preferred).
+# Plugin ext dir with @rodit/rodit-auth-be (a2a preferred — on-chain metadata.webhook_url probe).
 a2a_api_probe_ext_dir() {
   local config_dir="$1"
   local tools_dir a2a_dir
-  tools_dir="$(agent_identyclaw_tools_ext_dir "$config_dir")"
-  if [[ -f "$tools_dir/node_modules/tweetnacl/package.json" || -f "$tools_dir/package.json" ]]; then
-    echo "$tools_dir"
-    return 0
-  fi
   a2a_dir="$(agent_a2a_ext_dir "$config_dir")"
   if [[ -f "$a2a_dir/node_modules/@rodit/rodit-auth-be/package.json" ]]; then
     echo "$a2a_dir"
+    return 0
+  fi
+  tools_dir="$(agent_identyclaw_tools_ext_dir "$config_dir")"
+  if [[ -f "$tools_dir/node_modules/@rodit/rodit-auth-be/package.json" ]]; then
+    echo "$tools_dir"
     return 0
   fi
   return 1
@@ -991,15 +991,14 @@ a2a_api_probe_ext_dir_container() {
   local container="$1"
   local tools_dir a2a_dir
   [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container" || return 1
-  tools_dir="$(agent_identyclaw_tools_ext_dir_container)"
-  if podman exec "$container" test -f "$tools_dir/node_modules/tweetnacl/package.json" 2>/dev/null \
-    || podman exec "$container" test -f "$tools_dir/package.json" 2>/dev/null; then
-    echo "$tools_dir"
-    return 0
-  fi
   a2a_dir="$(agent_a2a_ext_dir_container)"
   if podman exec "$container" test -f "$a2a_dir/node_modules/@rodit/rodit-auth-be/package.json" 2>/dev/null; then
     echo "$a2a_dir"
+    return 0
+  fi
+  tools_dir="$(agent_identyclaw_tools_ext_dir_container)"
+  if podman exec "$container" test -f "$tools_dir/node_modules/@rodit/rodit-auth-be/package.json" 2>/dev/null; then
+    echo "$tools_dir"
     return 0
   fi
   return 1
@@ -1021,6 +1020,7 @@ probe_identyclaw_peer_public_base_url_in_container() {
   load_env
   probed="$(
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
+      -e NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
       -e IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
       "$container" \
       node /tmp/probe-identyclaw-peer-base-url.mjs "$ext_dir" "$cred" "$token_id" 2>/dev/null || true
@@ -1070,7 +1070,7 @@ if base:
 PY
 }
 
-# GET /api/identity/token/{tokenId}/full → contactUri (requires caller NEAR creds).
+# On-chain RODiT metadata.webhook_url for peer token_id (requires caller NEAR creds + rodit-auth-be).
 probe_identyclaw_peer_public_base_url() {
   local config_dir="$1"
   local token_id="$2"
@@ -1083,6 +1083,7 @@ probe_identyclaw_peer_public_base_url() {
   if [[ -n "$cred_file" && -f "$cred_file" && -n "$ext_dir" ]] && command -v node >/dev/null 2>&1; then
     load_env
     probed="$(
+      NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
       IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
         node "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
         "$ext_dir" "$cred_file" "$token_id" 2>/dev/null || true
@@ -1118,7 +1119,7 @@ except Exception:
 PY
 }
 
-# Public HTTPS base for a peer token_id (env map → local deploy → registry → IdentyClaw API).
+# Public HTTPS base for a peer token_id (env map → local deploy → registry → on-chain webhook_url).
 a2a_peer_public_base_url() {
   local token_id="$1"
   local resolver_config_dir="${2:-}"
@@ -2693,10 +2694,10 @@ EOF
 - **Open P2P:** inbound accepts any Passport holder via \`POST /api/login\` + \`POST /a2a\`. Outbound peers are registered dynamically from inbound JWT \`rodit_webhookurl\` (no \`A2A_PEER_AGENTS\` required for callbacks)."
     elif a2a_dynamic_peers_from_jwt_enabled; then
       open_p2p_note="
-- **Dynamic peers:** outbound URLs resolve from IdentyClaw API \`contactUri\` (\`resolvePeersByTokenId\`) and from inbound JWT \`rodit_webhookurl\` after successful auth (keyed by Passport \`token_id\`)."
+- **Dynamic peers:** outbound URLs resolve from on-chain Passport \`metadata.webhook_url\` (bootstrap + \`resolvePeersByTokenId\` when plugin supports it) and from inbound JWT \`rodit_webhookurl\` after successful auth (keyed by Passport \`token_id\`)."
     fi
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<EOF
-- **Configured peers (Passport token_id):** ${peers:-none} — \`A2A_PEER_AGENTS\` in env.local; gateway bases from IdentyClaw API (or optional \`A2A_PEER_URLS\` override).${open_p2p_note}
+- **Configured peers (Passport token_id):** ${peers:-none} — \`A2A_PEER_AGENTS\` in env.local; gateway bases from RODiT \`metadata.webhook_url\` (or optional \`A2A_PEER_URLS\` override).${open_p2p_note}
 
 ### A2A tools
 
