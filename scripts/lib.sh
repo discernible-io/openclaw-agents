@@ -193,6 +193,10 @@ load_env() {
   OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
   OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder:free}"
   OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/x-ai/grok-4.3}"
+  # OpenClaw model failover: provider idle/request watchdog + agent turn cap (seconds).
+  OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-30}"
+  OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-30}"
+  OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-1000}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
@@ -2568,6 +2572,7 @@ desired = {
     "SUPPRESS_NO_CONFIG_WARNING": "true",
     "SUPPRESS_STRICTNESS_CHECK": "true",
     "NEAR_CONTRACT_ID": near_contract_id,
+    "OPENCLAW_FALLBACK_SKIP_TTL_MS": os.environ.get("OPENCLAW_FALLBACK_SKIP_TTL_MS", "1000"),
 }
 lines = []
 if env_file.is_file():
@@ -4947,14 +4952,18 @@ ensure_openclaw_model_defaults() {
   local config_dir="$1"
   local container="${2:-}"
   load_env
+  sync_quiet_plugin_env "$config_dir"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" <<'PY'
+    "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" \
+    "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 primary, fb1, fb2 = sys.argv[2:5]
+agent_timeout = int(sys.argv[5])
+provider_timeout = int(sys.argv[6])
 fallbacks = [fb1, fb2]
 allowlist = {primary: {}, fb1: {}, fb2: {}}
 
@@ -4968,6 +4977,10 @@ defaults = data.setdefault("agents", {}).setdefault("defaults", {})
 defaults.setdefault("workspace", "/home/node/.openclaw/workspace")
 defaults["models"] = allowlist
 defaults["model"] = {"primary": primary, "fallbacks": fallbacks}
+defaults["timeoutSeconds"] = agent_timeout
+
+providers = data.setdefault("models", {}).setdefault("providers", {})
+providers.setdefault("openrouter", {})["timeoutSeconds"] = provider_timeout
 
 plugins = data.setdefault("plugins", {}).setdefault("entries", {})
 openrouter = plugins.setdefault("openrouter", {})
@@ -5085,6 +5098,7 @@ write_openclaw_json() {
   "agents": {
     "defaults": {
       "workspace": "/home/node/.openclaw/workspace",
+      "timeoutSeconds": ${OPENCLAW_AGENT_TIMEOUT_SECONDS:-30},
       "models": {
         "${OPENCLAW_MODEL_PRIMARY}": {},
         "${OPENCLAW_MODEL_FALLBACK_1}": {},
@@ -5096,6 +5110,13 @@ write_openclaw_json() {
           "${OPENCLAW_MODEL_FALLBACK_1}",
           "${OPENCLAW_MODEL_FALLBACK_2}"
         ]
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "openrouter": {
+        "timeoutSeconds": ${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-30}
       }
     }
   },
