@@ -4952,7 +4952,6 @@ ensure_openclaw_model_defaults() {
   local config_dir="$1"
   local container="${2:-}"
   load_env
-  sync_quiet_plugin_env "$config_dir"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" \
