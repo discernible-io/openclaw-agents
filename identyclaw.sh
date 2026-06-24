@@ -34,7 +34,7 @@
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
 #   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins from ClawHub (pinned in env.local)
-#   sync-a2a-peers [id|all]  Update A2A_PEER_AGENTS / A2A_PEER_URLS from inbound P2P login logs
+#   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
@@ -461,10 +461,15 @@ a2a_fetch_agent_card() {
 
 a2a_fetch_peer_agent_card() {
   local runner_id="$1" peer_token_id="$2"
-  local url container curl_flags=(-sk)
-  url="$(a2a_peer_agent_card_url "$peer_token_id")"
+  local url container curl_flags=(-sk) resolver_dir
+  resolver_dir="$(agent_home "$runner_id")"
+  url="$(a2a_peer_agent_card_url "$peer_token_id" "$resolver_dir")"
   [[ -n "$url" ]] || {
-    echo "No agent card URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
+    if a2a_resolve_peers_by_token_id_enabled; then
+      echo "No agent card URL for peer token_id ${peer_token_id} — IdentyClaw API lookup failed (check NEAR creds and peer contactUri)" >&2
+    else
+      echo "No agent card URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
+    fi
     return 1
   }
   if agent_container_running "$runner_id"; then
@@ -522,7 +527,19 @@ cmd_test_a2a() {
       echo "Peer must be a Passport token_id (got: ${peer_token_id})" >&2
       exit 1
     }
+    local peer_resolver_dir peer_base
+    peer_resolver_dir="$(agent_home "$from_id")"
     echo "==> Discovery: peer token_id=${peer_token_id}"
+    peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$peer_resolver_dir" 2>/dev/null || true)"
+    if [[ -n "$peer_base" ]]; then
+      if a2a_peer_public_base_url_from_env_map "$peer_token_id" >/dev/null 2>&1; then
+        echo "    base=${peer_base} (A2A_PEER_URLS)"
+      else
+        echo "    base=${peer_base} (IdentyClaw API / registry)"
+      fi
+    elif a2a_resolve_peers_by_token_id_enabled; then
+      echo "    (IdentyClaw API lookup failed — check NEAR creds and peer contactUri)" >&2
+    fi
     a2a_fetch_peer_agent_card "$from_id" "$peer_token_id"
     echo ""
   else
@@ -537,8 +554,9 @@ cmd_test_a2a() {
   echo "==> Inbound auth (expect HTTP 401 without Bearer token)"
   a2a_probe_unauth_post "$from_id"
   if [[ -n "$peer_token_id" ]]; then
-    local peer_a2a_url
-    peer_a2a_url="$(a2a_peer_a2a_endpoint_url "$peer_token_id")"
+    local peer_a2a_url peer_resolver_dir
+    peer_resolver_dir="$(agent_home "$from_id")"
+    peer_a2a_url="$(a2a_peer_a2a_endpoint_url "$peer_token_id" "$peer_resolver_dir")"
     [[ -n "$peer_a2a_url" ]] && a2a_probe_unauth_post_url "peer:${peer_token_id}" "$peer_a2a_url"
   fi
 
@@ -568,9 +586,13 @@ cmd_test_a2a_auth() {
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-a2a-rodit-auth.mjs" "$container:/tmp/test-a2a-rodit-auth.mjs" >/dev/null
 
   if [[ -n "$peer_token_id" ]]; then
-    target="$(a2a_peer_public_base_url "$peer_token_id")"
+    target="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$local_id")")"
     [[ -n "$target" ]] || {
-      echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
+      if a2a_resolve_peers_by_token_id_enabled; then
+        echo "No URL for peer token_id ${peer_token_id} — IdentyClaw API lookup failed" >&2
+      else
+        echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
+      fi
       exit 1
     }
     echo "==> A2A RODiT auth (→ peer token_id=${peer_token_id} at ${target})"
@@ -655,7 +677,7 @@ cmd_test_webhook() {
   done
   if [[ -n "$peer_token_id" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
     local peer_base container_creds
-    peer_base="$(a2a_peer_public_base_url "$peer_token_id")"
+    peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$id")")"
     container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
     if [[ -n "$peer_base" && -n "$container_creds" ]]; then
       echo ""
@@ -760,11 +782,15 @@ cmd_test_webhook_p2p() {
   local sender_container sender_creds receiver_base local_base peer_creds ext_dir
   local receiver_deploy_id reverse_via_container=0
   sender_container="$(agent_container "$sender")"
-  receiver_base="$(a2a_peer_public_base_url "$peer_token_id")"
+  receiver_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$sender")")"
   local_base="$(agent_a2a_public_base_url "$sender")"
   [[ -n "$local_base" ]] || local_base="$(agent_ingress_base_url "$sender")"
   [[ -n "$receiver_base" ]] || {
-    echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
+    if a2a_resolve_peers_by_token_id_enabled; then
+      echo "No URL for peer token_id ${peer_token_id} — IdentyClaw API lookup failed" >&2
+    else
+      echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
+    fi
     exit 1
   }
 

@@ -955,11 +955,88 @@ find_deploy_id_for_token_id() {
   return 1
 }
 
-# Public HTTPS base for a peer token_id (A2A_PEER_URLS in env.local).
-a2a_peer_public_base_url() {
+# Plugin ext dir with deps for IdentyClaw API login (identyclaw-tools preferred).
+a2a_api_probe_ext_dir() {
+  local config_dir="$1"
+  local tools_dir a2a_dir
+  tools_dir="$(agent_identyclaw_tools_ext_dir "$config_dir")"
+  if [[ -f "$tools_dir/node_modules/tweetnacl/package.json" || -f "$tools_dir/package.json" ]]; then
+    echo "$tools_dir"
+    return 0
+  fi
+  a2a_dir="$(agent_a2a_ext_dir "$config_dir")"
+  if [[ -f "$a2a_dir/node_modules/@rodit/rodit-auth-be/package.json" ]]; then
+    echo "$a2a_dir"
+    return 0
+  fi
+  return 1
+}
+
+# Public base from persisted A2A plugin registry (resolvePeersByTokenId / inbound JWT).
+a2a_peer_public_base_from_registry() {
   local token_id="$1"
-  [[ -n "$token_id" ]] || return 1
+  local config_dir="${2:-}"
+  [[ -n "$token_id" && -n "$config_dir" ]] || return 1
+  local registry="$config_dir/a2a/outbound/peers.json"
+  [[ -f "$registry" ]] || return 1
+  A2A_PEER_TOKEN_ID="$token_id" A2A_PEER_REGISTRY_PATH="$registry" python3 - <<'PY'
+import json, os, sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+token_id = os.environ["A2A_PEER_TOKEN_ID"]
+path = Path(os.environ["A2A_PEER_REGISTRY_PATH"])
+try:
+    registry = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+entry = registry.get(token_id)
+card_url = ""
+if isinstance(entry, dict):
+    card_url = str(entry.get("url") or entry.get("loginBaseUrl") or "").strip()
+else:
+    card_url = str(entry or "").strip()
+if not card_url:
+    sys.exit(1)
+if card_url.endswith("/.well-known/agent-card.json"):
+    base = card_url[: -len("/.well-known/agent-card.json")].rstrip("/")
+elif "://" in card_url:
+    parsed = urlparse(card_url)
+    base = f"{parsed.scheme}://{parsed.netloc}".rstrip("/") if parsed.netloc else card_url.rstrip("/")
+else:
+    base = card_url.rstrip("/")
+if base:
+    print(base)
+PY
+}
+
+# GET /api/identity/token/{tokenId}/full → contactUri (requires caller NEAR creds).
+probe_identyclaw_peer_public_base_url() {
+  local config_dir="$1"
+  local token_id="$2"
+  local cred_file ext_dir probed
+  [[ -n "$config_dir" && -n "$token_id" ]] || return 1
   is_passport_token_id "$token_id" || return 1
+  a2a_resolve_peers_by_token_id_enabled || return 1
+  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
+  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
+  ext_dir="$(a2a_api_probe_ext_dir "$config_dir")" || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  load_env
+  probed="$(
+    IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
+      node "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
+      "$ext_dir" "$cred_file" "$token_id" 2>/dev/null || true
+  )"
+  probed="${probed//$'\n'/}"
+  probed="${probed//$'\r'/}"
+  [[ -n "$probed" && "$probed" == https://* ]] || return 1
+  echo "$probed"
+}
+
+a2a_peer_public_base_url_from_env_map() {
+  local token_id="$1"
   load_env
   local url_json="${A2A_PEER_URLS:-}"
   [[ -n "$url_json" ]] || return 1
@@ -975,18 +1052,47 @@ except Exception:
 PY
 }
 
+# Public HTTPS base for a peer token_id (env map → local deploy → registry → IdentyClaw API).
+a2a_peer_public_base_url() {
+  local token_id="$1"
+  local resolver_config_dir="${2:-}"
+  local deploy_id public_base
+  [[ -n "$token_id" ]] || return 1
+  is_passport_token_id "$token_id" || return 1
+  public_base="$(a2a_peer_public_base_url_from_env_map "$token_id" 2>/dev/null || true)"
+  [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  deploy_id="$(find_deploy_id_for_token_id "$token_id" 2>/dev/null || true)"
+  if [[ -n "$deploy_id" ]]; then
+    public_base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  fi
+  if [[ -n "$resolver_config_dir" ]]; then
+    public_base="$(a2a_peer_public_base_from_registry "$token_id" "$resolver_config_dir" 2>/dev/null || true)"
+    [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+    public_base="$(probe_identyclaw_peer_public_base_url "$resolver_config_dir" "$token_id" 2>/dev/null || true)"
+    [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  fi
+  return 1
+}
+
+a2a_resolve_peers_by_token_id_enabled() {
+  a2a_dynamic_peers_from_jwt_enabled
+}
+
 a2a_peer_agent_card_url() {
   local token_id="$1"
+  local resolver_config_dir="${2:-}"
   local public_base
-  public_base="$(a2a_peer_public_base_url "$token_id")"
+  public_base="$(a2a_peer_public_base_url "$token_id" "$resolver_config_dir")"
   [[ -n "$public_base" ]] || return 1
   echo "${public_base%/}/.well-known/agent-card.json"
 }
 
 a2a_peer_a2a_endpoint_url() {
   local token_id="$1"
+  local resolver_config_dir="${2:-}"
   local public_base
-  public_base="$(a2a_peer_public_base_url "$token_id")"
+  public_base="$(a2a_peer_public_base_url "$token_id" "$resolver_config_dir")"
   [[ -n "$public_base" ]] || return 1
   echo "${public_base%/}/a2a"
 }
@@ -1016,7 +1122,11 @@ warn_invalid_a2a_peer_agents() {
   load_env
   for ref in $A2A_PEER_AGENTS; do
     is_passport_token_id "$ref" && continue
-    echo "    (A2A_PEER_AGENTS: \"${ref}\" is not a Passport token_id — ignored; set A2A_PEER_URLS for each peer)" >&2
+    if a2a_resolve_peers_by_token_id_enabled; then
+      echo "    (A2A_PEER_AGENTS: \"${ref}\" is not a Passport token_id — ignored)" >&2
+    else
+      echo "    (A2A_PEER_AGENTS: \"${ref}\" is not a Passport token_id — ignored; set A2A_PEER_URLS for each peer)" >&2
+    fi
   done
 }
 
@@ -2077,6 +2187,7 @@ start_pod_agent() {
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_session_memory_hook "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
+    ensure_openrouter_sqlite_auth "$id"
     podman restart "$container" >/dev/null
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Restarted ${container}"
@@ -2468,10 +2579,10 @@ EOF
 - **Open P2P:** inbound accepts any Passport holder via \`POST /api/login\` + \`POST /a2a\`. Outbound peers are registered dynamically from inbound JWT \`rodit_webhookurl\` (no \`A2A_PEER_AGENTS\` required for callbacks)."
     elif a2a_dynamic_peers_from_jwt_enabled; then
       open_p2p_note="
-- **Dynamic peers:** outbound entries are upserted from inbound JWT \`rodit_webhookurl\` after successful auth (keyed by Passport \`token_id\`)."
+- **Dynamic peers:** outbound URLs resolve from IdentyClaw API \`contactUri\` (\`resolvePeersByTokenId\`) and from inbound JWT \`rodit_webhookurl\` after successful auth (keyed by Passport \`token_id\`)."
     fi
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<EOF
-- **Configured peers (Passport token_id):** ${peers:-none} — keys in \`plugins.entries.identyclaw-a2a.config.outbound.agents\`; URLs from \`A2A_PEER_URLS\` in env.local.${open_p2p_note}
+- **Configured peers (Passport token_id):** ${peers:-none} — \`A2A_PEER_AGENTS\` in env.local; gateway bases from IdentyClaw API (or optional \`A2A_PEER_URLS\` override).${open_p2p_note}
 
 ### A2A tools
 
@@ -2637,12 +2748,16 @@ build_a2a_peer_map() {
     is_passport_token_id "$peer_token_id" || continue
     [[ -n "$self_token_id" && "$peer_token_id" == "$self_token_id" ]] && continue
 
-    public_base="$(a2a_peer_public_base_url "$peer_token_id")"
-    card_url="$(a2a_peer_agent_card_url "$peer_token_id" 2>/dev/null || true)"
-    if [[ -z "$public_base" || -z "$card_url" ]]; then
-      echo "    (${self_id}: skip peer ${peer_token_id} — no URL in A2A_PEER_URLS)" >&2
+    public_base="$(a2a_peer_public_base_url "$peer_token_id" "$self_config_dir")"
+    if [[ -z "$public_base" ]]; then
+      if a2a_resolve_peers_by_token_id_enabled; then
+        echo "    (${self_id}: peer ${peer_token_id} — no static URL; resolvePeersByTokenId at runtime)" >&2
+      else
+        echo "    (${self_id}: skip peer ${peer_token_id} — no URL in A2A_PEER_URLS)" >&2
+      fi
       continue
     fi
+    card_url="${public_base%/}/.well-known/agent-card.json"
     if [[ "$first" -eq 1 ]]; then
       first=0
     else
@@ -2837,6 +2952,8 @@ if changed:
 PY
 
   if [[ -n "$peers_json" && "$peers_json" != "{}" ]]; then
+    sync_a2a_tls_env "$config_dir"
+  elif a2a_resolve_peers_by_token_id_enabled && [[ -n "$(a2a_configured_peer_token_ids)" ]]; then
     sync_a2a_tls_env "$config_dir"
   fi
 }
@@ -4580,6 +4697,9 @@ ensure_agent_bootstrap() {
   fi
   ensure_a2a_config "$id" "$config_dir" "$container"
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    ensure_openrouter_sqlite_auth "$id"
+  fi
   write_agent_browser_doc "$config_dir"
   sync_quiet_plugin_env "$config_dir"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
@@ -4961,6 +5081,56 @@ validate_openrouter_api_key() {
     echo "OpenRouter API keys start with sk-or- (got something else — check you did not paste a shell command)." >&2
     return 1
   }
+}
+
+# OpenClaw 2026.6+ reads model auth from openclaw-agent.sqlite; legacy auth-profiles.json alone is ignored.
+ensure_openrouter_sqlite_auth() {
+  local id="$1" rc=0
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+
+  podman exec "$container" node <<'NODE' 2>/dev/null || rc=$?
+const { spawnSync } = require("child_process");
+const fs = require("fs");
+
+function authList() {
+  return spawnSync("node", ["/app/openclaw.mjs", "models", "auth", "list", "--agent", "main"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+const listed = authList();
+const out = listed.stdout || "";
+if (/openrouter:default/.test(out) || /\[openrouter\/api_key\]/.test(out)) {
+  process.exit(0);
+}
+
+const path = "/home/node/.openclaw/agents/main/agent/auth-profiles.json";
+if (!fs.existsSync(path)) process.exit(0);
+const key = JSON.parse(fs.readFileSync(path, "utf8"))?.profiles?.["openrouter:default"]?.key;
+if (!key?.startsWith("sk-or-")) process.exit(0);
+
+const r = spawnSync(
+  "node",
+  [
+    "/app/openclaw.mjs",
+    "models",
+    "auth",
+    "paste-api-key",
+    "--provider",
+    "openrouter",
+    "--profile-id",
+    "openrouter:default",
+  ],
+  { input: key, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+);
+if (r.status !== 0) process.exit(r.status ?? 1);
+NODE
+  if [[ $rc -ne 0 ]]; then
+    echo "    (${id}: OpenRouter sqlite auth sync failed — paste key: openclaw models auth paste-api-key --provider openrouter)" >&2
+  fi
 }
 
 write_openrouter_api_key() {

@@ -50,8 +50,10 @@ How many gateways run on a machine is controlled in `~/identyclaw-agents-app/env
 | Variable | Purpose |
 |----------|---------|
 | `AGENT_IDS` | Space-separated list of agents **started on this host** (`start all`, `stop all`, `restart all`, `enable-boot`, pod deploy, test suites) |
-| `A2A_PEER_AGENTS` | Collaboration partners as Passport **token_id** values (space-separated) |
-| `A2A_PEER_URLS` | JSON map `token_id` → `https://peer-host:port` gateway base (required for each peer in `A2A_PEER_AGENTS`) |
+| `A2A_PEER_AGENTS` | Collaboration partners as Passport **token_id** values (space-separated) — used for smoke tests and optional bootstrap seeding; **URLs are not configured here** |
+| `IDENTYCLAW_PEER_TOKEN_ID` | Optional single peer `token_id` for `./identyclaw.sh test-a2a` when `A2A_PEER_AGENTS` lists multiple peers |
+
+Peer gateway bases are resolved from the **IdentyClaw API** (`contactUri` via `GET /api/identity/token/{tokenId}/full`) when `IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1` or `IDENTYCLAW_A2A_OPEN_P2P=1` is set. Optional static override: `A2A_PEER_URLS` JSON map (`token_id` → `https://peer-host:port`).
 
 Default (if unset): `AGENT_IDS=agent-a agent-b agent-c`.
 
@@ -64,13 +66,15 @@ AGENT_IDS=agent-a
 # Two agents on one host
 AGENT_IDS=agent-a agent-b
 
-# Split across hosts — each machine runs one agent; peers identified by Passport token_id
-# Host 1 env.local:  AGENT_IDS=agent-a
+# Split across hosts — peers identified by Passport token_id; URLs from API
+# Host 1 env.local:
+#   AGENT_IDS=agent-a
+#   IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1
 #   A2A_PEER_AGENTS=<agent-b-token-id>
-#   A2A_PEER_URLS={"<agent-b-token-id>":"https://agent-b.identyclaw.com:9443"}
-# Host 2 env.local:  AGENT_IDS=agent-b
+# Host 2 env.local:
+#   AGENT_IDS=agent-b
+#   IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1
 #   A2A_PEER_AGENTS=<agent-a-token-id>
-#   A2A_PEER_URLS={"<agent-a-token-id>":"https://agent-a.identyclaw.com:9443"}
 ```
 
 `./identyclaw.sh init` seeds state directories for **agent-a, agent-b, and agent-c** from `env.example`. Agents not listed in `AGENT_IDS` are simply not started — you can leave their mailbox passwords and API keys unset until you need them.
@@ -393,13 +397,34 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 | **identyclaw-a2a** plugin | [ClawHub: @identyclaw/openclaw-a2a-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-a2a-plugin) | Agent-to-agent messaging (`a2a_send_message`, tasks, files) with RODiT JWT auth |
 | **identyclaw-webhooks** plugin | [ClawHub: @identyclaw/openclaw-identyclaw-webhooks-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-identyclaw-webhooks-plugin) | RODiT-signed inbound webhooks + outbound `send_rodit_webhook` to configured peers |
 
-Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). List collaboration partners in `A2A_PEER_AGENTS` as Passport **token_id** values; set `A2A_PEER_URLS` with each peer's public gateway base URL.
+Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars).
+
+**A2A peer discovery:** list partner Passport **token_id** values in `A2A_PEER_AGENTS` (for smoke tests and optional seeding). Peer gateway URLs are fetched from the IdentyClaw API (`contactUri`) when dynamic resolution is enabled — you do not maintain `A2A_PEER_URLS` unless you need a static override.
+
+Enable API-based peer URL resolution (pick one in `env.local`):
 
 ```bash
-# After adding near-credentials for local agents and listing peers in A2A_PEER_AGENTS:
-./identyclaw.sh restart agent-a agent-b    # or: ./identyclaw.sh restart all
-./identyclaw.sh test-a2a              # local discovery + peer token_id from A2A_PEER_AGENTS
-./identyclaw.sh test              # full suite (see local test-constitution.md if present)
+IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1   # dynamic outbound + inbound JWT learning
+# IDENTYCLAW_A2A_OPEN_P2P=1             # same + promiscuous inbound P2P login
+```
+
+Pin and install plugins (defaults in `env.example`):
+
+```bash
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.0
+IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.1
+```
+
+Each agent’s own public base can come from Passport `metadata.webhook_url` when `IDENTYCLAW_RODIT_SELF_CONFIGURE=1` (default).
+
+```bash
+# After near-credentials + A2A_PEER_AGENTS token_ids + dynamic flag:
+./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.0+ (resolvePeersByTokenId)
+./identyclaw.sh restart all
+./identyclaw.sh test-a2a              # resolves peer URL via API; token_id from A2A_PEER_AGENTS
+./identyclaw.sh test                  # full suite (see local test-constitution.md if present)
+# Optional: backfill discovered URLs into env.local for ops visibility
+./identyclaw.sh sync-a2a-peers all
 ```
 
 RODiT JWT details, production ingress, and cross-machine A2A (Option A — public HTTPS on **9443**) are documented in local operator docs (`security-compliance-improvements.md`, not in this repo).
@@ -454,7 +479,7 @@ Peer collaboration uses **two HTTP surfaces**. They are complementary, not inter
 
 A2A is **not text-only**: the plugin supports messages, file attachments (plugin docs: ~**1 MB** outbound), long-running tasks, streaming (Agent Card: `streaming: true`), and artifacts. Inbound JSON-RPC body limit: **1 MB**.
 
-**Outbound limits:** peers must appear in `plugins.entries.identyclaw-a2a.config.outbound.agents` keyed by Passport **token_id** (from `A2A_PEER_AGENTS` + `A2A_PEER_URLS`). Outbound auth is **P2P-only**: per-peer JWT from `{loginBaseUrl}/api/login`.
+**Outbound limits:** outbound peers are keyed by Passport **token_id**. With `resolvePeersByTokenId` (a2a plugin 0.4.0+), the plugin resolves each peer’s gateway from IdentyClaw API identity (`contactUri`) or from inbound JWT `rodit_webhookurl`; bootstrap and `./identyclaw.sh test-a2a` use the same API lookup. Static `A2A_PEER_URLS` overrides API when set. Outbound auth is **P2P-only**: per-peer JWT from `{loginBaseUrl}/api/login`.
 
 **Inbound limits:** JWT validated per `inbound.auth` (`issuer`, `audience` = own passport `owner_id`). Sender identity from JWT `token_id` (`identityClaim`); conversations keyed by sender + `context_id`.
 
@@ -464,7 +489,7 @@ A2A is **not text-only**: the plugin supports messages, file attachments (plugin
 |--------|-----|
 | Remote execution of arbitrary OpenClaw tools on a peer | Only A2A JSON-RPC methods — opaque execution; no direct tool proxy |
 | Gateway admin / Control UI access | Separate `OPENCLAW_GATEWAY_TOKEN` trust boundary |
-| Messaging unlisted peers | Outbound allowlist only |
+| Messaging arbitrary hosts | Outbound resolves peers by Passport `token_id` only |
 | Access to peer workspace, memory, or internal state | A2A delivers messages/tasks; each agent processes locally |
 
 #### Webhooks — permitted and forbidden
@@ -812,8 +837,10 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh ask agent-a "..."` | One-shot message to an agent |
 | `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks) |
 | `./identyclaw.sh test` | Full gateway suite (A2A, webhooks, mail — see local `test-constitution.md`) |
-| `./identyclaw.sh test-a2a [from] [to]` | Agent Card discovery + unauthenticated `/a2a` → 401 |
-| `./identyclaw.sh test-a2a-auth` | P2P JWT on `/a2a` (peer when configured, then local inbound) |
+| `./identyclaw.sh test-a2a [from] [peer-token-id]` | Agent Card discovery (peer URL via API when dynamic mode on) + unauthenticated `/a2a` → 401 |
+| `./identyclaw.sh test-a2a-auth` | P2P JWT on `/a2a` (peer via API/registry, then local inbound) |
+| `./identyclaw.sh upgrade-plugins [id\|all]` | Refresh A2A + IdentyClaw plugins from ClawHub pins |
+| `./identyclaw.sh sync-a2a-peers [id\|all]` | Backfill `env.local` from discovered peers (optional ops) |
 | `./identyclaw.sh test-webhook [id]` | Webhook ingress (unsigned, invalid sig, signed) |
 | `./identyclaw.sh test-webhook-p2p [from] [to]` | Bidirectional P2P webhook receipts |
 | `./identyclaw.sh webhook-url agent-a [path]` | Print public HTTPS webhook URL |
