@@ -198,7 +198,7 @@ load_env() {
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.0}"
-  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.1}"
+  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.2}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
@@ -2815,18 +2815,6 @@ elif dynamic_peers_from_jwt:
 elif "agents" in outbound:
     del outbound["agents"]
     changed = True
-
-# identyclaw-webhooks still reads legacy plugins.entries.a2a for outbound peers.
-if outbound:
-    legacy_stub = plugins.setdefault("a2a", {})
-    if legacy_stub.get("enabled") is True:
-        legacy_stub.pop("enabled", None)
-        changed = True
-    legacy_cfg = legacy_stub.setdefault("config", {})
-    mirrored_outbound = json.loads(json.dumps(outbound))
-    if legacy_cfg.get("outbound") != mirrored_outbound:
-        legacy_cfg["outbound"] = mirrored_outbound
-        changed = True
 
 a2a_tools = [
     "a2a_get_agents",
