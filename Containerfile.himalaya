@@ -1,13 +1,13 @@
 # Build: podman build -f Containerfile.himalaya -t openclaw-himalaya:local .
 # Args: --build-arg OPENCLAW_BASE_IMAGE=... --build-arg HIMALAYA_ARCH=x86_64-linux
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.27-slim
-ARG OPENCLAW_GATEWAY_VERSION=2026.5.27
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.10-slim
+ARG OPENCLAW_GATEWAY_VERSION=2026.6.10
 ARG HIMALAYA_VERSION=v1.2.0
 ARG HIMALAYA_ARCH=x86_64-linux
 # Space-separated npm specs installed into the image (seeded into agent homes at start).
 # Pin @openclaw/discord to OPENCLAW_GATEWAY_VERSION — mismatches crash the channel provider.
-ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.5.27"
+ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.6.10"
 
 FROM ${OPENCLAW_BASE_IMAGE}
 

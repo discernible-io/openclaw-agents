@@ -165,7 +165,7 @@ load_env() {
       esac
     done <"$f"
   fi
-  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.5.27-slim}"
+  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.6.10-slim}"
   OPENCLAW_GATEWAY_VERSION="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
   OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@${OPENCLAW_GATEWAY_VERSION}}"
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
@@ -197,14 +197,15 @@ load_env() {
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
-  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.2.6}"
-  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.0}"
+  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.0}"
+  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.1}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
   # https://clawhub.ai/identyclaw/identyclaw
   IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.1}"
   IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
+  IDENTYCLAW_CLAWHUB_SKILL_VERSION="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-1.4.0}"
   IDENTYCLAW_CLAWHUB_TWITTER_SKILL="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
   IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-linkedin-social}"
   IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
@@ -521,21 +522,31 @@ ensure_discord_plugin_compat() {
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
 
   if podman exec "$container" node -e "
+const fs = require('fs');
+const path = require('path');
 const gw = require('/app/package.json').version;
-let installed = null;
-try {
-  installed = require('/home/node/.openclaw/npm/node_modules/@openclaw/discord/package.json').version;
-} catch {}
-process.exit(installed === gw ? 0 : 1);
+function discordVersion() {
+  const legacy = '/home/node/.openclaw/npm/node_modules/@openclaw/discord/package.json';
+  if (fs.existsSync(legacy)) return require(legacy).version;
+  const projects = '/home/node/.openclaw/npm/projects';
+  if (!fs.existsSync(projects)) return null;
+  for (const d of fs.readdirSync(projects)) {
+    const pkg = path.join(projects, d, 'node_modules/@openclaw/discord/package.json');
+    if (fs.existsSync(pkg)) return require(pkg).version;
+  }
+  return null;
+}
+process.exit(discordVersion() === gw ? 0 : 1);
 " 2>/dev/null; then
     return 0
   fi
 
   echo "    (${id}: syncing @openclaw/discord to gateway version…)" >&2
-  podman exec "$container" sh -ce '
+  podman exec "$container" bash -ce '
     set -euo pipefail
     gw=$(node -e "process.stdout.write(require(\"/app/package.json\").version)")
     rm -rf /home/node/.openclaw/npm/node_modules/@openclaw/discord
+    rm -rf /home/node/.openclaw/npm/projects/openclaw-discord-*
     OPENCLAW_STATE_DIR=/home/node/.openclaw node /app/openclaw.mjs plugins install "@openclaw/discord@${gw}" --pin
   ' >&2
   return 1
@@ -1036,7 +1047,7 @@ PY
 # Parse gateway logs + openclaw.json outbound.agents for Passport token_id peers.
 harvest_a2a_peers_json_from_agent() {
   local id="$1"
-  local container dir config_dir logs agents_json self_token_id
+  local container dir config_dir logs agents_json registry_json self_token_id
   load_env
   container="$(agent_container "$id")"
   dir="$(agent_home "$id")"
@@ -1044,6 +1055,7 @@ harvest_a2a_peers_json_from_agent() {
   self_token_id="$(agent_token_id "$id" 2>/dev/null || true)"
   logs=""
   agents_json="{}"
+  registry_json="{}"
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     logs="$(podman logs "$container" 2>&1 || true)"
     agents_json="$(podman exec "$container" python3 - <<'PY' 2>/dev/null || echo '{}'
@@ -1076,6 +1088,17 @@ for token_id, card_url in (agents or {}).items():
     if base:
         out[str(token_id)] = base.rstrip("/")
 print(json.dumps(out))
+PY
+)"
+    registry_json="$(podman exec "$container" python3 - <<'PY' 2>/dev/null || echo '{}'
+import json
+from pathlib import Path
+
+path = Path("/home/node/.openclaw/a2a/outbound/peers.json")
+if not path.is_file():
+    print("{}")
+    raise SystemExit(0)
+print(path.read_text(encoding="utf-8"))
 PY
 )"
   elif [[ -r "$config_dir/openclaw.json" ]]; then
@@ -1112,8 +1135,11 @@ for token_id, card_url in (agents or {}).items():
 print(json.dumps(out))
 PY
 )"
+    if [[ -f "$config_dir/a2a/outbound/peers.json" ]]; then
+      registry_json="$(<"$config_dir/a2a/outbound/peers.json")"
+    fi
   fi
-  A2A_PEER_LOGS="$logs" A2A_PEER_AGENTS_JSON="$agents_json" A2A_PEER_SELF_TOKEN_ID="${self_token_id:-}" python3 - <<'PY'
+  A2A_PEER_LOGS="$logs" A2A_PEER_AGENTS_JSON="$agents_json" A2A_PEER_REGISTRY_JSON="$registry_json" A2A_PEER_SELF_TOKEN_ID="${self_token_id:-}" python3 - <<'PY'
 import json, os, re
 
 peers = {}
@@ -1124,6 +1150,9 @@ except Exception:
 
 logs = os.environ.get("A2A_PEER_LOGS", "")
 patterns = [
+    re.compile(
+        r"\[a2a\] Registered outbound peer ([A-Za-z][A-Za-z0-9]{11}) from identity contactUri \((https?://[^)]+)\)"
+    ),
     re.compile(
         r"\[a2a\] Registered dynamic outbound peer ([A-Za-z][A-Za-z0-9]{11}) from inbound JWT"
         r"(?: \(baseUrl=(https?://[^)]+)\))?"
@@ -1139,11 +1168,38 @@ for line in logs.splitlines():
         if not match:
             continue
         token_id = match.group(1)
-        base_url = (match.group(2) or "").strip().rstrip("/") if match.lastindex and match.lastindex >= 2 else ""
+        base_url = ""
+        if match.lastindex and match.lastindex >= 2 and match.group(2):
+            card_or_base = match.group(2).strip().rstrip("/")
+            if "/.well-known/agent-card.json" in card_or_base:
+                base_url = card_or_base.split("/.well-known/agent-card.json")[0].rstrip("/")
+            else:
+                base_url = card_or_base
         if base_url:
             peers[token_id] = base_url
         elif token_id not in peers:
             peers[token_id] = ""
+
+try:
+    registry = json.loads(os.environ.get("A2A_PEER_REGISTRY_JSON", "{}") or "{}")
+    for token_id, entry in registry.items():
+        if token_id in peers and peers[token_id]:
+            continue
+        card_url = ""
+        if isinstance(entry, dict):
+            card_url = str(entry.get("url") or "").strip()
+        else:
+            card_url = str(entry or "").strip()
+        if not card_url:
+            continue
+        if card_url.endswith("/.well-known/agent-card.json"):
+            base = card_url[: -len("/.well-known/agent-card.json")].rstrip("/")
+        else:
+            base = card_url.rstrip("/")
+        if base:
+            peers[token_id] = base
+except Exception:
+    pass
 
 self_token_id = os.environ.get("A2A_PEER_SELF_TOKEN_ID", "").strip()
 if self_token_id:
@@ -2002,6 +2058,8 @@ start_pod_agent() {
     echo "==> ${id} already running in pod — syncing A2A config and restarting gateway"
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
+    ensure_openclaw_model_defaults "$dir" "$container"
+    ensure_session_memory_hook "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     podman restart "$container" >/dev/null
     ensure_discord_plugin_compat_and_restart "$id"
@@ -2711,13 +2769,23 @@ if outbound.get("tlsSkipVerify") is not True:
     outbound["tlsSkipVerify"] = True
     changed = True
 
-if dynamic_peers_from_jwt:
-    if outbound.get("dynamicPeersFromJwt") is not True:
-        outbound["dynamicPeersFromJwt"] = True
-        changed = True
-elif outbound.get("dynamicPeersFromJwt"):
-    del outbound["dynamicPeersFromJwt"]
+# 0.4.0+ uses resolvePeersByTokenId / persistResolvedPeers (dynamicPeersFromJwt was patch-only).
+if outbound.pop("dynamicPeersFromJwt", None) is not None:
     changed = True
+
+if dynamic_peers_from_jwt:
+    if outbound.get("resolvePeersByTokenId") is not True:
+        outbound["resolvePeersByTokenId"] = True
+        changed = True
+    if outbound.get("persistResolvedPeers") is not True:
+        outbound["persistResolvedPeers"] = True
+        changed = True
+else:
+    if outbound.get("resolvePeersByTokenId") is not False:
+        outbound["resolvePeersByTokenId"] = False
+        changed = True
+    if outbound.pop("persistResolvedPeers", None) is not None:
+        changed = True
 
 if peers:
     existing_agents = outbound.get("agents", {})
@@ -2808,31 +2876,7 @@ build_git_plugin() {
   ) || true
 }
 
-patch_a2a_dual_inbound() {
-  local ext_dir="$1"
-  local inbound="$ext_dir/dist/auth/rodit-inbound.js"
-  local patch="${IDENTYCLAW_ROOT}/scripts/patch-a2a-dual-inbound.sh"
-  [[ -f "$inbound" && -f "$patch" ]] || return 0
-  bash "$patch" "$inbound"
-}
-
-patch_a2a_tool_params() {
-  local ext_dir="$1"
-  local outbound="$ext_dir/dist/outbound/tools.js"
-  local patch="${IDENTYCLAW_ROOT}/scripts/patch-a2a-tool-params.sh"
-  [[ -f "$outbound" && -f "$patch" ]] || return 0
-  bash "$patch" "$outbound"
-}
-
-patch_a2a_dynamic_peers() {
-  local ext_dir="$1"
-  local patch="${IDENTYCLAW_ROOT}/scripts/patch-a2a-dynamic-peers.sh"
-  a2a_dynamic_peers_from_jwt_enabled || return 0
-  [[ -d "$ext_dir/dist" && -f "$patch" ]] || return 0
-  bash "$patch" "$ext_dir"
-}
-
-# Remove dynamicPeersFromJwt so ClawHub install can validate config before schema patch.
+# Remove legacy dynamicPeersFromJwt so ClawHub install can validate config (0.4.0+ schema).
 strip_a2a_dynamic_peers_config_for_install() {
   local config_dir="$1"
   local container="${2:-}"
@@ -2849,54 +2893,21 @@ outbound = (
     .get("config", {})
     .get("outbound", {})
 )
+changed = False
 if outbound.pop("dynamicPeersFromJwt", None) is not None:
+    changed = True
+legacy_outbound = (
+    data.get("plugins", {})
+    .get("entries", {})
+    .get("a2a", {})
+    .get("config", {})
+    .get("outbound", {})
+)
+if isinstance(legacy_outbound, dict) and legacy_outbound.pop("dynamicPeersFromJwt", None) is not None:
+    changed = True
+if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-}
-
-patch_a2a_plugin() {
-  local ext_dir="$1"
-  local container="${2:-}"
-  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container" \
-    && [[ ! -r "${ext_dir}/dist/auth/rodit-inbound.js" ]]; then
-    ext_dir="$(agent_a2a_ext_dir_container)"
-    podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-tool-params.sh" "$container:/tmp/patch-a2a-tool-params.sh" >/dev/null 2>&1 || true
-    podman exec "$container" mkdir -p /tmp/identyclaw-patch/scripts 2>/dev/null || true
-    podman cp "${IDENTYCLAW_ROOT}/scripts/patch-a2a-dynamic-peers.sh" "$container:/tmp/identyclaw-patch/scripts/patch-a2a-dynamic-peers.sh" >/dev/null 2>&1 || true
-    podman cp "${IDENTYCLAW_ROOT}/scripts/a2a-dynamic-peer-registry.js" "$container:/tmp/identyclaw-patch/scripts/a2a-dynamic-peer-registry.js" >/dev/null 2>&1 || true
-    podman exec "$container" bash /tmp/patch-a2a-tool-params.sh "$ext_dir/dist/outbound/tools.js" 2>/dev/null || true
-    if a2a_dynamic_peers_from_jwt_enabled; then
-      podman exec "$container" env IDENTYCLAW_ROOT=/tmp/identyclaw-patch bash /tmp/identyclaw-patch/scripts/patch-a2a-dynamic-peers.sh "$ext_dir" 2>/dev/null || true
-    fi
-    return 0
-  fi
-  patch_a2a_tool_params "$ext_dir"
-  patch_a2a_dynamic_peers "$ext_dir"
-}
-
-patch_webhooks_a2a_config_key() {
-  local ext_dir="$1"
-  local patch="${IDENTYCLAW_ROOT}/scripts/patch-webhooks-a2a-config-key.sh"
-  local target
-  [[ -d "$ext_dir/dist" && -f "$patch" ]] || return 0
-  for target in "$ext_dir/dist/send-rodit-webhook.js" "$ext_dir/dist/index.js"; do
-    [[ -f "$target" ]] || continue
-    bash "$patch" "$target"
-  done
-}
-
-patch_webhooks_a2a_config_key_in_container() {
-  local container="$1"
-  local patch="${IDENTYCLAW_ROOT}/scripts/patch-webhooks-a2a-config-key.sh"
-  local target
-  [[ -f "$patch" ]] || return 0
-  podman cp "$patch" "$container:/tmp/patch-webhooks-a2a-config-key.sh" >/dev/null 2>&1 || return 0
-  for target in \
-    /home/node/.openclaw/extensions/identyclaw-webhooks/dist/send-rodit-webhook.js \
-    /home/node/.openclaw/extensions/identyclaw-webhooks/dist/index.js; do
-    podman exec "$container" test -f "$target" || continue
-    podman exec "$container" bash /tmp/patch-webhooks-a2a-config-key.sh "$target" 2>/dev/null || true
-  done
 }
 
 webhooks_plugin_id() {
@@ -2964,10 +2975,8 @@ install_identyclaw_webhooks_plugin() {
     && webhooks_ext_ready "$config_dir" "$container"; then
     if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
       link_identyclaw_webhooks_plugin_deps_in_container "$container" 2>/dev/null || true
-      patch_webhooks_a2a_config_key_in_container "$container"
     else
       link_identyclaw_webhooks_plugin_deps "$ext_dir"
-      patch_webhooks_a2a_config_key "$ext_dir"
     fi
     return 0
   fi
@@ -2998,10 +3007,8 @@ install_identyclaw_webhooks_plugin() {
 
   if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
     link_identyclaw_webhooks_plugin_deps_in_container "$container" 2>/dev/null || true
-    patch_webhooks_a2a_config_key_in_container "$container"
   else
     link_identyclaw_webhooks_plugin_deps "$ext_dir"
-    patch_webhooks_a2a_config_key "$ext_dir"
   fi
 }
 
@@ -3071,7 +3078,6 @@ install_a2a_plugin() {
 
   if [[ "$force" != "1" && -n "$desired_ver" && "$installed_ver" == "$desired_ver" ]] \
     && a2a_ext_ready "$config_dir" "$container"; then
-    patch_a2a_plugin "$ext_dir" "$container"
     migrate_legacy_a2a_extension "$config_dir" "$container"
     [[ -n "$id" ]] && ensure_a2a_config "$id" "$config_dir" "$container" || true
     return 0
@@ -3087,24 +3093,17 @@ install_a2a_plugin() {
   fi
 
   echo "    (installing A2A plugin from ${plugin_spec}…)" >&2
-  # Fresh plugin manifests reject dynamicPeersFromJwt until patch-a2a-dynamic-peers runs.
-  local restore_dynamic_peers=0
-  if a2a_dynamic_peers_from_jwt_enabled; then
-    strip_a2a_dynamic_peers_config_for_install "$config_dir" "$container" && restore_dynamic_peers=1
-  fi
+  strip_a2a_dynamic_peers_config_for_install "$config_dir" "$container"
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
   local install_args=()
   [[ "$force" == "1" ]] && install_args+=(--force)
   if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
-    [[ "$restore_dynamic_peers" == "1" ]] && ensure_a2a_config "$id" "$config_dir" "$container" || true
     return 1
   fi
   a2a_ext_ready "$config_dir" "$container" || {
     echo "    (identyclaw-a2a: install finished but extension tree is missing)" >&2
     return 1
   }
-
-  patch_a2a_plugin "$ext_dir" "$container"
 
   if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
     link_identyclaw_webhooks_plugin_deps_in_container "$container" 2>/dev/null || true
@@ -3303,12 +3302,32 @@ install_plugin_tree_in_container() {
   "
 }
 
+upgrade_agent_skill() {
+  local id="$1"
+  local config_dir container skill_spec skill_ver
+  local -a install_args
+  load_env
+  config_dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  skill_spec="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
+  skill_ver="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-}"
+
+  echo "    (IdentyClaw skill: ${skill_spec}${skill_ver:+ @}${skill_ver})"
+  install_args=(--force)
+  [[ -n "$skill_ver" ]] && install_args+=(--version "$skill_ver")
+  openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" "$skill_spec" >&2 \
+    || openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" identyclaw >&2 \
+    || echo "    (${id}: ClawHub skill install failed)" >&2
+}
+
 upgrade_agent_plugins() {
   local id="$1"
   local container config_dir
   load_env
   config_dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
+
+  rm -rf "${config_dir}/extensions/rodit-webhooks" 2>/dev/null || true
 
   echo "==> Upgrading plugins for ${id}"
   echo "    (A2A: ${IDENTYCLAW_CLAWHUB_A2A_PLUGIN})"
@@ -3329,11 +3348,14 @@ upgrade_agent_plugins() {
   }
 
   echo "    (IdentyClaw webhooks: ${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN})"
+  strip_a2a_dynamic_peers_config_for_install "$config_dir" "$container"
   install_identyclaw_webhooks_plugin "$config_dir" 1 "$id" || {
     echo "IdentyClaw webhooks plugin install failed for ${id}" >&2
     return 1
   }
   ensure_webhooks_plugin_config "$config_dir" "$container" || return 1
+
+  upgrade_agent_skill "$id"
 
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     link_identyclaw_plugin_deps_in_container "$container"
@@ -4548,6 +4570,7 @@ ensure_agent_bootstrap() {
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
   ensure_openclaw_model_defaults "$config_dir" "$container"
+  ensure_session_memory_hook "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
   fi
@@ -4738,7 +4761,7 @@ ensure_openclaw_model_defaults() {
   local config_dir="$1"
   local container="${2:-}"
   load_env
-  [[ -f "$config_dir/openclaw.json" ]] || return 0
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" <<'PY'
 import json, sys
@@ -4748,6 +4771,11 @@ path = Path(sys.argv[1])
 primary, fb1, fb2 = sys.argv[2:5]
 fallbacks = [fb1, fb2]
 allowlist = {primary: {}, fb1: {}, fb2: {}}
+
+def model_tail(model_id: str) -> str:
+    return model_id.split("/", 1)[1] if "/" in model_id else model_id
+
+paid_fallback = model_tail(fb2)
 
 data = json.loads(path.read_text(encoding="utf-8"))
 defaults = data.setdefault("agents", {}).setdefault("defaults", {})
@@ -4761,6 +4789,59 @@ openrouter["enabled"] = True
 
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
+
+sessions_path = path.parent / "agents/main/sessions/sessions.json"
+if not sessions_path.is_file():
+    raise SystemExit(0)
+
+sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+changed = False
+for entry in sessions.values():
+    if not isinstance(entry, dict):
+        continue
+    model = entry.get("model")
+    if not model:
+        continue
+    if (
+        model == paid_fallback
+        or model == fb2
+        or model_tail(str(model)) == paid_fallback
+        or str(model).endswith("grok-4.3")
+    ):
+        entry.pop("model", None)
+        entry.pop("modelProvider", None)
+        entry.pop("modelOverrideSource", None)
+        changed = True
+
+if changed:
+    sessions_path.write_text(json.dumps(sessions, indent=2) + "\n", encoding="utf-8")
+    sessions_path.chmod(0o600)
+PY
+}
+
+ensure_session_memory_hook() {
+  local config_dir="$1"
+  local container="${2:-}"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+hooks = data.setdefault("hooks", {}).setdefault("internal", {})
+entries = hooks.setdefault("entries", {})
+entry = entries.setdefault("session-memory", {})
+changed = False
+if hooks.get("enabled") is not True:
+    hooks["enabled"] = True
+    changed = True
+if entry.get("enabled") is not True:
+    entry["enabled"] = True
+    changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
 PY
 }
 
@@ -4834,6 +4915,14 @@ write_openclaw_json() {
   },
   "memory": {
     "backend": "qmd"
+  },
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "session-memory": { "enabled": true }
+      }
+    }
   }
 }
 EOF

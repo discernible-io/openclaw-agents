@@ -9,11 +9,20 @@ DISCORD_PKG="${TARGET}/node_modules/@openclaw/discord/package.json"
 GATEWAY_VER="$(node -e "process.stdout.write(require('/app/package.json').version)")"
 
 needs_seed=0
-if [ ! -f "$DISCORD_PKG" ]; then
+installed_ver=""
+if [ -f "$DISCORD_PKG" ]; then
+  installed_ver="$(node -e "process.stdout.write(require('${DISCORD_PKG}').version)")"
+elif [ -d "${TARGET}/projects" ]; then
+  for proj in "${TARGET}"/projects/openclaw-discord-*/node_modules/@openclaw/discord/package.json; do
+    [ -f "$proj" ] || continue
+    installed_ver="$(node -e "process.stdout.write(require('${proj}').version)")"
+    break
+  done
+fi
+if [ -z "$installed_ver" ]; then
   needs_seed=1
 elif [ -d "$BUNDLED" ] && [ -f "${BUNDLED}/node_modules/@openclaw/discord/package.json" ]; then
   bundled_ver="$(node -e "process.stdout.write(require('${BUNDLED}/node_modules/@openclaw/discord/package.json').version)")"
-  installed_ver="$(node -e "process.stdout.write(require('${DISCORD_PKG}').version)")"
   if [ "$bundled_ver" != "$installed_ver" ] || [ "$installed_ver" != "$GATEWAY_VER" ]; then
     needs_seed=1
   fi
@@ -21,7 +30,7 @@ fi
 
 if [ "$needs_seed" = 1 ] && [ -d "$BUNDLED" ]; then
   mkdir -p "$TARGET"
-  rm -rf "${TARGET}/node_modules/@openclaw/discord"
+  rm -rf "${TARGET}/node_modules/@openclaw/discord" "${TARGET}/projects/openclaw-discord-"*
   cp -a "${BUNDLED}/." "${TARGET}/"
 fi
 

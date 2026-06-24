@@ -131,7 +131,7 @@ cmd_init() {
 }
 
 cmd_set_password() {
-  local id="${1:?Usage: $0 set-password agent-{letter}}"
+  local id="${1:?Usage: $0 set-password agent-a}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -144,7 +144,7 @@ cmd_set_password() {
 }
 
 cmd_set_discord_token() {
-  local id="${1:?Usage: $0 set-discord-token agent-{letter}}"
+  local id="${1:?Usage: $0 set-discord-token agent-a}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -157,7 +157,7 @@ cmd_set_discord_token() {
 }
 
 cmd_set_instagram() {
-  local id="${1:?Usage: $0 set-instagram agent-{letter}}"
+  local id="${1:?Usage: $0 set-instagram agent-a}"
   local dir username password
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -170,7 +170,7 @@ cmd_set_instagram() {
 }
 
 cmd_set_twitter() {
-  local id="${1:?Usage: $0 set-twitter agent-{letter} [username]}"
+  local id="${1:?Usage: $0 set-twitter agent-a [username]}"
   local dir username password
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -190,7 +190,7 @@ cmd_set_twitter() {
 }
 
 cmd_set_twitter_cookies() {
-  local id="${1:?Usage: $0 set-twitter-cookies agent-{letter}}"
+  local id="${1:?Usage: $0 set-twitter-cookies agent-a}"
   local dir auth_token ct0
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -290,7 +290,7 @@ cmd_start() {
         start_one "$id"
       done
       ;;
-    *) echo "Usage: $0 start [agent-{letter}|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 start [agent-a|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -312,7 +312,7 @@ cmd_stop() {
         stop_one "$id"
       done
       ;;
-    *) echo "Usage: $0 stop [agent-{letter}|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 stop [agent-a|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -329,7 +329,7 @@ cmd_restart() {
           start_pod_agent "$id" restart
         done
         ;;
-      *) echo "Usage: $0 restart [agent-{letter}|all]" >&2; exit 1 ;;
+      *) echo "Usage: $0 restart [agent-a|all]" >&2; exit 1 ;;
     esac
     return 0
   fi
@@ -407,7 +407,7 @@ cmd_status() {
 }
 
 cmd_logs() {
-  local id="${1:?Usage: $0 logs agent-{letter}}"
+  local id="${1:?Usage: $0 logs agent-a}"
   podman logs -f "$(agent_container "$id")"
 }
 
@@ -594,7 +594,7 @@ cmd_test_a2a_auth() {
 }
 
 cmd_webhook_url() {
-  local id="${1:?Usage: $0 webhook-url agent-{letter} [hooks/wake|hooks/agent|hooks/name]}"
+  local id="${1:?Usage: $0 webhook-url agent-a [hooks/wake|hooks/agent|hooks/name]}"
   local path="${2:-hooks/wake}"
   agent_webhook_url "$id" "$path"
 }
@@ -900,7 +900,7 @@ cmd_test() {
 }
 
 cmd_token() {
-  local id="${1:?Usage: $0 token agent-{letter}}"
+  local id="${1:?Usage: $0 token agent-a}"
   agent_gateway_token "$id"
 }
 
@@ -929,7 +929,7 @@ EOF
 }
 
 cmd_chat() {
-  local id="${1:?Usage: $0 chat agent-{letter}}"
+  local id="${1:?Usage: $0 chat agent-a}"
   shift
   require_podman
   require_agent_running "$id"
@@ -957,8 +957,8 @@ cmd_chat() {
 }
 
 cmd_ask() {
-  local id="${1:?Usage: $0 ask agent-{letter} \"message\"}"
-  local message="${2:?Usage: $0 ask agent-{letter} \"message\"}"
+  local id="${1:?Usage: $0 ask agent-a \"message\"}"
+  local message="${2:?Usage: $0 ask agent-a \"message\"}"
   local container tls_env=()
   require_podman
   require_agent_running "$id"
@@ -977,7 +977,7 @@ cmd_ask() {
 }
 
 cmd_set_api_key() {
-  local id="${1:?Usage: $0 set-api-key agent-{letter}}"
+  local id="${1:?Usage: $0 set-api-key agent-a}"
   local dir key
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -999,7 +999,7 @@ cmd_mirror() {
 }
 
 cmd_export_agent() {
-  local id="${1:?Usage: $0 export-agent agent-{letter} [archive.tar.gz] [--with-browser] [--no-stop]}"
+  local id="${1:?Usage: $0 export-agent agent-a [archive.tar.gz] [--with-browser] [--no-stop]}"
   shift || true
   require_rootless_user
   load_env
@@ -1024,15 +1024,15 @@ cmd_export_agent() {
 }
 
 cmd_import_agent() {
-  local id="${1:?Usage: $0 import-agent agent-{letter} archive.tar.gz}"
-  local archive="${2:?Usage: $0 import-agent agent-{letter} archive.tar.gz}"
+  local id="${1:?Usage: $0 import-agent agent-a archive.tar.gz}"
+  local archive="${2:?Usage: $0 import-agent agent-a archive.tar.gz}"
   require_rootless_user
   load_env
   import_agent_bundle "$id" "$archive"
 }
 
 cmd_configure() {
-  local id="${1:?Usage: $0 configure agent-{letter} [openclaw configure flags...]}"
+  local id="${1:?Usage: $0 configure agent-a [openclaw configure flags...]}"
   shift
   require_podman
   local container
@@ -1088,7 +1088,7 @@ cmd_sync_a2a_peers() {
 }
 
 cmd_onboard() {
-  local id="${1:?Usage: $0 onboard agent-{letter}}"
+  local id="${1:?Usage: $0 onboard agent-a}"
   shift
   require_podman
   require_rootless_user
