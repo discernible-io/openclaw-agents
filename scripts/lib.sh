@@ -2252,6 +2252,7 @@ start_pod_agent() {
     ensure_agent_state_for_container_exec "$id"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_session_memory_hook "$dir" "$container"
+    sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_openrouter_sqlite_auth "$id"
     podman restart "$container" >/dev/null
@@ -2262,6 +2263,12 @@ start_pod_agent() {
 
   if podman container exists "$container" 2>/dev/null; then
     prepare_agent_state_for_gateway_start "$id" pod
+    ensure_agent_state_for_container_exec "$id"
+    ensure_openclaw_model_defaults "$dir" "$container"
+    ensure_session_memory_hook "$dir" "$container"
+    sync_quiet_plugin_env "$dir" "$container"
+    sync_agent_plugin_configs "$id" "$dir" || true
+    ensure_openrouter_sqlite_auth "$id"
     podman start "$container"
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Started ${container} (pod container)"
@@ -2559,20 +2566,60 @@ PY
 
 sync_quiet_plugin_env() {
   local config_dir="$1"
+  local container="${2:-}"
   local env_file="$config_dir/.env"
   load_env
-  python3 - "$env_file" "$IDENTYCLAW_NEAR_CONTRACT_ID" <<'PY'
+  local fallback_ms="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-1000}"
+  if [[ -f "$env_file" ]] || [[ ! -d "$config_dir" ]]; then
+    _write_quiet_plugin_env_file "$env_file" "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms"
+  fi
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec -i "$container" python3 - /home/node/.openclaw/.env \
+      "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" <<'PY'
 import os, sys
 from pathlib import Path
 
 env_file = Path(sys.argv[1])
 near_contract_id = sys.argv[2]
+fallback_ms = sys.argv[3]
 desired = {
     "LOG_LEVEL": "error",
     "SUPPRESS_NO_CONFIG_WARNING": "true",
     "SUPPRESS_STRICTNESS_CHECK": "true",
     "NEAR_CONTRACT_ID": near_contract_id,
-    "OPENCLAW_FALLBACK_SKIP_TTL_MS": os.environ.get("OPENCLAW_FALLBACK_SKIP_TTL_MS", "1000"),
+    "OPENCLAW_FALLBACK_SKIP_TTL_MS": fallback_ms,
+}
+lines = []
+if env_file.is_file():
+    with open(env_file, encoding="utf-8") as f:
+        lines = [ln for ln in f if ln.split("=", 1)[0] not in desired]
+for key, value in desired.items():
+    lines.append(f"{key}={value}\n")
+env_file.parent.mkdir(parents=True, exist_ok=True)
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+  fi
+}
+
+_write_quiet_plugin_env_file() {
+  local env_file="$1"
+  local near_contract_id="$2"
+  local fallback_ms="$3"
+  python3 - "$env_file" "$near_contract_id" "$fallback_ms" <<'PY'
+import os, sys
+from pathlib import Path
+
+env_file = Path(sys.argv[1])
+near_contract_id = sys.argv[2]
+fallback_ms = sys.argv[3]
+desired = {
+    "LOG_LEVEL": "error",
+    "SUPPRESS_NO_CONFIG_WARNING": "true",
+    "SUPPRESS_STRICTNESS_CHECK": "true",
+    "NEAR_CONTRACT_ID": near_contract_id,
+    "OPENCLAW_FALLBACK_SKIP_TTL_MS": fallback_ms,
 }
 lines = []
 if env_file.is_file():
@@ -4768,7 +4815,7 @@ ensure_agent_bootstrap() {
     ensure_openrouter_sqlite_auth "$id"
   fi
   write_agent_browser_doc "$config_dir"
-  sync_quiet_plugin_env "$config_dir"
+  sync_quiet_plugin_env "$config_dir" "$container"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     echo "Note: ${id} has no Migadu password yet — run: ./identyclaw.sh set-password ${id}" >&2
   fi
