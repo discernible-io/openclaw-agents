@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
+import { peerRoditToGatewayBase } from "./lib-peer-gateway-url.mjs";
 
 const pluginExtDir = process.argv[2];
 const credPath = process.argv[3];
@@ -48,32 +49,22 @@ const pkgPath = join(pluginExtDir, "package.json");
 const require = createRequire(pathToFileURL(pkgPath));
 const { RoditClient } = require("@rodit/rodit-auth-be");
 
-function parseWebhookBase(raw) {
-  const trimmed = String(raw || "").trim().replace(/\/+$/, "");
-  if (!trimmed) {
-    return "";
+let publicBase;
+try {
+  const client = await RoditClient.create({ role: "client" });
+  const peerRodit = await client
+    .getBlockchainService()
+    .nearorg_rpc_tokenfromroditid(peerTokenId);
+  publicBase = peerRoditToGatewayBase(peerRodit);
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes("no RODiT on chain")) {
+    process.stderr.write(`no RODiT on chain for token_id ${peerTokenId}\n`);
+  } else if (message.includes("no usable metadata.webhook_url")) {
+    process.stderr.write(`${message}\n`);
+  } else {
+    process.stderr.write(`${message}\n`);
   }
-  try {
-    const u = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return trimmed;
-  }
-}
-
-const client = await RoditClient.create({ role: "client" });
-const peerRodit = await client.getBlockchainService().nearorg_rpc_tokenfromroditid(peerTokenId);
-const tokenId = String(peerRodit?.token_id || "").trim().toLowerCase();
-if (!tokenId) {
-  process.stderr.write(`no RODiT on chain for token_id ${peerTokenId}\n`);
-  process.exit(1);
-}
-
-const publicBase = parseWebhookBase(peerRodit?.metadata?.webhook_url);
-if (!publicBase || !/^https?:\/\//i.test(publicBase)) {
-  process.stderr.write(
-    `RODiT ${tokenId} has no usable metadata.webhook_url for A2A ingress\n`,
-  );
   process.exit(1);
 }
 

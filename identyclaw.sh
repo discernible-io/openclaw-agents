@@ -19,6 +19,7 @@
 #   status               Show podman + health URLs
 #   logs <id>            Follow logs
 #   test                 Run gateway test suites (agents from env.local AGENT_IDS / A2A_PEER_AGENTS)
+#   test-peer-gateway    Unit tests: metadata.webhook_url → agent card URL
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
@@ -891,6 +892,11 @@ NODE
   return "$exit_code"
 }
 
+cmd_test_peer_gateway() {
+  echo "==> Peer gateway resolution (unit)"
+  node --test "${IDENTYCLAW_ROOT}/scripts/test-peer-gateway-resolution.mjs"
+}
+
 cmd_test() {
   local local_id peer_token_id failed=0
   load_env
@@ -901,6 +907,8 @@ cmd_test() {
   echo "    A2A_PEER_AGENTS=${A2A_PEER_AGENTS}"
   echo ""
 
+  cmd_test_peer_gateway || failed=1
+  echo ""
   cmd_test_a2a "$local_id" "${peer_token_id:-}" || failed=1
   echo ""
   cmd_test_a2a_auth || failed=1
@@ -1188,6 +1196,7 @@ main() {
     status) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
     test) cmd_test "$@" ;;
+    test-peer-gateway) cmd_test_peer_gateway "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
