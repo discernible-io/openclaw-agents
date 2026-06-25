@@ -460,7 +460,9 @@ migrate_legacy_a2a_extension() {
 agent_config_use_container() {
   local config_dir="$1"
   local container="${2:-}"
-  [[ -w "$config_dir/openclaw.json" ]] && return 1
+  if [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
+    return 1
+  fi
   [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"
 }
 
@@ -477,7 +479,7 @@ agent_openclaw_json_path() {
 agent_openclaw_json_exists() {
   local config_dir="$1"
   local container="${2:-}"
-  [[ -f "$config_dir/openclaw.json" ]] && return 0
+  [[ -r "$config_dir/openclaw.json" ]] && return 0
   if agent_config_use_container "$config_dir" "$container"; then
     podman exec "$container" test -f /home/node/.openclaw/openclaw.json
     return $?
@@ -489,13 +491,14 @@ agent_near_cred_path_for_config_sync() {
   local config_dir="$1"
   local container="${2:-}"
   local cred=""
-  cred="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1)"
-  [[ -n "$cred" ]] && { echo "$cred"; return 0; }
   if agent_config_use_container "$config_dir" "$container"; then
     podman exec "$container" sh -c \
       'find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name "*.json" -type f 2>/dev/null | head -1' \
       2>/dev/null || true
+    return 0
   fi
+  cred="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1)"
+  [[ -n "$cred" ]] && echo "$cred"
 }
 
 # Run python against the bind-mounted openclaw.json (host path or in-container path).
@@ -503,12 +506,10 @@ _agent_openclaw_json_python() {
   local config_dir="$1"
   local container="$2"
   shift 2
-  local config_path
-  config_path="$(agent_openclaw_json_path "$config_dir" "$container")"
-  if [[ -w "$config_dir/openclaw.json" ]]; then
-    python3 - "$config_path" "$@"
+  if [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
+    python3 - "$config_dir/openclaw.json" "$@"
   elif agent_config_use_container "$config_dir" "$container"; then
-    podman exec -i "$container" python3 - "$config_path" "$@"
+    podman exec -i "$container" python3 - /home/node/.openclaw/openclaw.json "$@"
   else
     echo "    (cannot update openclaw.json — not writable and container ${container:-<none>} unavailable)" >&2
     return 1
@@ -2299,6 +2300,17 @@ deploy_agent_ids_from_env() {
 
 # Start or restart a pod-managed agent without host-side bootstrap (avoids openclaw.json EACCES).
 # Second arg: start (idempotent — no-op if running) or restart (bounce gateway if running).
+wait_for_running_agent_container() {
+  local container="$1"
+  local attempt
+  for attempt in $(seq 1 20); do
+    podman ps --format '{{.Names}}' | grep -qx "$container" && return 0
+    sleep 0.25
+  done
+  echo "Timed out waiting for ${container} to start" >&2
+  return 1
+}
+
 start_pod_agent() {
   local id="$1"
   local mode="${2:-restart}"
@@ -2329,12 +2341,15 @@ start_pod_agent() {
   if podman container exists "$container" 2>/dev/null; then
     prepare_agent_state_for_gateway_start "$id" pod
     ensure_agent_state_for_container_exec "$id"
+    # Pod state is container-owned on the host — start first so openclaw.json sync uses podman exec.
+    podman start "$container"
+    wait_for_running_agent_container "$container" || return 1
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_session_memory_hook "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_openrouter_sqlite_auth "$id"
-    podman start "$container"
+    podman restart "$container" >/dev/null
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Started ${container} (pod container)"
     return 0
