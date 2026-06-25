@@ -28,7 +28,6 @@ process.env.SUPPRESS_STRICTNESS_CHECK = "true";
 process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
 process.env.NEAR_CONTRACT_ID =
     process.env.NEAR_CONTRACT_ID || process.env.IDENTYCLAW_NEAR_CONTRACT_ID || "genaaaa-identyclaw-com.near";
-process.env.IDENTYCLAW_BASE_URL = process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
 
 const ocDir = process.env.OPENCLAW_HOME || "/home/node/.openclaw";
 const credDir = join(ocDir, "secrets/near-credentials");
@@ -71,9 +70,10 @@ let loginLabel = "P2P";
 
 if (mode === "--mediated") {
     loginLabel = "Mediated";
-    console.log("==> Mediated login_server → api.identyclaw.com");
+    console.log("==> Mediated login_server → IdentyClaw API (Passport subjectuniqueidentifier_url)");
     const { RoditClient } = require("@rodit/rodit-auth-be");
     const client = await RoditClient.create({ role: "client" });
+    console.log(`    API base: ${client.apiendpoint || "(from passport)"}`);
     const result = await client.login_server();
     if (!result?.jwt_token) {
         console.error("Mediated login FAILED:", result?.error || result);

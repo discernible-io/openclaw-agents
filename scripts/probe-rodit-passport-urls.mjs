@@ -6,10 +6,13 @@
  * Usage: probe-rodit-passport-urls.mjs <plugin-ext-dir> <host-path-to-near-credentials.json>
  * Prints one JSON line: { webhook_url, api_base, owner_id, token_id, host, port }
  */
-import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import {
+  apiBaseFromOwnRoditMeta,
+  applyNearRoditEnv,
+  loadRoditAuthBe,
+  parseNearCreds,
+} from "./lib-rodit-env.mjs";
 
 const pluginExtDir = process.argv[2];
 const credPath = process.argv[3];
@@ -20,29 +23,10 @@ if (!pluginExtDir || !credPath) {
   process.exit(2);
 }
 
-const creds = JSON.parse(readFileSync(credPath, "utf8"));
-const accountId = creds.implicit_account_id || creds.account_id || "";
-const privateKey = creds.private_key || "";
-if (!accountId || !privateKey) {
-  process.exit(1);
-}
+const creds = parseNearCreds(credPath);
+applyNearRoditEnv(creds);
 
-process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
-process.env.NEAR_CREDENTIALS_FILE_PATH = credPath;
-process.env.IDENTYCLAW_ACCOUNT_ID = accountId;
-process.env.IDENTYCLAW_NEAR_PRIVATE_KEY = privateKey;
-process.env.IDENTYCLAW_BASE_URL = process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
-process.env.NEAR_CONTRACT_ID =
-  process.env.NEAR_CONTRACT_ID ||
-  process.env.IDENTYCLAW_NEAR_CONTRACT_ID ||
-  "genaaaa-identyclaw-com.near";
-process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
-process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
-process.env.SUPPRESS_STRICTNESS_CHECK = "true";
-
-const pkgPath = join(pluginExtDir, "package.json");
-const require = createRequire(pathToFileURL(pkgPath));
-const { RoditClient } = require("@rodit/rodit-auth-be");
+const { RoditClient } = loadRoditAuthBe(pluginExtDir);
 
 function parseWebhookBase(raw) {
   const trimmed = String(raw || "").trim().replace(/\/+$/, "");
@@ -64,7 +48,7 @@ const client = await RoditClient.create({ role: "client" });
 const own = await client.getConfigOwnRodit();
 const meta = own?.own_rodit?.metadata ?? {};
 const parsed = parseWebhookBase(meta.webhook_url);
-const apiBase = String(meta.subjectuniqueidentifier_url || "").trim().replace(/\/+$/, "");
+const apiBase = apiBaseFromOwnRoditMeta(meta);
 const ownerId = String(own?.own_rodit?.owner_id || "").trim();
 const tokenId = String(own?.own_rodit?.token_id || "").trim();
 

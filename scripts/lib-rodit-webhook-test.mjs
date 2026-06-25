@@ -210,7 +210,6 @@ function applyNearEnvFromCreds(credsPath, openclawHome = "/home/node/.openclaw")
   process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
   process.env.NEAR_CONTRACT_ID =
     process.env.NEAR_CONTRACT_ID || process.env.IDENTYCLAW_NEAR_CONTRACT_ID || "genaaaa-identyclaw-com.near";
-  process.env.IDENTYCLAW_BASE_URL = process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
   process.env.OPENCLAW_HOME = openclawHome;
 }
 

@@ -6,9 +6,9 @@
  * Usage:
  *   node test-runtime-peer-resolve.mjs --ext-dir <a2a> --creds <near.json> --peer <token_id>
  */
-import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
+import { applyNearRoditEnv, applyRoditApiBaseEnv, parseNearCreds } from "./lib-rodit-env.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -26,28 +26,10 @@ if (!extDir || !credPath || !/^[a-z]{12}$/.test(peerTokenId)) {
   process.exit(2);
 }
 
-const creds = JSON.parse(readFileSync(credPath, "utf8"));
-const accountId = creds.implicit_account_id || creds.account_id || "";
-const privateKey = creds.private_key || "";
-if (!accountId || !privateKey) {
-  process.stderr.write("credentials missing account_id or private_key\n");
-  process.exit(1);
-}
-
-process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
-process.env.NEAR_CREDENTIALS_FILE_PATH = credPath;
-process.env.IDENTYCLAW_ACCOUNT_ID = accountId;
-process.env.IDENTYCLAW_NEAR_PRIVATE_KEY = privateKey;
-process.env.IDENTYCLAW_BASE_URL =
-  process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
-process.env.NEAR_CONTRACT_ID =
-  process.env.NEAR_CONTRACT_ID ||
-  process.env.IDENTYCLAW_NEAR_CONTRACT_ID ||
-  "genaaaa-identyclaw-com.near";
+applyNearRoditEnv(parseNearCreds(credPath));
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "info";
-process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
-process.env.SUPPRESS_STRICTNESS_CHECK = "true";
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+await applyRoditApiBaseEnv({ extDir, credPath });
 
 const { TokenPeerResolver } = await import(
   pathToFileURL(join(extDir, "dist/outbound/token-peer-resolver.js")).href

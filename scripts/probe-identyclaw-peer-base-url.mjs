@@ -8,11 +8,16 @@
  * Usage: probe-identyclaw-peer-base-url.mjs <plugin-ext-dir> <credentials.json> <peer-token-id>
  * Prints one line: https://host:port (gateway base, no path)
  */
-import { createRequire } from "node:module";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { resolvePeerGatewayBase } from "./lib-peer-gateway-url.mjs";
+import {
+  applyNearRoditEnv,
+  loadRoditAuthBe,
+  parseNearCreds,
+  resolveRoditApiBaseUrl,
+} from "./lib-rodit-env.mjs";
 
 const pluginExtDir = process.argv[2];
 const credPath = process.argv[3];
@@ -26,30 +31,12 @@ if (!pluginExtDir || !credPath || !/^[a-z]{12}$/.test(peerTokenId)) {
   process.exit(2);
 }
 
-const creds = JSON.parse(readFileSync(credPath, "utf8"));
-const accountId = creds.implicit_account_id || creds.account_id || "";
-const privateKey = creds.private_key || "";
-if (!accountId || !privateKey) {
-  process.exit(1);
-}
+const creds = parseNearCreds(credPath);
+applyNearRoditEnv(creds);
+const identityApiBaseUrl = await resolveRoditApiBaseUrl({ extDir: pluginExtDir, credPath });
+process.env.IDENTYCLAW_BASE_URL = identityApiBaseUrl;
 
-process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
-process.env.NEAR_CREDENTIALS_FILE_PATH = credPath;
-process.env.IDENTYCLAW_ACCOUNT_ID = accountId;
-process.env.IDENTYCLAW_NEAR_PRIVATE_KEY = privateKey;
-process.env.IDENTYCLAW_BASE_URL =
-  process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
-process.env.NEAR_CONTRACT_ID =
-  process.env.NEAR_CONTRACT_ID ||
-  process.env.IDENTYCLAW_NEAR_CONTRACT_ID ||
-  "genaaaa-identyclaw-com.near";
-process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
-process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
-process.env.SUPPRESS_STRICTNESS_CHECK = "true";
-
-const pkgPath = join(pluginExtDir, "package.json");
-const require = createRequire(pathToFileURL(pkgPath));
-const { RoditClient } = require("@rodit/rodit-auth-be");
+const { RoditClient } = loadRoditAuthBe(pluginExtDir);
 
 let fetchIdentityFull = null;
 const apiClientPath = join(pluginExtDir, "dist/auth/identyclaw-api-client.js");
@@ -58,7 +45,7 @@ if (existsSync(apiClientPath)) {
   fetchIdentityFull = (tokenId) =>
     fetchTokenIdentityFull(tokenId, {
       logLevel: process.env.LOG_LEVEL || "error",
-      identityApiBaseUrl: process.env.IDENTYCLAW_BASE_URL,
+      identityApiBaseUrl,
     });
 }
 

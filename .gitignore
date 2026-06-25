@@ -27,10 +27,8 @@ node_modules/
 *.tsbuildinfo
 .npm/
 .eslintcache
-# Other dist/ trees stay ignored; plugin publish artifact is whitelisted below.
+# Other dist/ trees stay ignored.
 **/dist/
-!openclaw-identyclaw-plugin/dist/
-!openclaw-identyclaw-plugin/dist/**
 # --- Migration / backup archives ---
 *.tgz
 *.tar.gz

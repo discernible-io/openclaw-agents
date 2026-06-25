@@ -712,23 +712,27 @@ cmd_test_webhook() {
   echo ""
   echo "==> /api/testhola webhook delivery (IdentyClaw API → agent webhook_url)"
   echo "    Same pattern as clienttest-idc: valid HOLA triggers signed webhooks to /hooks/wake and /hooks/agent"
+  local api_base_args=() api_base
+  api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
+  [[ -n "$api_base" ]] && api_base_args=(--api-base "$api_base")
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     local container_creds ext_dir
     container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
     [[ -n "$container_creds" ]] || container_creds="$creds"
     ext_dir="$(agent_a2a_ext_dir_container)"
+    podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-env.mjs" "$container:/tmp/lib-rodit-env.mjs" >/dev/null
     podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-testhola.mjs" "$container:/tmp/test-webhooks-testhola.mjs" >/dev/null
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-webhooks-testhola.mjs \
       --ext-dir "$ext_dir" \
       --creds "$container_creds" \
       --agent-base "$(agent_container_ingress_base_url "$id")" \
-      --api-base "${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+      "${api_base_args[@]}"
   elif [[ -n "$creds" ]]; then
     NODE_TLS_REJECT_UNAUTHORIZED=0 node "${IDENTYCLAW_ROOT}/scripts/test-webhooks-testhola.mjs" \
       --ext-dir "$(agent_a2a_ext_dir "$(agent_home "$id")")" \
       --creds "$creds" \
       --agent-base "$(agent_ingress_base_url "$id")" \
-      --api-base "${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+      "${api_base_args[@]}"
   fi
 }
 

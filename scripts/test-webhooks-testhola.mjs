@@ -8,12 +8,18 @@
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near-credentials.json \
  *     --agent-base https://agent-b.dev.identyclaw.com:7443 \
- *     --api-base https://api.identyclaw.com
+ *     [--api-base <url>]  # default: Passport subjectuniqueidentifier_url via RoditClient
  */
 import { createRequire } from "node:module";
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  applyNearRoditEnv,
+  normalizeApiBaseUrl,
+  parseNearCreds,
+  resolveRoditApiBaseUrl,
+} from "./lib-rodit-env.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -23,11 +29,11 @@ function arg(name, fallback = "") {
 const extDir = resolve(arg("--ext-dir", ""));
 let credPath = resolve(arg("--creds", ""));
 const agentBase = (arg("--agent-base", "") || "").replace(/\/$/, "");
-const apiBase = (arg("--api-base", "https://api.identyclaw.com") || "").replace(/\/$/, "");
+const apiBaseArg = arg("--api-base", "");
 
 if (!extDir || !agentBase) {
   console.error(
-    "Usage: node scripts/test-webhooks-testhola.mjs --ext-dir <a2a-plugin> --creds <near.json> --agent-base <url> [--api-base https://api.identyclaw.com]",
+    "Usage: node scripts/test-webhooks-testhola.mjs --ext-dir <a2a-plugin> --creds <near.json> --agent-base <url> [--api-base <url>]",
   );
   process.exit(2);
 }
@@ -38,24 +44,13 @@ if (credPath.includes("*")) {
   credPath = hit ? join(dir, hit) : credPath;
 }
 
-const creds = JSON.parse(readFileSync(credPath, "utf8"));
-const accountId = creds.implicit_account_id || creds.account_id || "";
-const privateKey = creds.private_key || "";
-if (!accountId || !privateKey) {
-  console.error("credentials missing account_id or private_key");
-  process.exit(1);
-}
-
-process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
-process.env.NEAR_CREDENTIALS_FILE_PATH = credPath;
-process.env.IDENTYCLAW_ACCOUNT_ID = accountId;
-process.env.IDENTYCLAW_NEAR_PRIVATE_KEY = privateKey;
+const nearCreds = parseNearCreds(credPath);
+applyNearRoditEnv(nearCreds);
+const { privateKey } = nearCreds;
+const apiBase = apiBaseArg
+  ? normalizeApiBaseUrl(apiBaseArg)
+  : await resolveRoditApiBaseUrl({ extDir, credPath });
 process.env.IDENTYCLAW_BASE_URL = apiBase;
-process.env.NEAR_CONTRACT_ID =
-  process.env.NEAR_CONTRACT_ID || process.env.IDENTYCLAW_NEAR_CONTRACT_ID || "genaaaa-identyclaw-com.near";
-process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
-process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
-process.env.SUPPRESS_STRICTNESS_CHECK = "true";
 
 const pkgPath = join(extDir, "package.json");
 const require = createRequire(pathToFileURL(pkgPath));
@@ -250,7 +245,7 @@ if (!webhookUrlOk) {
 
 if (!wake && testholaBody.valid && webhookUrlOk) {
   console.log("");
-  console.log("Hint: testhola returned valid but no receipts — check ingress reachability from api.identyclaw.com");
+  console.log(`Hint: testhola returned valid but no receipts — check ingress reachability from ${apiBase}`);
 }
 if (!webhookUrlOk) {
   console.log("");

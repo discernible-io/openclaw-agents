@@ -204,7 +204,7 @@ load_env() {
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.2}"
   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.2}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
-  IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}"
+  IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
   # https://clawhub.ai/identyclaw/identyclaw
   IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.1}"
@@ -254,6 +254,37 @@ configured_agent_ids() {
     done
   fi
   echo "${ids:-agent-a}"
+}
+
+# Optional env override; default is Passport metadata.subjectuniqueidentifier_url (RoditClient).
+identyclaw_api_base_url_override() {
+  load_env
+  local base="${IDENTYCLAW_API_BASE_URL:-}"
+  [[ -n "$base" ]] || base="${IDENTYCLAW_BASE_URL:-}"
+  [[ -n "$base" ]] || return 1
+  base="${base%/}"
+  if [[ "$base" != http://* && "$base" != https://* ]]; then
+    base="https://${base}"
+  fi
+  echo "$base"
+}
+
+identyclaw_api_base_url_for_config_dir() {
+  local config_dir="$1" override probed
+  [[ -n "$config_dir" ]] || return 1
+  override="$(identyclaw_api_base_url_override 2>/dev/null || true)"
+  [[ -n "$override" ]] && { echo "$override"; return 0; }
+  probed="$(rodit_passport_json_field "$config_dir" "api_base" 2>/dev/null || true)"
+  [[ -n "$probed" ]] || return 1
+  if [[ "$probed" != http://* && "$probed" != https://* ]]; then
+    probed="https://${probed}"
+  fi
+  echo "${probed%/}"
+}
+
+identyclaw_api_base_url_for_agent() {
+  local id="$1"
+  identyclaw_api_base_url_for_config_dir "$(agent_home "$id")"
 }
 
 # Map deployment slug agent-{letter} → env prefix AGENT_{LETTER} (e.g. agent-d → AGENT_D).
@@ -773,50 +804,6 @@ probe_rodit_own_owner_id_in_container() {
   echo "$probed"
 }
 
-# Legacy: mediated login_server JWT aud (pre–P2P-only plugin). Used by test scripts only.
-probe_rodit_inbound_audience() {
-  local config_dir="$1"
-  local cred_file ext_dir cache cache_key cached_key cached_aud probed cred_stat
-  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
-  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
-  ext_dir="$(agent_a2a_ext_dir "$config_dir")"
-  [[ -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]] || return 1
-
-  load_env
-  sync_quiet_plugin_env "$config_dir"
-
-  cache="$config_dir/.rodit-jwt-audience"
-  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
-  if [[ -n "$cred_stat" && -f "$cache" ]]; then
-    read -r cached_key cached_aud <"$cache" || true
-    if [[ "$cached_key" == "$cred_stat" && -n "$cached_aud" ]]; then
-      echo "$cached_aud"
-      return 0
-    fi
-  fi
-
-  command -v node >/dev/null 2>&1 || return 1
-  probed="$(
-    NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
-      node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-jwt-audience.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
-      || true
-  )"
-  probed="${probed//$'\n'/}"
-  probed="${probed//$'\r'/}"
-  [[ -n "$probed" ]] || return 1
-  if [[ "$probed" == *"{"* ]] || [[ "$probed" == *"}"* ]] || [[ ${#probed} -gt 256 ]]; then
-    return 1
-  fi
-
-  if [[ -n "$cred_stat" ]]; then
-    printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
-    chmod 600 "$cache" 2>/dev/null || true
-  fi
-  echo "    (${config_dir##*/}: inbound JWT audience from login_server aud=${probed:0:16}…)" >&2
-  echo "$probed"
-}
-
 # Own passport owner_id — inbound P2P JWT audience (Phase 9).
 probe_rodit_own_owner_id() {
   local config_dir="$1"
@@ -842,7 +829,6 @@ probe_rodit_own_owner_id() {
   command -v node >/dev/null 2>&1 || return 1
   probed="$(
     NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
       node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-owner-id.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
       || true
   )"
@@ -894,7 +880,6 @@ probe_rodit_own_token_id() {
   command -v node >/dev/null 2>&1 || return 1
   probed="$(
     NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
       node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-token-id.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
       || true
   )"
@@ -924,7 +909,6 @@ probe_rodit_own_token_id_in_container() {
   probed="$(
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
       -e NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      -e IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
       "$container" node /tmp/probe-rodit-own-token-id.mjs "$ext_dir" "$cred" 2>/dev/null || true
   )"
   probed="${probed//$'\n'/}"
@@ -1039,13 +1023,14 @@ probe_identyclaw_peer_public_base_url_in_container() {
   ext_dir="$(a2a_api_probe_ext_dir_container "$container")" || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-gateway-url.mjs" \
     "$container:/tmp/lib-peer-gateway-url.mjs" >/dev/null 2>&1 || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-env.mjs" \
+    "$container:/tmp/lib-rodit-env.mjs" >/dev/null 2>&1 || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
     "$container:/tmp/probe-identyclaw-peer-base-url.mjs" >/dev/null 2>&1 || return 1
   load_env
   probed="$(
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
       -e NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      -e IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
       "$container" \
       node /tmp/probe-identyclaw-peer-base-url.mjs "$ext_dir" "$cred" "$token_id" 2>/dev/null || true
   )"
@@ -1108,7 +1093,6 @@ probe_identyclaw_peer_public_base_url() {
     load_env
     probed="$(
       NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
         node "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
         "$ext_dir" "$cred_file" "$token_id" 2>/dev/null || true
     )"
@@ -1637,7 +1621,6 @@ probe_rodit_passport_urls_json() {
   command -v node >/dev/null 2>&1 || return 1
   probed="$(
     NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      IDENTYCLAW_BASE_URL="${IDENTYCLAW_API_BASE_URL:-https://api.identyclaw.com}" \
       node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-passport-urls.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
       || true
   )"
@@ -2600,16 +2583,21 @@ PY
 sync_identyclaw_env() {
   local config_dir="$1"
   local env_file="$config_dir/.env"
-  local cred_file contract_id
+  local cred_file contract_id api_base
   load_env
   contract_id="${IDENTYCLAW_NEAR_CONTRACT_ID}"
   ensure_near_credentials_in_agent "$config_dir" || return 0
   cred_file="$(resolve_near_credentials_file "$config_dir")" || return 0
-  python3 - "$cred_file" "$env_file" "$contract_id" <<'PY'
+  api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
+  [[ -n "$api_base" ]] || {
+    echo "    (${config_dir##*/}: skip .env sync — no Passport api_base; set IDENTYCLAW_API_BASE_URL to override)" >&2
+    return 0
+  }
+  python3 - "$cred_file" "$env_file" "$contract_id" "$api_base" <<'PY'
 import json, os, sys
 from pathlib import Path
 
-cred_file, env_file, contract_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+cred_file, env_file, contract_id, api_base = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4]
 creds = json.loads(cred_file.read_text(encoding="utf-8"))
 account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
 private_key = creds.get("private_key", "")
@@ -2632,7 +2620,7 @@ if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:
         lines = [ln for ln in f if not ln.startswith(strip_prefixes)]
 
-lines.append("IDENTYCLAW_BASE_URL=https://api.identyclaw.com\n")
+lines.append(f"IDENTYCLAW_BASE_URL={api_base.rstrip('/')}\n")
 lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
 lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
 lines.append(f"NEAR_CONTRACT_ID={contract_id}\n")
@@ -2725,9 +2713,10 @@ write_agent_identyclaw_doc() {
     has_a2a="yes"
     peers="$(a2a_configured_peer_token_ids)"
   fi
-  local own_token_id=""
+  local own_token_id="" api_base=""
   if [[ "$has_a2a" == "yes" ]]; then
     own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+    api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
   fi
   cat >"$config_dir/workspace/IDENTYCLAW.md" <<EOF
 # IdentyClaw identity + A2A peer messaging
@@ -2743,7 +2732,7 @@ This agent uses **two** published integrations. Use the right one for the job:
 
 - **Skill:** \`identyclaw\` — workflows for JWT login, HOLA create/verify, DID resolution, agent discovery. Read \`SKILL.md\` when handling identity.
 - **Plugin:** \`identyclaw-tools\` — typed tools (\`identyclaw_verify_hola\`, \`identyclaw_list_agents\`, …). Passport signing key stays local; never paste keys into chat.
-- **API base:** \`https://api.identyclaw.com\`
+- **API base:** \`${api_base:-Passport subjectuniqueidentifier_url}\` (synced to \`IDENTYCLAW_BASE_URL\` in \`.env\`)
 - **Credentials:** \`secrets/near-credentials/*.json\` → synced to \`.env\` as \`IDENTYCLAW_*\` plus \`RODIT_NEAR_CREDENTIALS_SOURCE=file\` and \`NEAR_CREDENTIALS_FILE_PATH\` for \`@rodit/rodit-auth-be\`.
 
 ### First contact from an unknown agent (HOLA)
@@ -2817,13 +2806,18 @@ ensure_identyclaw_config() {
     cred_path="$(agent_near_cred_path_for_config_sync "$config_dir" "$container")"
     sync_identyclaw_env "$config_dir"
   fi
-  _agent_openclaw_json_python "$config_dir" "$container" "$has_creds" "$cred_path" <<'PY'
+  local api_base=""
+  if [[ "$has_creds" -eq 1 ]]; then
+    api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
+  fi
+  _agent_openclaw_json_python "$config_dir" "$container" "$has_creds" "$cred_path" "$api_base" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 has_creds = sys.argv[2] == "1"
 cred_path = sys.argv[3]
+api_base = sys.argv[4] if len(sys.argv) > 4 else ""
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
@@ -2838,8 +2832,8 @@ if entry.get("enabled") is not True:
     entry["enabled"] = True
     changed = True
 cfg = entry.setdefault("config", {})
-if cfg.get("baseUrl") != "https://api.identyclaw.com":
-    cfg["baseUrl"] = "https://api.identyclaw.com"
+if api_base and cfg.get("baseUrl") != api_base:
+    cfg["baseUrl"] = api_base
     changed = True
 
 if has_creds and cred_path:
@@ -2980,11 +2974,12 @@ ensure_a2a_config() {
 
   a2a_warn_legacy_auth_mode_env "$id"
 
-  local audience display_name public_base_url peers_json dynamic_peers_from_jwt own_token_id
+  local audience display_name public_base_url peers_json dynamic_peers_from_jwt own_token_id api_base
   audience="$(agent_a2a_audience "$id" "$config_dir" "$container")"
   display_name="$(agent_display_name "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
   own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+  api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
   sync_rodit_token_id_env "$config_dir"
   peers_json="$(build_a2a_peer_map "$id")"
   dynamic_peers_from_jwt="0"
@@ -2994,7 +2989,7 @@ ensure_a2a_config() {
 
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$audience" "$display_name" "$public_base_url" "$peers_json" \
-    "$IDENTYCLAW_API_BASE_URL" "$dynamic_peers_from_jwt" "$own_token_id" <<'PY'
+    "$api_base" "$dynamic_peers_from_jwt" "$own_token_id" <<'PY'
 import json, sys
 from pathlib import Path
 

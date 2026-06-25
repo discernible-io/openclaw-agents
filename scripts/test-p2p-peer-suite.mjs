@@ -25,7 +25,6 @@ process.env.SUPPRESS_STRICTNESS_CHECK = "true";
 process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";
 process.env.NEAR_CONTRACT_ID =
     process.env.NEAR_CONTRACT_ID || process.env.IDENTYCLAW_NEAR_CONTRACT_ID || "genaaaa-identyclaw-com.near";
-process.env.IDENTYCLAW_BASE_URL = process.env.IDENTYCLAW_BASE_URL || "https://api.identyclaw.com";
 
 const ocDir = process.env.OPENCLAW_HOME || "/home/node/.openclaw";
 const credDir = join(ocDir, "secrets/near-credentials");
