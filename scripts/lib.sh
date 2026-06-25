@@ -801,6 +801,17 @@ podman_cp_lib_test_report() {
     "$container:/tmp/lib-test-report.mjs" >/dev/null 2>&1 || return 1
 }
 
+# Email HOLA peer probe copies shared libs beside /tmp/test-mail-hola-peer.mjs.
+podman_cp_mail_hola_test_libs() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman_cp_lib_rodit_env "$container" || return 1
+  podman_cp_lib_test_report "$container" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-hola.mjs" "$container:/tmp/lib-hola.mjs" >/dev/null 2>&1 || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-identity.mjs" "$container:/tmp/lib-peer-identity.mjs" >/dev/null 2>&1 || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-himalaya-mail.mjs" "$container:/tmp/lib-himalaya-mail.mjs" >/dev/null 2>&1 || return 1
+}
+
 probe_rodit_own_owner_id_in_container() {
   local container="$1"
   local cred ext_dir probed
@@ -2264,7 +2275,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }

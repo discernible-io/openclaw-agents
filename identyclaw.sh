@@ -21,6 +21,7 @@
 #   test                 Run gateway test suites (agents from env.local AGENT_IDS / A2A_PEER_AGENTS)
 #   test-peer-gateway    Unit tests: metadata.webhook_url → agent card URL
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
+#   test-mail-hola [id]  HOLA over email: API peer contactUri, good/bad HOLA send, inbox poll
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
 #   test-a2a-auth         P2P JWT on /a2a (peer when configured, then local inbound)
@@ -422,6 +423,57 @@ cmd_test_mail() {
   podman exec "$(agent_container "$id")" himalaya --version
   podman exec "$(agent_container "$id")" himalaya folder list
   podman exec "$(agent_container "$id")" himalaya envelope list --folder INBOX
+}
+
+cmd_test_mail_hola() {
+  local id="${1:-}"
+  local peer_token_id container creds ext_dir mailbox email display_name failed=0
+  load_env
+  id="${id:-$(resolve_local_agent_id)}"
+  peer_token_id="$(resolve_peer_token_id "$id" 2>/dev/null || true)"
+  require_podman
+  require_agent_running "$id"
+  [[ -n "$peer_token_id" ]] || {
+    echo "No peer token_id in A2A_PEER_AGENTS (need a peer for email HOLA probe)" >&2
+    return 1
+  }
+  creds="$(agent_near_credentials_in_container "$id")"
+  [[ -n "$creds" ]] || {
+    echo "No NEAR credentials in ${id} container (secrets/near-credentials/*.json)" >&2
+    return 1
+  }
+  mailbox="$(agent_mailbox "$id")"
+  email="${mailbox%%|*}"
+  display_name="${mailbox#*|}"
+  [[ -n "$email" ]] || {
+    echo "No AGENT_*_EMAIL for ${id} in env.local" >&2
+    return 1
+  }
+  container="$(agent_container "$id")"
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_mail_hola_test_libs "$container" || {
+    echo "Failed to copy mail HOLA test libs into ${container}" >&2
+    return 1
+  }
+  podman cp "${IDENTYCLAW_ROOT}/scripts/test-mail-hola-peer.mjs" "$container:/tmp/test-mail-hola-peer.mjs" >/dev/null
+
+  echo "==> Email HOLA peer probe (local=${id} → peer token_id=${peer_token_id})"
+  echo "    from=${email}"
+  local -a hola_args=(
+    --ext-dir "$ext_dir"
+    --creds "$creds"
+    --peer-token-id "$peer_token_id"
+    --from-email "$email"
+    --from-name "$display_name"
+  )
+  local api_base poll_sec
+  api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
+  [[ -n "$api_base" ]] && hola_args+=(--api-base "$api_base")
+  poll_sec="${MAIL_HOLA_POLL_SECONDS:-60}"
+  hola_args+=(--poll-seconds "$poll_sec")
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-mail-hola-peer.mjs \
+    "${hola_args[@]}" || failed=1
+  return "$failed"
 }
 
 cmd_generate_certs() {
@@ -991,6 +1043,16 @@ cmd_test() {
   fi
   echo ""
   cmd_test_mail "$local_id" || failed=1
+  if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
+    echo ""
+    echo "==> Skip test-mail-hola (SKIP_MAIL_HOLA=1)"
+  elif [[ -n "$peer_token_id" ]]; then
+    echo ""
+    cmd_test_mail_hola "$local_id" || failed=1
+  else
+    echo ""
+    echo "==> Skip test-mail-hola (no peer token_id in A2A_PEER_AGENTS)"
+  fi
 
   echo ""
   if [[ $failed -eq 0 ]]; then
@@ -1266,6 +1328,7 @@ main() {
     test) cmd_test "$@" ;;
     test-peer-gateway) cmd_test_peer_gateway "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
+    test-mail-hola) cmd_test_mail_hola "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-a2a-auth) cmd_test_a2a_auth "$@" ;;
