@@ -581,9 +581,13 @@ cmd_test_a2a_auth() {
   creds="$(agent_near_credentials_in_container "$local_id")"
   [[ -n "$creds" ]] || {
     echo "No NEAR credentials in ${local_id} container (secrets/near-credentials/*.json)" >&2
-    exit 1
+    return 1
   }
   ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_lib_rodit_env "$container" || {
+    echo "Failed to copy lib-rodit-env.mjs into ${container}" >&2
+    return 1
+  }
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-a2a-rodit-auth.mjs" "$container:/tmp/test-a2a-rodit-auth.mjs" >/dev/null
 
   if [[ -n "$peer_token_id" ]]; then
@@ -594,7 +598,7 @@ cmd_test_a2a_auth() {
       else
         echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
       fi
-      exit 1
+      return 1
     }
     echo "==> A2A RODiT auth (→ peer token_id=${peer_token_id} at ${target})"
     echo "    P2P login at peer /api/login, then POST /a2a"
@@ -607,7 +611,7 @@ cmd_test_a2a_auth() {
   [[ -n "$target" ]] || target="$(agent_ingress_base_url "$local_id")"
   [[ -n "$target" ]] || {
     echo "No ingress URL for local ${local_id}" >&2
-    exit 1
+    return 1
   }
   echo "==> A2A RODiT auth (→ local ${local_id} at ${target})"
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
@@ -720,7 +724,7 @@ cmd_test_webhook() {
     container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
     [[ -n "$container_creds" ]] || container_creds="$creds"
     ext_dir="$(agent_a2a_ext_dir_container)"
-    podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-env.mjs" "$container:/tmp/lib-rodit-env.mjs" >/dev/null
+    podman_cp_lib_rodit_env "$container" || return 1
     podman cp "${IDENTYCLAW_ROOT}/scripts/test-webhooks-testhola.mjs" "$container:/tmp/test-webhooks-testhola.mjs" >/dev/null
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-webhooks-testhola.mjs \
       --ext-dir "$ext_dir" \
@@ -822,15 +826,12 @@ cmd_test_webhook_p2p() {
   sender_token_id="$(agent_token_id "$sender")"
   [[ -n "$sender_token_id" ]] || {
     echo "Cannot resolve Passport token_id for ${sender} — probe NEAR creds / IDENTITYCLAW.md" >&2
-    exit 1
+    return 1
   }
 
   echo "==> P2P webhook test (outbound + inbound via send_rodit_webhook)"
   echo "    Outbound: ${sender} (${sender_token_id}) delivers → peer token_id=${peer_token_id} records"
   echo "    Inbound:  peer delivers → ${sender} (${sender_token_id}) records"
-
-  local sender_token_id
-  sender_token_id="$(probe_rodit_own_token_id_in_container "$sender_container" 2>/dev/null || true)"
 
   local -a exec_args=(
     node /tmp/test-webhooks-p2p-suite.mjs
@@ -862,7 +863,7 @@ cmd_test_webhook_p2p() {
     receiver_creds="$(agent_near_credentials_in_container "$receiver_deploy_id")"
     [[ -n "$receiver_creds" ]] || {
       echo "FAIL  inbound: peer sent send_rodit_webhook to us — no NEAR creds in ${receiver_deploy_id} container" >&2
-      exit 1
+      return 1
     }
     marker="inbound-${peer_token_id}-to-${sender}-$(date +%s)"
     podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" "$receiver_container:/tmp/send-rodit-webhook.mjs" >/dev/null

@@ -784,6 +784,14 @@ agent_a2a_audience() {
   echo ""
 }
 
+# Probe/test .mjs scripts import ./lib-rodit-env.mjs — copy beside them at /tmp in containers.
+podman_cp_lib_rodit_env() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-env.mjs" \
+    "$container:/tmp/lib-rodit-env.mjs" >/dev/null 2>&1 || return 1
+}
+
 probe_rodit_own_owner_id_in_container() {
   local container="$1"
   local cred ext_dir probed
@@ -792,6 +800,7 @@ probe_rodit_own_owner_id_in_container() {
   cred="$(podman exec "$container" sh -c 'ls /home/node/.openclaw/secrets/near-credentials/*.json 2>/dev/null | head -1' || true)"
   [[ -n "$cred" ]] || return 1
   ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_lib_rodit_env "$container" || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-owner-id.mjs" "$container:/tmp/probe-rodit-own-owner-id.mjs" >/dev/null 2>&1 || return 1
   probed="$(
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
@@ -905,6 +914,7 @@ probe_rodit_own_token_id_in_container() {
   cred="$(podman exec "$container" sh -c 'ls /home/node/.openclaw/secrets/near-credentials/*.json 2>/dev/null | head -1' || true)"
   [[ -n "$cred" ]] || return 1
   ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_lib_rodit_env "$container" || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-token-id.mjs" "$container:/tmp/probe-rodit-own-token-id.mjs" >/dev/null 2>&1 || return 1
   probed="$(
     podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
@@ -1023,8 +1033,7 @@ probe_identyclaw_peer_public_base_url_in_container() {
   ext_dir="$(a2a_api_probe_ext_dir_container "$container")" || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-gateway-url.mjs" \
     "$container:/tmp/lib-peer-gateway-url.mjs" >/dev/null 2>&1 || return 1
-  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-env.mjs" \
-    "$container:/tmp/lib-rodit-env.mjs" >/dev/null 2>&1 || return 1
+  podman_cp_lib_rodit_env "$container" || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/probe-identyclaw-peer-base-url.mjs" \
     "$container:/tmp/probe-identyclaw-peer-base-url.mjs" >/dev/null 2>&1 || return 1
   load_env
