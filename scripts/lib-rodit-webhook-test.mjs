@@ -73,7 +73,7 @@ export async function verifyWebhookReceipt(receiverBase, opts) {
   if (requestId && hit.requestId && hit.requestId !== requestId) {
     return {
       receiptOk: false,
-      receiptDetail: `receipt requestId mismatch (expected ${requestId}, got ${hit.requestId})`,
+      receiptDetail: `receipt requestId mismatch (wanted ${requestId}, got ${hit.requestId})`,
     };
   }
   return {

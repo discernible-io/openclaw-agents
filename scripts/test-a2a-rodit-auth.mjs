@@ -13,6 +13,7 @@ import { readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { applyNearRoditEnv, parseNearCreds } from "./lib-rodit-env.mjs";
+import { reportFinding } from "./lib-test-report.mjs";
 
 function arg(name, fallback = "") {
     const i = process.argv.indexOf(name);
@@ -108,12 +109,9 @@ async function runP2pAuth() {
     if (body) {
         process.stdout.write(`    body: ${body}\n`);
     }
-    if (status === 401 || status === 403) {
-        process.stderr.write(`FAIL: P2P login → A2A rejected (HTTP ${status})\n`);
-        return false;
-    }
-    process.stdout.write(`OK: P2P login → A2A accepted (HTTP ${status})\n`);
-    return true;
+    const matchesContract = status !== 401 && status !== 403;
+    reportFinding("POST /a2a with P2P JWT", matchesContract, `HTTP ${status}`);
+    return matchesContract;
 }
 
 const ok = await runP2pAuth();

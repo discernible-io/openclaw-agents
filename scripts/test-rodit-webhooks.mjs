@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadNearCreds } from "./lib-rodit-webhook-test.mjs";
+import { createTally, reportFinding } from "./lib-test-report.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -65,22 +66,14 @@ async function sendSignedWebhookViaRodit(signerCredsPath, receiverBase, hookPath
     : client.sendWebhookToEndpoint(payload, endpoint, peerReq);
 }
 
-function record(label, ok, detail) {
-  const mark = ok ? "PASS" : "FAIL";
-  console.log(`${mark}  ${label}${detail ? ` — ${detail}` : ""}`);
-  return ok;
+function record(surface, matchesContract, detail) {
+  return reportFinding(surface, matchesContract, detail);
 }
 
 const receiver = loadNearCreds(credsPath);
 const signer = loadNearCreds(signerCredsPath);
 
-let passed = 0;
-let failed = 0;
-
-function tally(ok) {
-  if (ok) passed += 1;
-  else failed += 1;
-}
+const tally = createTally();
 
 async function runForPath(agentPath) {
   const url = `${base}/${agentPath.replace(/^\/+/, "")}`;
@@ -108,9 +101,9 @@ async function runForPath(agentPath) {
   console.log("");
 
   const unsigned = await postWebhook(JSON.stringify({ text: "unsigned-smoke", mode: "now" }));
-  tally(
+  tally.add(
     record(
-      `${labelPrefix}: unsigned POST rejected`,
+      `POST /${labelPrefix} without RODiT signature`,
       unsigned.status === 400 || unsigned.status === 401,
       `HTTP ${unsigned.status}`,
     ),
@@ -121,7 +114,13 @@ async function runForPath(agentPath) {
     "x-timestamp": Date.now().toString(),
     "x-rodit-token-id": signer.accountId,
   });
-  tally(record(`${labelPrefix}: invalid signature rejected`, garbage.status === 401, `HTTP ${garbage.status}`));
+  tally.add(
+    record(
+      `POST /${labelPrefix} with invalid x-signature`,
+      garbage.status === 401,
+      `HTTP ${garbage.status}`,
+    ),
+  );
 
   let sdkOk = false;
   let sdkDetail = "";
@@ -137,7 +136,7 @@ async function runForPath(agentPath) {
   } catch (err) {
     sdkDetail = err instanceof Error ? err.message : String(err);
   }
-  tally(record(`${labelPrefix}: signed POST via rodit-auth-be`, sdkOk, sdkDetail));
+  tally.add(record(`POST /${labelPrefix} with rodit-auth-be signature`, sdkOk, sdkDetail));
   console.log("");
 }
 
@@ -145,5 +144,6 @@ for (const agentPath of paths) {
   await runForPath(agentPath);
 }
 
-console.log(`Results: ${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+const { passed, notPassed } = tally.counts();
+console.log(`Results: ${passed} passed, ${notPassed} not-passed`);
+process.exit(tally.exitCode());

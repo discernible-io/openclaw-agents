@@ -20,6 +20,7 @@ import {
   runInboundWebhookFromPeer,
   runOutboundWebhookToPeer,
 } from "./lib-rodit-webhook-test.mjs";
+import { createTally, reportFinding, reportSkip } from "./lib-test-report.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -50,21 +51,14 @@ if (!localCredsPath || !peerBase || !peerId) {
   process.exit(2);
 }
 
-function record(label, ok, detail = "") {
-  const mark = ok ? "PASS" : "FAIL";
-  const line = detail ? `${mark}  ${label} — ${detail}` : `${mark}  ${label}`;
-  process.stdout.write(`${line}\n`);
-  return ok;
+const tally = createTally();
+
+function record(surface, matchesContract, detail = "") {
+  return reportFinding(surface, matchesContract, detail);
 }
 
-let passed = 0;
-let failed = 0;
-let skipped = 0;
-
-function tally(result) {
-  if (result === "skip") skipped += 1;
-  else if (result) passed += 1;
-  else failed += 1;
+function tallySection(matchesContract) {
+  tally.add(matchesContract);
 }
 
 process.stdout.write("P2P webhook suite (send_rodit_webhook)\n");
@@ -85,28 +79,28 @@ try {
     delaySeconds: 0,
   });
   process.stdout.write(`    POST ${outbound.hookUrl}\n`);
-  let ok = record("outbound: we sent send_rodit_webhook to peer", outbound.deliveredOk, outbound.deliveredDetail);
-  ok = record("outbound: peer recorded our webhook", outbound.peerReceivedOk, outbound.peerReceivedDetail) && ok;
-  tally(ok);
+  let ok = record("send_rodit_webhook to peer", outbound.deliveredOk, outbound.deliveredDetail);
+  ok = record("GET peer /hooks/_receipts", outbound.peerReceivedOk, outbound.peerReceivedDetail) && ok;
+  tallySection(ok);
 } catch (err) {
-  record("outbound: we sent send_rodit_webhook to peer", false, err.message);
-  record("outbound: peer recorded our webhook", false, "skipped after send failure");
-  tally(false);
+  record("send_rodit_webhook to peer", false, err.message);
+  record("GET peer /hooks/_receipts", false, "not run after send error");
+  tallySection(false);
 }
 
 process.stdout.write("\n--- Inbound: we receive webhooks from peer ---\n");
 if (skipInbound) {
-  process.stdout.write("SKIP  inbound section — --skip-inbound\n");
-  tally("skip");
+  reportSkip("inbound P2P webhook section", "--skip-inbound");
+  tally.addSkip();
 } else if (!localBase) {
   const why = "no --local-base (our ingress URL for receipt check)";
-  process.stdout.write(`SKIP  inbound section — ${why}\n`);
   if (requireInbound) {
-    record("inbound: peer sent send_rodit_webhook to us", false, why);
-    record("inbound: we recorded peer webhook", false, "required but not run");
-    tally(false);
+    record("peer send_rodit_webhook to local gateway", false, why);
+    record("GET local /hooks/_receipts", false, "required but not run");
+    tallySection(false);
   } else {
-    tally("skip");
+    reportSkip("inbound P2P webhook section", why);
+    tally.addSkip();
   }
 } else {
   try {
@@ -132,16 +126,16 @@ if (skipInbound) {
             hookPath,
             delaySeconds: 0,
           });
-    process.stdout.write(`    expect POST ${inbound.hookUrl || localBase + "/" + hookPath}\n`);
-    let ok = record("inbound: peer sent send_rodit_webhook to us", inbound.peerDeliveredOk, inbound.peerDeliveredDetail);
-    ok = record("inbound: we recorded peer webhook", inbound.weReceivedOk, inbound.weReceivedDetail) && ok;
-    tally(ok);
+    process.stdout.write(`    probe: POST ${inbound.hookUrl || localBase + "/" + hookPath}\n`);
+    let ok = record("peer send_rodit_webhook to local gateway", inbound.peerDeliveredOk, inbound.peerDeliveredDetail);
+    ok = record("GET local /hooks/_receipts", inbound.weReceivedOk, inbound.weReceivedDetail) && ok;
+    tallySection(ok);
   } catch (err) {
-    record("inbound: peer sent send_rodit_webhook to us", false, err.message);
-    record("inbound: we recorded peer webhook", false, "skipped after send failure");
-    tally(false);
+    record("peer send_rodit_webhook to local gateway", false, err.message);
+    record("GET local /hooks/_receipts", false, "not run after send error");
+    tallySection(false);
   }
 }
 
-process.stdout.write(`\n--- Summary: ${passed} passed, ${failed} failed, ${skipped} skipped ---\n`);
-process.exit(failed > 0 ? 1 : 0);
+tally.printSummary("Summary");
+process.exit(tally.exitCode());

@@ -2,17 +2,41 @@
 /**
  * Unit tests for peer gateway resolution (API metadata.webhook_url + chain fallback).
  *
- * Run: node --test scripts/test-peer-gateway-resolution.mjs
+ * Run: node scripts/test-peer-gateway-resolution.mjs
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   identityFullToAgentCardUrl,
   peerRoditToAgentCardUrl,
   resolvePeerGatewayBase,
 } from "./lib-peer-gateway-url.mjs";
+import { createTally, reportFinding } from "./lib-test-report.mjs";
 
-test("happy path: API /full metadata.webhook_url → agent card URL", () => {
+const tally = createTally();
+
+function runCase(surface, fn) {
+  try {
+    fn();
+    tally.add(reportFinding(surface, true));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tally.add(reportFinding(surface, false, msg));
+  }
+}
+
+async function runCaseAsync(surface, fn) {
+  try {
+    await fn();
+    tally.add(reportFinding(surface, true));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tally.add(reportFinding(surface, false, msg));
+  }
+}
+
+process.stdout.write("Peer gateway resolution (unit)\n\n");
+
+runCase("identityFullToAgentCardUrl from API metadata.webhook_url", () => {
   const cardUrl = identityFullToAgentCardUrl({
     tokenId: "lncqsncdshcj",
     metadata: { webhook_url: "https://peer:7443" },
@@ -20,7 +44,7 @@ test("happy path: API /full metadata.webhook_url → agent card URL", () => {
   assert.equal(cardUrl, "https://peer:7443/.well-known/agent-card.json");
 });
 
-test("happy path: API /full → gateway base (resolvePeerGatewayBase)", async () => {
+await runCaseAsync("resolvePeerGatewayBase from API /full metadata.webhook_url", async () => {
   const { base, source } = await resolvePeerGatewayBase("lncqsncdshcj", {
     fetchIdentityFull: async (tokenId) => ({
       tokenId,
@@ -34,7 +58,7 @@ test("happy path: API /full → gateway base (resolvePeerGatewayBase)", async ()
   assert.equal(source, "api");
 });
 
-test("fallback: API missing webhook_url → on-chain rodit_token", async () => {
+await runCaseAsync("resolvePeerGatewayBase on-chain fallback when API webhook_url missing", async () => {
   const { base, source } = await resolvePeerGatewayBase("lncqsncdshcj", {
     fetchIdentityFull: async (tokenId) => ({
       tokenId,
@@ -49,7 +73,7 @@ test("fallback: API missing webhook_url → on-chain rodit_token", async () => {
   assert.equal(source, "chain");
 });
 
-test("fallback: API error → on-chain rodit_token", async () => {
+await runCaseAsync("resolvePeerGatewayBase on-chain fallback when API errors", async () => {
   const { base, source } = await resolvePeerGatewayBase("bdbfsdcfsnbd", {
     fetchIdentityFull: async () => {
       throw new Error("HTTP 503");
@@ -63,7 +87,7 @@ test("fallback: API error → on-chain rodit_token", async () => {
   assert.equal(source, "chain");
 });
 
-test("happy path: peerRoditToAgentCardUrl from on-chain record", () => {
+runCase("peerRoditToAgentCardUrl from on-chain rodit_token metadata", () => {
   const cardUrl = peerRoditToAgentCardUrl({
     token_id: "lncqsncdshcj",
     metadata: { webhook_url: "https://peer:7443" },
@@ -71,7 +95,7 @@ test("happy path: peerRoditToAgentCardUrl from on-chain record", () => {
   assert.equal(cardUrl, "https://peer:7443/.well-known/agent-card.json");
 });
 
-test("missing webhook_url on API and chain throws clear error", async () => {
+await runCaseAsync("resolvePeerGatewayBase error when webhook_url missing on API and chain", async () => {
   await assert.rejects(
     () =>
       resolvePeerGatewayBase("lncqsncdshcj", {
@@ -91,3 +115,6 @@ test("missing webhook_url on API and chain throws clear error", async () => {
     },
   );
 });
+
+tally.printSummary("Summary");
+process.exit(tally.exitCode());

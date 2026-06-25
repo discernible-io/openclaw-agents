@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyNearRoditEnv, loadRoditAuthBe, parseNearCreds } from "./lib-rodit-env.mjs";
 import { fetchJson, loadNearCreds } from "./lib-rodit-webhook-test.mjs";
+import { createTally, reportFinding, reportSkip } from "./lib-test-report.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -46,22 +47,16 @@ const A2A_BODY = JSON.stringify({
   params: { id: "boundary-smoke-nonexistent" },
 });
 
-let passed = 0;
-let failed = 0;
-let skipped = 0;
+const tally = createTally();
 
-function record(category, name, ok, detail = "") {
-  const mark = ok ? "PASS" : "FAIL";
-  const line = detail ? `${mark}  [${category}] ${name} — ${detail}` : `${mark}  [${category}] ${name}`;
-  process.stdout.write(`${line}\n`);
-  if (ok) passed += 1;
-  else failed += 1;
+function record(category, surface, matchesContract, detail = "") {
+  const scoped = `[${category}] ${surface}`;
+  return reportFinding(scoped, matchesContract, detail);
 }
 
-function recordSkip(category, name, detail = "") {
-  skipped += 1;
-  const line = detail ? `SKIP  [${category}] ${name} — ${detail}` : `SKIP  [${category}] ${name}`;
-  process.stdout.write(`${line}\n`);
+function recordSkip(category, surface, detail = "") {
+  tally.addSkip();
+  reportSkip(`[${category}] ${surface}`, detail);
 }
 
 function decodeJwt(jwt) {
@@ -166,42 +161,47 @@ async function runChannelIsolation() {
     const { status } = await postHook(localBase, "hooks/wake", hookBody, {
       authorization: `Bearer ${jwt}`,
     });
-    record(
+    const ok = record(
       "isolation",
-      "A2A Bearer JWT does not authorize POST /hooks/wake",
+      "POST /hooks/wake with A2A Bearer JWT only",
       status === 400 || status === 401,
       `HTTP ${status}`,
     );
+    tally.add(ok);
   } catch (e) {
-    record("isolation", "A2A Bearer JWT does not authorize POST /hooks/wake", false, e.message);
+    tally.add(record("isolation", "POST /hooks/wake with A2A Bearer JWT only", false, e.message));
   }
 
   try {
     const hookBody = JSON.stringify({ text: "boundary-sig-on-a2a", mode: "now" });
     const sigHeaders = await webhookSignatureHeaders(hookBody, Date.now());
     const { status } = await postA2a(localBase, undefined, sigHeaders);
-    record(
-      "isolation",
-      "RODiT webhook headers do not authorize POST /a2a",
-      status === 401 || status === 403,
-      `HTTP ${status}`,
+    tally.add(
+      record(
+        "isolation",
+        "POST /a2a with RODiT webhook headers only",
+        status === 401 || status === 403,
+        `HTTP ${status}`,
+      ),
     );
   } catch (e) {
-    record("isolation", "RODiT webhook headers do not authorize POST /a2a", false, e.message);
+    tally.add(record("isolation", "POST /a2a with RODiT webhook headers only", false, e.message));
   }
 
   try {
     const jwt = await apiMediatedJwt();
     const claims = decodeJwt(jwt);
     const { status } = await postA2a(localBase, jwt);
-    record(
-      "isolation",
-      "Central API JWT does not authorize POST /a2a",
-      status === 401 || status === 403,
-      `HTTP ${status}, aud=${String(claims.aud || "").slice(0, 16)}…`,
+    tally.add(
+      record(
+        "isolation",
+        "POST /a2a with central API JWT",
+        status === 401 || status === 403,
+        `HTTP ${status}, aud=${String(claims.aud || "").slice(0, 16)}…`,
+      ),
     );
   } catch (e) {
-    record("isolation", "Central API JWT does not authorize POST /a2a", false, e.message);
+    tally.add(record("isolation", "POST /a2a with central API JWT", false, e.message));
   }
 }
 
@@ -212,19 +212,21 @@ async function runP2pBinding() {
     const jwt = await p2pJwt(localBase);
     const tampered = tamperJwt(jwt);
     const { status } = await postA2a(localBase, tampered);
-    record(
-      "p2p",
-      "Tampered P2P JWT rejected on local POST /a2a",
-      status === 401 || status === 403,
-      `HTTP ${status}`,
+    tally.add(
+      record(
+        "p2p",
+        "POST /a2a with tampered P2P JWT",
+        status === 401 || status === 403,
+        `HTTP ${status}`,
+      ),
     );
   } catch (e) {
-    record("p2p", "Tampered P2P JWT rejected on local POST /a2a", false, e.message);
+    tally.add(record("p2p", "POST /a2a with tampered P2P JWT", false, e.message));
   }
 
   if (!peerBase) {
-    recordSkip("p2p", "Peer-issued P2P JWT rejected on local POST /a2a", "no --peer");
-    recordSkip("p2p", "Local-issued P2P JWT rejected on peer POST /a2a", "no --peer");
+    recordSkip("p2p", "POST /a2a with peer-issued P2P JWT on local gateway", "no --peer");
+    recordSkip("p2p", "POST /a2a on peer with local-issued P2P JWT", "no --peer");
     return;
   }
 
@@ -238,19 +240,21 @@ async function runP2pBinding() {
     if (localAud && peerAud && localAud === peerAud) {
       recordSkip(
         "p2p",
-        "Peer-issued P2P JWT rejected on local POST /a2a",
+        "POST /a2a with peer-issued P2P JWT on local gateway",
         "local and peer share same JWT aud — cannot test cross-audience",
       );
     } else {
-      record(
-        "p2p",
-        "Peer-issued P2P JWT rejected on local POST /a2a",
-        status === 401 || status === 403,
-        `HTTP ${status}, aud=${String(peerAud || "").slice(0, 16)}…`,
+      tally.add(
+        record(
+          "p2p",
+          "POST /a2a with peer-issued P2P JWT on local gateway",
+          status === 401 || status === 403,
+          `HTTP ${status}, aud=${String(peerAud || "").slice(0, 16)}…`,
+        ),
       );
     }
   } catch (e) {
-    record("p2p", "Peer-issued P2P JWT rejected on local POST /a2a", false, e.message);
+    tally.add(record("p2p", "POST /a2a with peer-issued P2P JWT on local gateway", false, e.message));
   }
 
   try {
@@ -263,19 +267,21 @@ async function runP2pBinding() {
     if (localAud && peerAud && localAud === peerAud) {
       recordSkip(
         "p2p",
-        "Local-issued P2P JWT rejected on peer POST /a2a",
+        "POST /a2a on peer with local-issued P2P JWT",
         "local and peer share same JWT aud — cannot test cross-audience",
       );
     } else {
-      record(
-        "p2p",
-        "Local-issued P2P JWT rejected on peer POST /a2a",
-        status === 401 || status === 403,
-        `HTTP ${status}, aud=${String(localAud || "").slice(0, 16)}…`,
+      tally.add(
+        record(
+          "p2p",
+          "POST /a2a on peer with local-issued P2P JWT",
+          status === 401 || status === 403,
+          `HTTP ${status}, aud=${String(localAud || "").slice(0, 16)}…`,
+        ),
       );
     }
   } catch (e) {
-    record("p2p", "Local-issued P2P JWT rejected on peer POST /a2a", false, e.message);
+    tally.add(record("p2p", "POST /a2a on peer with local-issued P2P JWT", false, e.message));
   }
 }
 
@@ -287,14 +293,16 @@ async function runWebhookTimestamp() {
     const staleMs = Date.now() - 6 * 60 * 1000;
     const headers = await webhookSignatureHeaders(hookBody, staleMs);
     const { status } = await postHook(localBase, "hooks/wake", hookBody, headers);
-    record(
-      "webhook",
-      "Stale x-timestamp rejected on POST /hooks/wake",
-      status === 400 || status === 401,
-      `HTTP ${status}`,
+    tally.add(
+      record(
+        "webhook",
+        "POST /hooks/wake with stale x-timestamp",
+        status === 400 || status === 401,
+        `HTTP ${status}`,
+      ),
     );
   } catch (e) {
-    record("webhook", "Stale x-timestamp rejected on POST /hooks/wake", false, e.message);
+    tally.add(record("webhook", "POST /hooks/wake with stale x-timestamp", false, e.message));
   }
 }
 
@@ -307,8 +315,8 @@ async function main() {
   await runP2pBinding();
   await runWebhookTimestamp();
 
-  process.stdout.write(`\n--- Summary: ${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ""} ---\n`);
-  process.exit(failed > 0 ? 1 : 0);
+  tally.printSummary("Summary");
+  process.exit(tally.exitCode());
 }
 
 main().catch((e) => {

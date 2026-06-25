@@ -20,6 +20,7 @@ import {
   parseNearCreds,
   resolveRoditApiBaseUrl,
 } from "./lib-rodit-env.mjs";
+import { createTally, reportFinding } from "./lib-test-report.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -129,10 +130,11 @@ async function generateValidHola(client, secretKey) {
   return `${messageForSigning}${signature}/${checksum}`;
 }
 
-function record(label, ok, detail) {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
-  return ok;
+function record(surface, matchesContract, detail) {
+  return reportFinding(surface, matchesContract, detail);
 }
+
+const tally = createTally();
 
 async function sleep(ms) {
   await new Promise((r) => setTimeout(r, ms));
@@ -147,13 +149,6 @@ async function fetchReceipts() {
   if (!res.ok) return [];
   const body = await res.json();
   return Array.isArray(body.receipts) ? body.receipts : [];
-}
-
-let passed = 0;
-let failed = 0;
-function tally(ok) {
-  if (ok) passed += 1;
-  else failed += 1;
 }
 
 console.log(`Webhook testhola flow`);
@@ -193,7 +188,7 @@ const testholaRes = await fetch(`${apiBase}/api/testhola`, {
 });
 const testholaBody = await testholaRes.json().catch(() => ({}));
 
-tally(
+tally.add(
   record(
     "POST /api/testhola",
     testholaRes.status === 200 && testholaBody.valid === true,
@@ -218,25 +213,27 @@ const testholaReceipts = receipts.filter((r) => TESTHOLA_EVENTS.has(r.event || "
 
 const webhookUrlOk = !registeredWebhook || registeredWebhook === expectedWebhook;
 if (!webhookUrlOk) {
-  tally(
+  tally.add(
     record(
-      "Passport webhook_url points at this agent",
+      "Passport metadata.webhook_url",
       false,
-      `registered ${registeredWebhook}`,
+      `registered ${registeredWebhook}, agent ingress ${expectedWebhook}`,
     ),
   );
 } else {
-  tally(record("POST /hooks/wake received testhola webhook", !!wake, wake ? `event=${wake.event}` : "no receipt"));
-  tally(
+  tally.add(
+    record("POST /hooks/wake after testhola", !!wake, wake ? `event=${wake.event}` : "no receipt"),
+  );
+  tally.add(
     record(
-      "POST /hooks/agent received testhola webhook",
+      "POST /hooks/agent after testhola",
       !!agentHook,
       agentHook ? `event=${agentHook.event}` : "no receipt",
     ),
   );
-  tally(
+  tally.add(
     record(
-      "testhola webhook events observed",
+      "GET /hooks/_receipts testhola events",
       testholaReceipts.length > 0,
       `${testholaReceipts.length} receipt(s)${requestId ? ` requestId=${requestId}` : ""}`,
     ),
@@ -253,6 +250,6 @@ if (!webhookUrlOk) {
   console.log(`  ${expectedWebhook}`);
 }
 
-console.log("");
-console.log(`Results: ${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+const { passed, notPassed } = tally.counts();
+console.log(`Results: ${passed} passed, ${notPassed} not-passed`);
+process.exit(tally.exitCode());

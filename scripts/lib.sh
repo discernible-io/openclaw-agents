@@ -793,6 +793,14 @@ podman_cp_lib_rodit_env() {
     "$container:/tmp/lib-rodit-env.mjs" >/dev/null 2>&1 || return 1
 }
 
+# Constitution test reporters import ./lib-test-report.mjs beside /tmp/*.mjs runners.
+podman_cp_lib_test_report() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-test-report.mjs" \
+    "$container:/tmp/lib-test-report.mjs" >/dev/null 2>&1 || return 1
+}
+
 probe_rodit_own_owner_id_in_container() {
   local container="$1"
   local cred ext_dir probed

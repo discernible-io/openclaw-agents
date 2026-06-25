@@ -9,6 +9,7 @@
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { applyNearRoditEnv, applyRoditApiBaseEnv, parseNearCreds } from "./lib-rodit-env.mjs";
+import { createTally, reportFinding } from "./lib-test-report.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(name);
@@ -35,7 +36,9 @@ const { TokenPeerResolver } = await import(
   pathToFileURL(join(extDir, "dist/outbound/token-peer-resolver.js")).href
 );
 
+const tally = createTally();
 let resolveSource = "unknown";
+
 const resolver = new TokenPeerResolver({
   stateDir: "/home/node/.openclaw",
   persist: true,
@@ -51,20 +54,34 @@ const resolver = new TokenPeerResolver({
   onWarn: (msg) => process.stderr.write(`WARN: ${msg}\n`),
 });
 
+process.stdout.write(`Runtime peer resolution smoke\n  peer token_id: ${peerTokenId}\n\n`);
+
 const cardUrl = await resolver.resolveAgentCardUrl(peerTokenId);
 if (!cardUrl) {
-  process.stderr.write(`FAIL: resolveAgentCardUrl returned null for ${peerTokenId}\n`);
-  process.exit(1);
+  tally.add(reportFinding(`TokenPeerResolver.resolveAgentCardUrl(${peerTokenId})`, false, "returned null"));
+} else {
+  tally.add(
+    reportFinding(
+      `TokenPeerResolver.resolveAgentCardUrl(${peerTokenId})`,
+      true,
+      `source=${resolveSource}, cardUrl=${cardUrl}`,
+    ),
+  );
+
+  const cardRes = await fetch(cardUrl);
+  if (!cardRes.ok) {
+    tally.add(reportFinding(`GET ${cardUrl}`, false, `HTTP ${cardRes.status}`));
+  } else {
+    const card = await cardRes.json();
+    tally.add(
+      reportFinding(
+        `GET ${cardUrl}`,
+        true,
+        `agentCard.name=${card?.name ?? "(none)"}`,
+      ),
+    );
+  }
 }
 
-process.stdout.write(`OK: resolved ${peerTokenId}\n`);
-process.stdout.write(`  source=${resolveSource}\n`);
-process.stdout.write(`  cardUrl=${cardUrl}\n`);
-
-const cardRes = await fetch(cardUrl);
-if (!cardRes.ok) {
-  process.stderr.write(`FAIL: Agent Card fetch HTTP ${cardRes.status}\n`);
-  process.exit(1);
-}
-const card = await cardRes.json();
-process.stdout.write(`  agentCard.name=${card?.name ?? "(none)"}\n`);
+tally.printSummary("Summary");
+process.exit(tally.exitCode());
