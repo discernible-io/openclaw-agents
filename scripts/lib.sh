@@ -161,7 +161,7 @@ load_env() {
         value="${value:1:${#value}-2}"
       fi
       case "$key" in
-        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|DEPLOY_*) printf -v "$key" '%s' "$value" ;;
+        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|DEPLOY_*|NEAR_RPC_*) printf -v "$key" '%s' "$value" ;;
       esac
     done <"$f"
   fi
@@ -206,6 +206,7 @@ load_env() {
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
+  NEAR_RPC_URL="${IDENTYCLAW_NEAR_RPC_URL:-${NEAR_RPC_URL:-}}"
   # https://clawhub.ai/identyclaw/identyclaw
   IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.1}"
   IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
@@ -2592,9 +2593,10 @@ PY
 sync_identyclaw_env() {
   local config_dir="$1"
   local env_file="$config_dir/.env"
-  local cred_file contract_id api_base
+  local cred_file contract_id api_base near_rpc_url
   load_env
   contract_id="${IDENTYCLAW_NEAR_CONTRACT_ID}"
+  near_rpc_url="${NEAR_RPC_URL:-}"
   ensure_near_credentials_in_agent "$config_dir" || return 0
   cred_file="$(resolve_near_credentials_file "$config_dir")" || return 0
   api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
@@ -2602,11 +2604,13 @@ sync_identyclaw_env() {
     echo "    (${config_dir##*/}: skip .env sync — no Passport api_base; set IDENTYCLAW_API_BASE_URL to override)" >&2
     return 0
   }
-  python3 - "$cred_file" "$env_file" "$contract_id" "$api_base" <<'PY'
+  python3 - "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" <<'PY'
 import json, os, sys
 from pathlib import Path
 
-cred_file, env_file, contract_id, api_base = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+cred_file, env_file, contract_id, api_base, near_rpc_url = (
+    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+)
 creds = json.loads(cred_file.read_text(encoding="utf-8"))
 account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
 private_key = creds.get("private_key", "")
@@ -2620,6 +2624,7 @@ strip_prefixes = (
     "IDENTYCLAW_NEAR_PRIVATE_KEY=",
     "IDENTYCLAW_BASE_URL=",
     "NEAR_CONTRACT_ID=",
+    "NEAR_RPC_URL=",
     "RODIT_NEAR_CREDENTIALS_SOURCE=",
     "NEAR_CREDENTIALS_FILE_PATH=",
     "NEAR_CREDENTIALS_JSON_B64=",
@@ -2633,6 +2638,8 @@ lines.append(f"IDENTYCLAW_BASE_URL={api_base.rstrip('/')}\n")
 lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
 lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
 lines.append(f"NEAR_CONTRACT_ID={contract_id}\n")
+if near_rpc_url:
+    lines.append(f"NEAR_RPC_URL={near_rpc_url}\n")
 lines.append("RODIT_NEAR_CREDENTIALS_SOURCE=file\n")
 lines.append(f"NEAR_CREDENTIALS_FILE_PATH={container_cred_path}\n")
 with open(env_file, "w", encoding="utf-8") as f:
@@ -2647,18 +2654,20 @@ sync_quiet_plugin_env() {
   local env_file="$config_dir/.env"
   load_env
   local fallback_ms="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-1000}"
+  local near_rpc_url="${NEAR_RPC_URL:-}"
   if [[ -f "$env_file" ]] || [[ ! -d "$config_dir" ]]; then
-    _write_quiet_plugin_env_file "$env_file" "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms"
+    _write_quiet_plugin_env_file "$env_file" "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url"
   fi
   if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
     podman exec -i "$container" python3 - /home/node/.openclaw/.env \
-      "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" <<'PY'
+      "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url" <<'PY'
 import os, sys
 from pathlib import Path
 
 env_file = Path(sys.argv[1])
 near_contract_id = sys.argv[2]
 fallback_ms = sys.argv[3]
+near_rpc_url = sys.argv[4]
 desired = {
     "LOG_LEVEL": "error",
     "SUPPRESS_NO_CONFIG_WARNING": "true",
@@ -2666,6 +2675,8 @@ desired = {
     "NEAR_CONTRACT_ID": near_contract_id,
     "OPENCLAW_FALLBACK_SKIP_TTL_MS": fallback_ms,
 }
+if near_rpc_url:
+    desired["NEAR_RPC_URL"] = near_rpc_url
 lines = []
 if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:
@@ -2684,13 +2695,15 @@ _write_quiet_plugin_env_file() {
   local env_file="$1"
   local near_contract_id="$2"
   local fallback_ms="$3"
-  python3 - "$env_file" "$near_contract_id" "$fallback_ms" <<'PY'
+  local near_rpc_url="${4:-}"
+  python3 - "$env_file" "$near_contract_id" "$fallback_ms" "$near_rpc_url" <<'PY'
 import os, sys
 from pathlib import Path
 
 env_file = Path(sys.argv[1])
 near_contract_id = sys.argv[2]
 fallback_ms = sys.argv[3]
+near_rpc_url = sys.argv[4]
 desired = {
     "LOG_LEVEL": "error",
     "SUPPRESS_NO_CONFIG_WARNING": "true",
@@ -2698,6 +2711,8 @@ desired = {
     "NEAR_CONTRACT_ID": near_contract_id,
     "OPENCLAW_FALLBACK_SKIP_TTL_MS": fallback_ms,
 }
+if near_rpc_url:
+    desired["NEAR_RPC_URL"] = near_rpc_url
 lines = []
 if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:

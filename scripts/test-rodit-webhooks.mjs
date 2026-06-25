@@ -5,11 +5,11 @@
  * Usage:
  *   node scripts/test-rodit-webhooks.mjs \
  *     --creds /path/to/near-credentials.json \
- *     --target https://agent-b.dev.identyclaw.com:7443/hooks/wake \
- *     [--signer-creds /other/agent/creds.json]
+ *     --target https://agent-b.dev.identyclaw.com:7443 \
+ *     [--path hooks/wake|hooks/agent|hooks/wake,hooks/agent]
  */
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadNearCreds } from "./lib-rodit-webhook-test.mjs";
 
@@ -22,17 +22,19 @@ const extDir = resolve(arg("--ext-dir", ""));
 const credsPath = arg("--creds");
 const signerCredsPath = arg("--signer-creds", credsPath);
 const target = arg("--target");
-const agentPath = arg("--path", "hooks/wake");
+const paths = (arg("--path", "hooks/wake,hooks/agent") || "hooks/wake")
+  .split(",")
+  .map((p) => p.trim())
+  .filter(Boolean);
 
 if (!credsPath || !target || !extDir) {
   console.error(
-    "Usage: node scripts/test-rodit-webhooks.mjs --ext-dir <a2a-plugin> --creds <near-creds.json> --target <base-url> [--path hooks/wake|hooks/agent] [--signer-creds <json>]",
+    "Usage: node scripts/test-rodit-webhooks.mjs --ext-dir <a2a-plugin> --creds <near-creds.json> --target <base-url> [--path hooks/wake|hooks/agent|hooks/wake,hooks/agent] [--signer-creds <json>]",
   );
   process.exit(2);
 }
 
 const base = target.replace(/\/+$/, "");
-const url = `${base}/${agentPath.replace(/^\/+/, "")}`;
 
 function applyRoditEmbedEnv() {
   if (!process.env.LOG_LEVEL) process.env.LOG_LEVEL = "error";
@@ -63,22 +65,6 @@ async function sendSignedWebhookViaRodit(signerCredsPath, receiverBase, hookPath
     : client.sendWebhookToEndpoint(payload, endpoint, peerReq);
 }
 
-async function postWebhook(body, headers = {}) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body,
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = { raw: text };
-  }
-  return { status: res.status, json };
-}
-
 function record(label, ok, detail) {
   const mark = ok ? "PASS" : "FAIL";
   console.log(`${mark}  ${label}${detail ? ` — ${detail}` : ""}`);
@@ -96,37 +82,68 @@ function tally(ok) {
   else failed += 1;
 }
 
-console.log(`RODiT webhook tests → POST ${url}`);
-console.log(`  signer token_id: ${signer.accountId.slice(0, 8)}…`);
-console.log(`  receiver creds:  ${receiver.accountId.slice(0, 8)}…`);
-console.log("");
+async function runForPath(agentPath) {
+  const url = `${base}/${agentPath.replace(/^\/+/, "")}`;
+  const labelPrefix = agentPath.replace(/^\/+/, "");
 
-const unsigned = await postWebhook(JSON.stringify({ text: "unsigned-smoke", mode: "now" }));
-tally(record("unsigned POST rejected", unsigned.status === 400 || unsigned.status === 401, `HTTP ${unsigned.status}`));
+  async function postWebhook(body, headers = {}) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body,
+    });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = { raw: text };
+    }
+    return { status: res.status, json };
+  }
 
-const garbage = await postWebhook(JSON.stringify({ text: "garbage-sig", mode: "now" }), {
-  "x-signature": "deadbeef",
-  "x-timestamp": Date.now().toString(),
-  "x-rodit-token-id": signer.accountId,
-});
-tally(record("invalid signature rejected", garbage.status === 401, `HTTP ${garbage.status}`));
+  console.log(`RODiT webhook tests → POST ${url}`);
+  console.log(`  signer token_id: ${signer.accountId.slice(0, 8)}…`);
+  console.log(`  receiver creds:  ${receiver.accountId.slice(0, 8)}…`);
+  console.log("");
 
-let sdkOk = false;
-let sdkDetail = "";
-try {
-  const sdkResult = await sendSignedWebhookViaRodit(
-    signerCredsPath,
-    base,
-    agentPath,
-    "identyclaw rodit webhook smoke",
+  const unsigned = await postWebhook(JSON.stringify({ text: "unsigned-smoke", mode: "now" }));
+  tally(
+    record(
+      `${labelPrefix}: unsigned POST rejected`,
+      unsigned.status === 400 || unsigned.status === 401,
+      `HTTP ${unsigned.status}`,
+    ),
   );
-  sdkOk = sdkResult?.isValid === true;
-  sdkDetail = sdkOk ? `requestId=${sdkResult.requestId || "?"}` : JSON.stringify(sdkResult?.error || sdkResult);
-} catch (err) {
-  sdkDetail = err instanceof Error ? err.message : String(err);
-}
-tally(record("signed POST via rodit-auth-be", sdkOk, sdkDetail));
 
-console.log("");
+  const garbage = await postWebhook(JSON.stringify({ text: "garbage-sig", mode: "now" }), {
+    "x-signature": "deadbeef",
+    "x-timestamp": Date.now().toString(),
+    "x-rodit-token-id": signer.accountId,
+  });
+  tally(record(`${labelPrefix}: invalid signature rejected`, garbage.status === 401, `HTTP ${garbage.status}`));
+
+  let sdkOk = false;
+  let sdkDetail = "";
+  try {
+    const sdkResult = await sendSignedWebhookViaRodit(
+      signerCredsPath,
+      base,
+      agentPath,
+      `identyclaw rodit webhook smoke ${labelPrefix}`,
+    );
+    sdkOk = sdkResult?.isValid === true;
+    sdkDetail = sdkOk ? `requestId=${sdkResult.requestId || "?"}` : JSON.stringify(sdkResult?.error || sdkResult);
+  } catch (err) {
+    sdkDetail = err instanceof Error ? err.message : String(err);
+  }
+  tally(record(`${labelPrefix}: signed POST via rodit-auth-be`, sdkOk, sdkDetail));
+  console.log("");
+}
+
+for (const agentPath of paths) {
+  await runForPath(agentPath);
+}
+
 console.log(`Results: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

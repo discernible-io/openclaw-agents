@@ -24,6 +24,7 @@
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
 #   test-a2a-auth         P2P JWT on /a2a (peer when configured, then local inbound)
+#   test-auth-boundaries  Channel isolation + mutual P2P JWT binding (local + optional peer)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Skips /api/testhola by default (SKIP_TESTHOLA=1); needs valid HOLA when enabled
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
@@ -620,6 +621,56 @@ cmd_test_a2a_auth() {
   return "$failed"
 }
 
+cmd_test_auth_boundaries() {
+  local local_id peer_token_id target peer_target container creds ext_dir failed=0
+  require_podman
+  load_env
+  local_id="$(resolve_local_agent_id)"
+  peer_token_id="$(resolve_peer_token_id "$local_id" 2>/dev/null || true)"
+  require_agent_running "$local_id"
+
+  container="$(agent_container "$local_id")"
+  creds="$(agent_near_credentials_in_container "$local_id")"
+  [[ -n "$creds" ]] || {
+    echo "No NEAR credentials in ${local_id} container (secrets/near-credentials/*.json)" >&2
+    return 1
+  }
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_lib_rodit_env "$container" || {
+    echo "Failed to copy lib-rodit-env.mjs into ${container}" >&2
+    return 1
+  }
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
+  podman cp "${IDENTYCLAW_ROOT}/scripts/test-inter-agent-auth-boundaries.mjs" \
+    "$container:/tmp/test-inter-agent-auth-boundaries.mjs" >/dev/null
+
+  target="$(agent_a2a_public_base_url "$local_id")"
+  [[ -n "$target" ]] || target="$(agent_ingress_base_url "$local_id")"
+  [[ -n "$target" ]] || {
+    echo "No ingress URL for local ${local_id}" >&2
+    return 1
+  }
+
+  peer_target=""
+  if [[ -n "$peer_token_id" ]]; then
+    peer_target="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$local_id")")"
+  fi
+
+  echo "==> Inter-agent auth boundaries (channel isolation + mutual P2P binding)"
+  echo "    local=${target}${peer_target:+, peer=${peer_target}}"
+  local -a boundary_args=(
+    --ext-dir "$ext_dir"
+    --creds "$creds"
+    --local "$target"
+  )
+  if [[ -n "$peer_target" ]]; then
+    boundary_args+=(--peer "$peer_target")
+  fi
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-inter-agent-auth-boundaries.mjs \
+    "${boundary_args[@]}" || failed=1
+  return "$failed"
+}
+
 cmd_webhook_url() {
   local id="${1:?Usage: $0 webhook-url agent-a [hooks/wake|hooks/agent|hooks/name]}"
   local path="${2:-hooks/wake}"
@@ -672,7 +723,7 @@ cmd_test_webhook() {
       --ext-dir "$ext_dir" \
       --creds "$container_creds" \
       --target "$(agent_container_ingress_base_url "$id")" \
-      --path hooks/wake
+      --path hooks/wake,hooks/agent
   fi
 
   local peer_token_id="" p
@@ -917,6 +968,8 @@ cmd_test() {
   cmd_test_a2a "$local_id" "${peer_token_id:-}" || failed=1
   echo ""
   cmd_test_a2a_auth || failed=1
+  echo ""
+  cmd_test_auth_boundaries || failed=1
   echo ""
   cmd_test_webhook "$local_id" || failed=1
   if [[ -n "$peer_token_id" ]]; then
@@ -1206,6 +1259,7 @@ main() {
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-a2a-auth) cmd_test_a2a_auth "$@" ;;
+    test-auth-boundaries) cmd_test_auth_boundaries "$@" ;;
     test-webhook) cmd_test_webhook "$@" ;;
     test-webhook-p2p) cmd_test_webhook_p2p "$@" ;;
     send-rodit-webhook) cmd_send_rodit_webhook "$@" ;;
