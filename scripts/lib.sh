@@ -65,7 +65,7 @@ deploy_tier_app_port() {
 deploy_tier_health_domain() {
   local id host
   load_env
-  for id in $AGENT_IDS; do
+  for id in $(configured_agent_ids); do
     host="$(agent_public_host "$id")"
     [[ -n "$host" ]] && { printf '%s' "$host"; return 0; }
   done
@@ -80,7 +80,7 @@ deploy_tier_health_domain() {
 deploy_health_ingress() {
   local id host port
   load_env
-  for id in ${AGENT_IDS:-agent-a}; do
+  for id in $(configured_agent_ids); do
     host="$(agent_public_host "$id")"
     port="$(agent_ingress_port "$id")"
     if [[ -n "$host" && -n "$port" ]]; then
@@ -122,7 +122,7 @@ ensure_tls_certs() {
   cert_dir="$(identyclaw_app_dir)/certs"
   extra_sans=""
   local h id
-  for id in ${AGENT_IDS:-agent-a}; do
+  for id in $(configured_agent_ids); do
     h="$(agent_public_host "$id")"
     [[ -n "$h" ]] || continue
     [[ -n "$extra_sans" ]] && extra_sans+=","
@@ -135,7 +135,7 @@ ensure_tls_certs() {
     --force|1|true) args+=(--force) ;;
   esac
   local tls_cn="${AGENT_A_PUBLIC_HOST}"
-  for id in ${AGENT_IDS:-}; do
+  for id in $(configured_agent_ids); do
     h="$(agent_public_host "$id")"
     [[ -n "$h" ]] && { tls_cn="$h"; break; }
   done
@@ -221,7 +221,39 @@ load_env() {
   AGENT_F_PUBLIC_HOST="${AGENT_F_PUBLIC_HOST:-agent-f.identyclaw.com}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
-  AGENT_IDS="${AGENT_IDS:-agent-a agent-b}"
+  AGENT_IDS="${AGENT_IDS:-}"
+}
+
+# Local deployment slugs from env.local AGENT_IDS, or agent-* dirs under the app agents root.
+configured_agent_ids() {
+  local id ids="" app_agents
+  load_env
+  for id in $AGENT_IDS; do
+    is_valid_agent_id "$id" || continue
+    if [[ -z "$ids" ]]; then
+      ids="$id"
+    else
+      ids="$ids $id"
+    fi
+  done
+  if [[ -n "$ids" ]]; then
+    echo "$ids"
+    return 0
+  fi
+  app_agents="$(identyclaw_app_dir)/agents"
+  if [[ -d "$app_agents" ]]; then
+    for id in "$app_agents"/agent-?; do
+      [[ -d "$id" ]] || continue
+      id="$(basename "$id")"
+      is_valid_agent_id "$id" || continue
+      if [[ -z "$ids" ]]; then
+        ids="$id"
+      else
+        ids="$ids $id"
+      fi
+    done
+  fi
+  echo "${ids:-agent-a}"
 }
 
 # Map deployment slug agent-{letter} → env prefix AGENT_{LETTER} (e.g. agent-d → AGENT_D).
@@ -605,8 +637,7 @@ agent_container() {
 # True when id is listed in AGENT_IDS (runs on this host).
 agent_is_local() {
   local id="$1" local_id
-  load_env
-  for local_id in $AGENT_IDS; do
+  for local_id in $(configured_agent_ids); do
     [[ "$local_id" == "$id" ]] && return 0
   done
   return 1
@@ -621,8 +652,7 @@ agent_container_running() {
 # First agent in AGENT_IDS — local origin/destination for constitution suites.
 resolve_local_agent_id() {
   local id
-  load_env
-  for id in $AGENT_IDS; do
+  for id in $(configured_agent_ids); do
     [[ -n "$id" ]] && { echo "$id"; return 0; }
   done
   echo "agent-a"
@@ -739,25 +769,6 @@ probe_rodit_own_owner_id_in_container() {
   probed="${probed//$'\r'/}"
   [[ -n "$probed" && ${#probed} -le 256 && "$probed" != *"{"* ]] || return 1
   echo "    (${container}: P2P inbound audience from own_rodit.owner_id=${probed:0:16}…)" >&2
-  echo "$probed"
-}
-
-probe_rodit_own_token_id_in_container() {
-  local container="$1"
-  local cred ext_dir probed
-  [[ -n "$container" ]] || return 1
-  podman ps --format '{{.Names}}' | grep -qx "$container" || return 1
-  cred="$(podman exec "$container" sh -c 'ls /home/node/.openclaw/secrets/near-credentials/*.json 2>/dev/null | head -1' || true)"
-  [[ -n "$cred" ]] || return 1
-  ext_dir="$(agent_a2a_ext_dir_container)"
-  podman cp "${IDENTYCLAW_ROOT}/scripts/probe-rodit-own-token-id.mjs" "$container:/tmp/probe-rodit-own-token-id.mjs" >/dev/null 2>&1 || return 1
-  probed="$(
-    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
-      node /tmp/probe-rodit-own-token-id.mjs "$ext_dir" "$cred" 2>/dev/null || true
-  )"
-  probed="${probed//$'\n'/}"
-  probed="${probed//$'\r'/}"
-  is_passport_token_id "$probed" || return 1
   echo "$probed"
 }
 
@@ -938,7 +949,7 @@ find_deploy_id_for_token_id() {
   [[ -n "$token_id" ]] || return 1
   is_passport_token_id "$token_id" || return 1
   load_env
-  for id in $AGENT_IDS; do
+  for id in $(configured_agent_ids); do
     [[ "$id" == agent-* ]] || continue
     config_dir="$(agent_home "$id")"
     agent_has_near_credentials "$config_dir" || continue
@@ -963,7 +974,7 @@ find_deploy_id_for_config_dir() {
   local config_dir="$1" id
   [[ -n "$config_dir" ]] || return 1
   load_env
-  for id in $AGENT_IDS; do
+  for id in $(configured_agent_ids); do
     [[ "$id" == agent-* ]] || continue
     [[ "$(agent_home "$id")" == "$config_dir" ]] && { echo "$id"; return 0; }
   done
@@ -1131,7 +1142,42 @@ except Exception:
 PY
 }
 
-# Public HTTPS base for a peer token_id (env map → local deploy → registry → API /full → chain webhook_url).
+# Peer ingress from AGENT_{letter}_* when that letter is not in AGENT_IDS (split-host layout:
+# e.g. Juanelo runs agent-a,d,f and uses AGENT_B_* for remote peer Archimedes).
+a2a_peer_public_base_from_env_slot() {
+  local token_id="$1"
+  local peer_ref="" p letter id url host port
+  load_env
+  [[ -n "$token_id" ]] || return 1
+  peer_ref="${IDENTYCLAW_PEER_TOKEN_ID:-}"
+  if [[ -z "$peer_ref" ]]; then
+    for p in $A2A_PEER_AGENTS; do
+      is_passport_token_id "$p" || continue
+      peer_ref="$p"
+      break
+    done
+  fi
+  [[ "$token_id" == "$peer_ref" ]] || return 1
+  for letter in a b c d e f g h; do
+    id="agent-${letter}"
+    agent_is_local "$id" && continue
+    url="$(agent_env_value "$id" A2A_PUBLIC_BASE_URL "")"
+    if [[ -n "$url" ]]; then
+      echo "${url%/}"
+      return 0
+    fi
+    host="$(agent_env_value "$id" PUBLIC_HOST "")"
+    port="$(agent_env_value "$id" INGRESS_PORT "")"
+    [[ -z "$port" ]] && port="${IDENTYCLAW_INGRESS_PORT:-}"
+    if [[ -n "$host" && -n "$port" ]]; then
+      echo "https://${host}:${port}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Public HTTPS base for a peer token_id (env map → peer slot → local deploy → registry → API /full → chain webhook_url).
 a2a_peer_public_base_url() {
   local token_id="$1"
   local resolver_config_dir="${2:-}"
@@ -1139,6 +1185,8 @@ a2a_peer_public_base_url() {
   [[ -n "$token_id" ]] || return 1
   is_passport_token_id "$token_id" || return 1
   public_base="$(a2a_peer_public_base_url_from_env_map "$token_id" 2>/dev/null || true)"
+  [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  public_base="$(a2a_peer_public_base_from_env_slot "$token_id" 2>/dev/null || true)"
   [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
   deploy_id="$(find_deploy_id_for_token_id "$token_id" 2>/dev/null || true)"
   if [[ -n "$deploy_id" ]]; then
@@ -1529,7 +1577,7 @@ sync_a2a_peers_from_logs() {
   local peers_json updated=0
   load_env
   if [[ -z "$id" ]]; then
-    for id in $AGENT_IDS; do
+    for id in $(configured_agent_ids); do
       sync_a2a_peers_from_logs "$id" && updated=1 || true
     done
     [[ "$updated" -eq 1 ]]
@@ -2102,7 +2150,7 @@ ensure_pod_agent_state_for_container() {
   local ids=("$@")
   local id dir
   if [[ ${#ids[@]} -eq 0 ]]; then
-    ids=(agent-a agent-b agent-d agent-f)
+    read -ra ids <<< "$(configured_agent_ids)"
   fi
   for id in "${ids[@]}"; do
     dir="$(agent_home "$id")"
@@ -2122,7 +2170,7 @@ ensure_standalone_agent_state_for_container() {
   uid="$(id -u)"
   gid="$(id -g)"
   if [[ ${#ids[@]} -eq 0 ]]; then
-    ids=(agent-a agent-b agent-d agent-f)
+    read -ra ids <<< "$(configured_agent_ids)"
   fi
   for id in "${ids[@]}"; do
     dir="$(agent_home "$id")"
@@ -2180,12 +2228,13 @@ ensure_pod_logs_for_container() {
 # Restore ownership so the deploy user can read/write agent state on the host.
 # Skip agents whose gateway is running — restore races with pod container uid (1000).
 restore_pod_agent_state_for_host() {
-  AGENT_IDS="${1:-${AGENT_IDS:-agent-a agent-b}}"
+  local ids
   load_env
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
   [[ -n "${IDENTYCLAW_AGENT_STATE_ROOT:-}" ]] || return 0
+  ids="${1:-$(configured_agent_ids)}"
   local id dir container
-  for id in $AGENT_IDS; do
+  for id in $ids; do
     dir="$(agent_home "$id")"
     [[ -d "$dir" ]] || continue
     container="$(agent_container "$id")"
@@ -2231,7 +2280,7 @@ deploy_agent_ids_from_env() {
   else
     env_file="$(identyclaw_env_file)"
   fi
-  ids="${AGENT_IDS:-agent-a agent-b}"
+  ids="${AGENT_IDS:-}"
   if [[ -f "$env_file" ]]; then
     line="$(grep -E '^AGENT_IDS=' "$env_file" 2>/dev/null | head -1 || true)"
     if [[ -n "$line" ]]; then
@@ -2241,6 +2290,9 @@ deploy_agent_ids_from_env() {
       ids="${ids%\'}"
       ids="${ids#\'}"
     fi
+  fi
+  if [[ -z "$ids" ]]; then
+    ids="$(configured_agent_ids)"
   fi
   echo "$ids"
 }
@@ -3156,53 +3208,6 @@ if isinstance(legacy_outbound, dict) and legacy_outbound.pop("dynamicPeersFromJw
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
-}
-
-webhooks_plugin_id() {
-  echo "identyclaw-webhooks"
-}
-
-agent_webhooks_ext_dir() {
-  echo "$1/extensions/$(webhooks_plugin_id)"
-}
-
-agent_webhooks_ext_dir_container() {
-  echo "/home/node/.openclaw/extensions/$(webhooks_plugin_id)"
-}
-
-webhooks_plugin_installed_version() {
-  local config_dir="$1"
-  local container="${2:-}"
-  local pkg pkg_json
-  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    pkg="$(agent_webhooks_ext_dir_container)/package.json"
-    pkg_json="$(podman exec "$container" cat "$pkg" 2>/dev/null || true)"
-    [[ -n "$pkg_json" ]] || return 0
-    python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("version",""))' "$pkg_json" 2>/dev/null || true
-    return 0
-  fi
-  pkg="$(agent_webhooks_ext_dir "$config_dir")/package.json"
-  [[ -f "$pkg" ]] || return 0
-  python3 - "$pkg" <<'PY' 2>/dev/null || true
-import json, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-print(json.loads(path.read_text(encoding="utf-8")).get("version", ""))
-PY
-}
-
-webhooks_ext_ready() {
-  local config_dir="$1"
-  local container="${2:-}"
-  local ext_dir
-  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    podman exec "$container" test \
-      -f "$(agent_webhooks_ext_dir_container)/openclaw.plugin.json" \
-      -a -f "$(agent_webhooks_ext_dir_container)/dist/index.js"
-    return $?
-  fi
-  ext_dir="$(agent_webhooks_ext_dir "$config_dir")"
-  [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]
 }
 
 install_identyclaw_webhooks_plugin() {
