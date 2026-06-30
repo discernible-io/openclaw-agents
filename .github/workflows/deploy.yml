@@ -154,7 +154,7 @@ jobs:
             APP_DIR='${{ env.APP_DIR }}'
             # Undo container-namespace ownership from prior deploys before host mkdir/chmod.
             podman unshare chown -R 0:0 \"\${APP_DIR}/logs/nginx\" 2>/dev/null || true
-            AGENT_IDS=\"agent-a agent-d agent-e\"
+            AGENT_IDS=\"agent-a agent-c agent-e\"
             if [ -f \"\${APP_DIR}/env.local\" ]; then
               line=\$(grep -E '^AGENT_IDS=' \"\${APP_DIR}/env.local\" | head -1 || true)
               if [ -n \"\${line}\" ]; then

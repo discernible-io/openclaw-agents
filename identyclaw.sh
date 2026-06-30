@@ -6,7 +6,7 @@
 #
 # Commands:
 #   build-image          Pull base + build openclaw-himalaya:local
-#   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-d, agent-e)
+#   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-c, agent-e)
 #   set-password <id>    Set Migadu mailbox password (agent-{a-z})
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
 #   set-instagram <id>      Store Instagram username/password in secrets/ (survives rebuilds)
@@ -19,19 +19,21 @@
 #   status               Show podman + health URLs
 #   logs <id>            Follow logs
 #   test                 Run gateway test suites (agents from env.local AGENT_IDS / A2A_PEER_AGENTS)
+#   test-all-peers       Run constitution suites against every A2A_PEER_AGENTS peer (excl. own token_id)
 #   test-peer-gateway    Unit tests: metadata.webhook_url → agent card URL
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
-#   test-mail-hola [id]  HOLA over email: API peer contactUri, good/bad HOLA send, inbox poll
+#   test-mail-hola [id] [peer-token-id]  HOLA over email: API peer contactUri, good/bad HOLA send, inbox poll
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
-#   test-a2a-auth         P2P JWT on /a2a (peer when configured, then local inbound)
-#   test-auth-boundaries  Channel isolation + mutual P2P JWT binding (local + optional peer)
+#   test-a2a-auth [peer-token-id]    P2P JWT on /a2a (peer when configured, then local inbound)
+#   test-auth-boundaries [peer-token-id]  Channel isolation + mutual P2P JWT binding (local + optional peer)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Includes /api/testhola delivery; set SKIP_TESTHOLA=1 to skip
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
 #   send-rodit-webhook <id> <peer-token-id> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents key)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
-#   set-api-key <id>     Store OpenRouter API key (validated) for an agent
+#   set-api-key <id> [key]     Store OpenRouter API key (validated); or OPENROUTER_API_KEY
+#   set-opencode-key <id> [key]  Store OpenCode Zen/Go API key (validated); or OPENCODE_API_KEY
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
 #   import-agent <id> <file>  Restore agent from export-agent archive
@@ -120,7 +122,7 @@ cmd_init() {
   ensure_app_layout
   load_env
   init_one_agent agent-a "$AGENT_A_EMAIL" "$AGENT_A_DISPLAY_NAME" "${AGENT_A_PASSWORD:-}" "$AGENT_A_GATEWAY_PORT"
-  init_one_agent agent-d "$AGENT_D_EMAIL" "$AGENT_D_DISPLAY_NAME" "${AGENT_D_PASSWORD:-}" "$AGENT_D_GATEWAY_PORT"
+  init_one_agent agent-c "$AGENT_C_EMAIL" "$AGENT_C_DISPLAY_NAME" "${AGENT_C_PASSWORD:-}" "$AGENT_C_GATEWAY_PORT"
   init_one_agent agent-e "$AGENT_E_EMAIL" "$AGENT_E_DISPLAY_NAME" "${AGENT_E_PASSWORD:-}" "$AGENT_E_GATEWAY_PORT"
   echo ""
   echo "Next:"
@@ -133,7 +135,7 @@ cmd_init() {
 }
 
 cmd_set_password() {
-  local id="${1:?Usage: $0 set-password agent-a}"
+  local id="${1:?Usage: $0 set-password agent-b}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -146,7 +148,7 @@ cmd_set_password() {
 }
 
 cmd_set_discord_token() {
-  local id="${1:?Usage: $0 set-discord-token agent-a}"
+  local id="${1:?Usage: $0 set-discord-token agent-b}"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -159,7 +161,7 @@ cmd_set_discord_token() {
 }
 
 cmd_set_instagram() {
-  local id="${1:?Usage: $0 set-instagram agent-a}"
+  local id="${1:?Usage: $0 set-instagram agent-b}"
   local dir username password
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -172,7 +174,7 @@ cmd_set_instagram() {
 }
 
 cmd_set_twitter() {
-  local id="${1:?Usage: $0 set-twitter agent-a [username]}"
+  local id="${1:?Usage: $0 set-twitter agent-b [username]}"
   local dir username password
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -192,7 +194,7 @@ cmd_set_twitter() {
 }
 
 cmd_set_twitter_cookies() {
-  local id="${1:?Usage: $0 set-twitter-cookies agent-a}"
+  local id="${1:?Usage: $0 set-twitter-cookies agent-b}"
   local dir auth_token ct0
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -292,7 +294,7 @@ cmd_start() {
         start_one "$id"
       done
       ;;
-    *) echo "Usage: $0 start [agent-a|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 start [agent-id|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -314,7 +316,7 @@ cmd_stop() {
         stop_one "$id"
       done
       ;;
-    *) echo "Usage: $0 stop [agent-a|all]" >&2; exit 1 ;;
+    *) echo "Usage: $0 stop [agent-id|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -331,7 +333,7 @@ cmd_restart() {
           start_pod_agent "$id" restart
         done
         ;;
-      *) echo "Usage: $0 restart [agent-a|all]" >&2; exit 1 ;;
+      *) echo "Usage: $0 restart [agent-id|all]" >&2; exit 1 ;;
     esac
     return 0
   fi
@@ -409,7 +411,7 @@ cmd_status() {
 }
 
 cmd_logs() {
-  local id="${1:?Usage: $0 logs agent-a}"
+  local id="${1:?Usage: $0 logs agent-b}"
   podman logs -f "$(agent_container "$id")"
 }
 
@@ -425,11 +427,19 @@ cmd_test_mail() {
 }
 
 cmd_test_mail_hola() {
-  local id="${1:-}"
-  local peer_token_id container creds ext_dir mailbox email display_name failed=0
+  local id="" peer_token_id="" container creds ext_dir mailbox email display_name failed=0
   load_env
+  if [[ -n "${1:-}" ]] && is_valid_agent_id "$1"; then
+    id="$1"
+    shift
+  fi
+  if [[ -n "${1:-}" ]] && is_passport_token_id "$1"; then
+    peer_token_id="$1"
+  fi
   id="${id:-$(resolve_local_agent_id)}"
-  peer_token_id="$(resolve_peer_token_id "$id" 2>/dev/null || true)"
+  if [[ -z "$peer_token_id" ]]; then
+    peer_token_id="$(resolve_peer_token_id "$id" 2>/dev/null || true)"
+  fi
   require_podman
   require_agent_running "$id"
   [[ -n "$peer_token_id" ]] || {
@@ -483,7 +493,7 @@ cmd_generate_certs() {
       -h|--help)
         echo "Usage: $0 generate-certs [--force]"
         echo "Writes fullchain.pem + privkey.pem under \$(identyclaw_app_dir)/certs/"
-        echo "SANs: AGENT_A/B/C_PUBLIC_HOST from env.local (defaults in env.example)."
+        echo "SANs: AGENT_*_PUBLIC_HOST from env.local (defaults in env.example)."
         exit 0
         ;;
       *)
@@ -498,14 +508,14 @@ cmd_generate_certs() {
 
 a2a_fetch_agent_card() {
   local runner_id="$1" target_id="$2"
-  local url container resolve=() curl_flags=(-sf)
+  local url container resolve=() curl_flags=(-sk)
   url="$(agent_agent_card_url "$target_id")"
   if agent_is_local "$runner_id" && agent_container_running "$runner_id"; then
     container="$(agent_container "$runner_id")"
-    if ! agent_is_local "$target_id"; then
-      curl_flags=(-sk)
+    if agent_is_local "$target_id"; then
+      mapfile -t resolve < <(agent_ingress_curl_resolve_args "$target_id")
     fi
-    podman exec "$container" curl "${curl_flags[@]}" "$url"
+    podman exec "$container" curl "${curl_flags[@]}" "${resolve[@]}" "$url"
     return 0
   fi
   mapfile -t resolve < <(agent_ingress_curl_resolve_args "$target_id")
@@ -528,7 +538,7 @@ a2a_fetch_peer_agent_card() {
   if agent_container_running "$runner_id"; then
     container="$(agent_container "$runner_id")"
     podman exec "$container" curl "${curl_flags[@]}" "$url"
-    return 0
+    return $?
   fi
   curl -sk "$url"
 }
@@ -622,11 +632,12 @@ cmd_test_a2a() {
 }
 
 cmd_test_a2a_auth() {
-  local local_id peer_token_id target container creds ext_dir failed=0
+  local peer_token_id="${1:-}"
+  local local_id target container creds ext_dir failed=0
   require_podman
   load_env
   local_id="$(resolve_local_agent_id)"
-  peer_token_id="$(resolve_peer_token_id "$local_id" 2>/dev/null || true)"
+  peer_token_id="$(resolve_peer_token_id "$local_id" "$peer_token_id" 2>/dev/null || true)"
   require_agent_running "$local_id"
 
   container="$(agent_container "$local_id")"
@@ -677,11 +688,12 @@ cmd_test_a2a_auth() {
 }
 
 cmd_test_auth_boundaries() {
-  local local_id peer_token_id target peer_target container creds ext_dir failed=0
+  local peer_token_id="${1:-}"
+  local local_id target peer_target container creds ext_dir failed=0
   require_podman
   load_env
   local_id="$(resolve_local_agent_id)"
-  peer_token_id="$(resolve_peer_token_id "$local_id" 2>/dev/null || true)"
+  peer_token_id="$(resolve_peer_token_id "$local_id" "$peer_token_id" 2>/dev/null || true)"
   require_agent_running "$local_id"
 
   container="$(agent_container "$local_id")"
@@ -731,7 +743,7 @@ cmd_test_auth_boundaries() {
 }
 
 cmd_webhook_url() {
-  local id="${1:?Usage: $0 webhook-url agent-a [hooks/wake|hooks/agent|hooks/name]}"
+  local id="${1:?Usage: $0 webhook-url agent-b [hooks/wake|hooks/agent|hooks/name]}"
   local path="${2:-hooks/wake}"
   agent_webhook_url "$id" "$path"
 }
@@ -1014,6 +1026,58 @@ cmd_test_peer_gateway() {
   node "${IDENTYCLAW_ROOT}/scripts/test-peer-gateway-resolution.mjs"
 }
 
+cmd_test_all_peers() {
+  local local_id peer_token_id peers failed=0
+  load_env
+  local_id="$(resolve_local_agent_id)"
+  peers="$(a2a_peer_token_ids_excluding_local "$local_id")"
+  echo "==> Test constitution — all peers (local=${local_id})"
+  echo "    AGENT_IDS=${AGENT_IDS}"
+  echo "    A2A_PEER_AGENTS=${A2A_PEER_AGENTS}"
+  echo "    peers=${peers:-none}"
+  echo ""
+
+  cmd_test_peer_gateway || failed=1
+  echo ""
+  cmd_test_webhook "$local_id" || failed=1
+  echo ""
+  cmd_test_mail "$local_id" || failed=1
+
+  if [[ -z "$peers" ]]; then
+    echo ""
+    echo "==> Skip peer suites (no peers in A2A_PEER_AGENTS excluding own token_id)"
+  else
+    for peer_token_id in $peers; do
+      echo ""
+      echo "========================================"
+      echo "=== PEER ${peer_token_id} ==="
+      echo "========================================"
+      cmd_test_a2a "$local_id" "$peer_token_id" || failed=1
+      echo ""
+      cmd_test_a2a_auth "$peer_token_id" || failed=1
+      echo ""
+      cmd_test_auth_boundaries "$peer_token_id" || failed=1
+      echo ""
+      cmd_test_webhook_p2p "$local_id" "$peer_token_id" || failed=1
+      if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
+        echo ""
+        echo "==> Skip test-mail-hola for peer ${peer_token_id} (SKIP_MAIL_HOLA=1)"
+      else
+        echo ""
+        cmd_test_mail_hola "$local_id" "$peer_token_id" || failed=1
+      fi
+    done
+  fi
+
+  echo ""
+  if [[ $failed -eq 0 ]]; then
+    echo "Constitution suites (all peers): passed"
+  else
+    echo "Constitution suites (all peers): not-passed (see output above)" >&2
+  fi
+  return "$failed"
+}
+
 cmd_test() {
   local local_id peer_token_id failed=0
   load_env
@@ -1028,9 +1092,9 @@ cmd_test() {
   echo ""
   cmd_test_a2a "$local_id" "${peer_token_id:-}" || failed=1
   echo ""
-  cmd_test_a2a_auth || failed=1
+  cmd_test_a2a_auth "${peer_token_id:-}" || failed=1
   echo ""
-  cmd_test_auth_boundaries || failed=1
+  cmd_test_auth_boundaries "${peer_token_id:-}" || failed=1
   echo ""
   cmd_test_webhook "$local_id" || failed=1
   if [[ -n "$peer_token_id" ]]; then
@@ -1047,7 +1111,7 @@ cmd_test() {
     echo "==> Skip test-mail-hola (SKIP_MAIL_HOLA=1)"
   elif [[ -n "$peer_token_id" ]]; then
     echo ""
-    cmd_test_mail_hola "$local_id" || failed=1
+    cmd_test_mail_hola "$local_id" "${peer_token_id:-}" || failed=1
   else
     echo ""
     echo "==> Skip test-mail-hola (no peer token_id in A2A_PEER_AGENTS)"
@@ -1063,7 +1127,7 @@ cmd_test() {
 }
 
 cmd_token() {
-  local id="${1:?Usage: $0 token agent-a}"
+  local id="${1:?Usage: $0 token agent-b}"
   agent_gateway_token "$id"
 }
 
@@ -1092,7 +1156,7 @@ EOF
 }
 
 cmd_chat() {
-  local id="${1:?Usage: $0 chat agent-a}"
+  local id="${1:?Usage: $0 chat agent-b}"
   shift
   require_podman
   require_agent_running "$id"
@@ -1120,8 +1184,8 @@ cmd_chat() {
 }
 
 cmd_ask() {
-  local id="${1:?Usage: $0 ask agent-a \"message\"}"
-  local message="${2:?Usage: $0 ask agent-a \"message\"}"
+  local id="${1:?Usage: $0 ask agent-b \"message\"}"
+  local message="${2:?Usage: $0 ask agent-b \"message\"}"
   local container tls_env=()
   require_podman
   require_agent_running "$id"
@@ -1140,21 +1204,46 @@ cmd_ask() {
 }
 
 cmd_set_api_key() {
-  local id="${1:?Usage: $0 set-api-key agent-a}"
-  local dir key
+  local id="${1:?Usage: $0 set-api-key agent-b [sk-or-...]}"
+  local key="${2:-${OPENROUTER_API_KEY:-}}"
+  local dir
   dir="$(agent_home "$id")"
-  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
-  read -r -s -p "OpenRouter API key for ${id} (sk-or-...): " key
-  echo
+  if ! [[ -d "$dir" ]] && ! agent_container_running "$id"; then
+    echo "Run $0 init first (missing ${dir})" >&2
+    exit 1
+  fi
+  if [[ -z "$key" ]]; then
+    read -r -s -p "OpenRouter API key for ${id} (sk-or-...): " key
+    echo
+  fi
   [[ -n "$key" ]] || { echo "empty key" >&2; exit 1; }
-  write_openrouter_api_key "$dir" "$key"
-  echo "API key stored in ${dir}/agents/main/agent/auth-profiles.json"
+  write_openrouter_api_key "$id" "$key"
+  echo "API key stored for ${id} (auth-profiles.json)"
+  echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_set_opencode_key() {
+  local id="${1:?Usage: $0 set-opencode-key agent-b [sk-...]}"
+  local key="${2:-${OPENCODE_API_KEY:-}}"
+  local dir
+  dir="$(agent_home "$id")"
+  if ! [[ -d "$dir" ]] && ! agent_container_running "$id"; then
+    echo "Run $0 init first (missing ${dir})" >&2
+    exit 1
+  fi
+  if [[ -z "$key" ]]; then
+    read -r -s -p "OpenCode API key for ${id} (sk-... from opencode.ai/auth): " key
+    echo
+  fi
+  [[ -n "$key" ]] || { echo "empty key" >&2; exit 1; }
+  write_opencode_api_key "$id" "$key"
+  echo "API key stored for ${id} (opencode + opencode-go auth-profiles.json)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
 cmd_mirror() {
-  local to_id="${1:?Usage: $0 mirror agent-d [agent-a]}"
-  local from_id="${2:-agent-a}"
+  local to_id="${1:?Usage: $0 mirror agent-c [agent-a]}"
+  local from_id="${2:-$(resolve_local_agent_id)}"
   require_rootless_user
   load_env
   mirror_agent_config "$from_id" "$to_id"
@@ -1162,7 +1251,7 @@ cmd_mirror() {
 }
 
 cmd_export_agent() {
-  local id="${1:?Usage: $0 export-agent agent-a [archive.tar.gz] [--with-browser] [--no-stop]}"
+  local id="${1:?Usage: $0 export-agent agent-b [archive.tar.gz] [--with-browser] [--no-stop]}"
   shift || true
   require_rootless_user
   load_env
@@ -1187,15 +1276,15 @@ cmd_export_agent() {
 }
 
 cmd_import_agent() {
-  local id="${1:?Usage: $0 import-agent agent-a archive.tar.gz}"
-  local archive="${2:?Usage: $0 import-agent agent-a archive.tar.gz}"
+  local id="${1:?Usage: $0 import-agent agent-b archive.tar.gz}"
+  local archive="${2:?Usage: $0 import-agent agent-b archive.tar.gz}"
   require_rootless_user
   load_env
   import_agent_bundle "$id" "$archive"
 }
 
 cmd_configure() {
-  local id="${1:?Usage: $0 configure agent-a [openclaw configure flags...]}"
+  local id="${1:?Usage: $0 configure agent-b [openclaw configure flags...]}"
   shift
   require_podman
   local container
@@ -1251,7 +1340,7 @@ cmd_sync_a2a_peers() {
 }
 
 cmd_onboard() {
-  local id="${1:?Usage: $0 onboard agent-a}"
+  local id="${1:?Usage: $0 onboard agent-b}"
   shift
   require_podman
   require_rootless_user
@@ -1267,8 +1356,13 @@ cmd_onboard() {
   chmod 600 "$token_file"
 
   echo "Tips:"
-  echo "  - OpenRouter auth: choose API key. Key must start with sk-or-"
-  echo "  - Or set the key first: $0 set-api-key ${id}"
+  if [[ "$(openclaw_llm_provider)" == opencode ]]; then
+    echo "  - OpenCode auth: choose API key in the wizard, or: $0 set-opencode-key ${id} sk-..."
+    echo "  - Or onboard non-interactive: $0 onboard ${id} --auth-choice opencode-zen --opencode-zen-api-key \"\$OPENCODE_API_KEY\""
+  else
+    echo "  - OpenRouter auth: choose API key. Key must start with sk-or-"
+    echo "  - Or set the key first: $0 set-api-key ${id}"
+  fi
   echo "  - Skipping hatch TUI / health checks (identyclaw uses Podman gateways)."
   echo "  - At end, use Control UI — not 'Hatch in Terminal'."
   echo ""
@@ -1293,7 +1387,11 @@ cmd_onboard() {
   rm -f "$token_file"
   echo ""
   echo "Onboarding finished."
-  echo "  1. $0 set-api-key ${id}   # if you did not set OpenRouter API key in the wizard"
+  if [[ "$(openclaw_llm_provider)" == opencode ]]; then
+    echo "  1. $0 set-opencode-key ${id}   # if you did not set OpenCode API key in the wizard"
+  else
+    echo "  1. $0 set-api-key ${id}   # if you did not set OpenRouter API key in the wizard"
+  fi
   echo "  2. $0 restart ${id}"
   echo "  3. Control UI: http://${PUBLISH_HOST}:${gw}/"
   echo "     token: $0 token ${id}"
@@ -1314,6 +1412,7 @@ main() {
     set-twitter) cmd_set_twitter "$@" ;;
     set-twitter-cookies) cmd_set_twitter_cookies "$@" ;;
     set-api-key) cmd_set_api_key "$@" ;;
+    set-opencode-key) cmd_set_opencode_key "$@" ;;
     mirror) cmd_mirror "$@" ;;
     export-agent) cmd_export_agent "$@" ;;
     import-agent) cmd_import_agent "$@" ;;
@@ -1325,6 +1424,7 @@ main() {
     status) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
     test) cmd_test "$@" ;;
+    test-all-peers) cmd_test_all_peers "$@" ;;
     test-peer-gateway) cmd_test_peer_gateway "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
     test-mail-hola) cmd_test_mail_hola "$@" ;;

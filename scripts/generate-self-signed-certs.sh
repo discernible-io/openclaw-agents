@@ -10,7 +10,7 @@
 # Env:
 #   TLS_CN     Common Name / primary DNS SAN (default: agent-a.identyclaw.com)
 #   CERT_DAYS  Validity in days (default: 825)
-#   EXTRA_SANS Comma-separated extra SAN entries (e.g. DNS:agent-d.example.com,DNS:agent-e.example.com)
+#   EXTRA_SANS Comma-separated extra SAN entries (e.g. DNS:agent-c.example.com,DNS:agent-e.example.com)
 
 set -euo pipefail
 

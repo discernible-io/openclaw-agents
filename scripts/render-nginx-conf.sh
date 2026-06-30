@@ -19,7 +19,7 @@ case "$tier" in
 esac
 
 load_env
-AGENT_IDS="${AGENT_IDS:-agent-a agent-d agent-e}"
+AGENT_IDS="${AGENT_IDS:-agent-a agent-c agent-e}"
 
 template="${REPO_ROOT}/nginx/nginx.${tier}.conf"
 [[ -f "$template" ]] || { echo "missing template: $template" >&2; exit 1; }
@@ -32,11 +32,9 @@ agent_default_host() {
   case "$tier:$id" in
     development:agent-a) echo "agent-a.dev.identyclaw.com" ;;
     development:agent-c) echo "agent-c.dev.identyclaw.com" ;;
-    development:agent-d) echo "agent-d.dev.identyclaw.com" ;;
     development:agent-e) echo "agent-e.dev.identyclaw.com" ;;
     main:agent-a) echo "agent-a.identyclaw.com" ;;
     main:agent-c) echo "agent-c.identyclaw.com" ;;
-    main:agent-d) echo "agent-d.identyclaw.com" ;;
     main:agent-e) echo "agent-e.identyclaw.com" ;;
     *) return 1 ;;
   esac
@@ -62,7 +60,7 @@ for id in $AGENT_IDS; do
 done
 
 # Per-agent external A2A/webhook port (AGENT_*_INGRESS_PORT); template defaults to tier port.
-for id in agent-a agent-c agent-d agent-e; do
+for id in agent-a agent-c agent-e; do
   default="$(agent_default_host "$id")" || continue
   port="$(agent_ingress_port "$id")"
   [[ "$port" != "$tier_port" ]] || continue

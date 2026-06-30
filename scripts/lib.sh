@@ -134,7 +134,7 @@ ensure_tls_certs() {
   case "$force" in
     --force|1|true) args+=(--force) ;;
   esac
-  local tls_cn="${AGENT_A_PUBLIC_HOST}"
+  local tls_cn=""
   for id in $(configured_agent_ids); do
     h="$(agent_public_host "$id")"
     [[ -n "$h" ]] && { tls_cn="$h"; break; }
@@ -145,6 +145,12 @@ ensure_tls_certs() {
 
 load_env() {
   local f
+  local _peer_token_from_process=0 _peer_token_process_value=""
+  # Process environment overrides env.local (multi-peer test loops: export IDENTYCLAW_PEER_TOKEN_ID=…).
+  if [[ -n "${IDENTYCLAW_PEER_TOKEN_ID+x}" ]]; then
+    _peer_token_from_process=1
+    _peer_token_process_value="$IDENTYCLAW_PEER_TOKEN_ID"
+  fi
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   f="${IDENTYCLAW_APP_DIR}/env.local"
   if [[ -f "$f" ]]; then
@@ -175,20 +181,17 @@ load_env() {
   AGENT_A_DISPLAY_NAME="${AGENT_A_DISPLAY_NAME:-Identyclaw Agent A}"
   AGENT_A_GATEWAY_PORT="${AGENT_A_GATEWAY_PORT:-18789}"
   AGENT_A_BRIDGE_PORT="${AGENT_A_BRIDGE_PORT:-18790}"
-  AGENT_D_EMAIL="${AGENT_D_EMAIL:-agent-d@identyclaw.com}"
-  AGENT_D_DISPLAY_NAME="${AGENT_D_DISPLAY_NAME:-Identyclaw Agent D}"
-  AGENT_D_GATEWAY_PORT="${AGENT_D_GATEWAY_PORT:-18795}"
-  AGENT_D_BRIDGE_PORT="${AGENT_D_BRIDGE_PORT:-18796}"
+  AGENT_C_EMAIL="${AGENT_C_EMAIL:-agent-c@identyclaw.com}"
+  AGENT_C_DISPLAY_NAME="${AGENT_C_DISPLAY_NAME:-Identyclaw Agent C}"
+  AGENT_C_GATEWAY_PORT="${AGENT_C_GATEWAY_PORT:-18793}"
+  AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
   AGENT_E_EMAIL="${AGENT_E_EMAIL:-agent-e@identyclaw.com}"
   AGENT_E_DISPLAY_NAME="${AGENT_E_DISPLAY_NAME:-Identyclaw Agent E}"
   AGENT_E_GATEWAY_PORT="${AGENT_E_GATEWAY_PORT:-18797}"
   AGENT_E_BRIDGE_PORT="${AGENT_E_BRIDGE_PORT:-18798}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
-  # OpenRouter model chain: two free models first, Grok as paid fallback (override in env.local).
-  OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
-  OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder:free}"
-  OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/x-ai/grok-4.3}"
+  resolve_openclaw_model_defaults
   # OpenClaw model failover: provider idle/request watchdog + agent turn cap (seconds).
   OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-30}"
   OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-30}"
@@ -213,11 +216,58 @@ load_env() {
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
   IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
   AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
-  AGENT_D_PUBLIC_HOST="${AGENT_D_PUBLIC_HOST:-agent-d.identyclaw.com}"
+  AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
   AGENT_E_PUBLIC_HOST="${AGENT_E_PUBLIC_HOST:-agent-e.identyclaw.com}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
   AGENT_IDS="${AGENT_IDS:-}"
+  if [[ "$_peer_token_from_process" -eq 1 ]]; then
+    IDENTYCLAW_PEER_TOKEN_ID="$_peer_token_process_value"
+  fi
+}
+
+openclaw_llm_provider() {
+  echo "${OPENCLAW_LLM_PROVIDER:-openrouter}"
+}
+
+# Default model chain per OPENCLAW_LLM_PROVIDER (override individual models in env.local).
+resolve_openclaw_model_defaults() {
+  local provider
+  provider="$(openclaw_llm_provider)"
+  case "$provider" in
+    opencode)
+      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-opencode/claude-opus-4-6}"
+      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-opencode/gpt-5.5}"
+      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-opencode-go/kimi-k2.6}"
+      ;;
+    openrouter)
+      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
+      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder:free}"
+      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/x-ai/grok-4.3}"
+      ;;
+    *)
+      echo "Unknown OPENCLAW_LLM_PROVIDER: ${provider} (use openrouter or opencode)" >&2
+      return 1
+      ;;
+  esac
+}
+
+openclaw_model_runtime_provider() {
+  local model="$1"
+  [[ "$model" == */* ]] || return 0
+  echo "${model%%/*}"
+}
+
+# Comma-separated runtime provider ids for the configured model chain (e.g. opencode,opencode-go).
+openclaw_model_chain_providers_csv() {
+  load_env
+  local providers="" model pid
+  for model in "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2"; do
+    pid="$(openclaw_model_runtime_provider "$model")"
+    [[ -n "$pid" ]] || continue
+    [[ ",${providers}," == *",${pid},"* ]] || providers="${providers:+$providers,}${pid}"
+  done
+  echo "$providers"
 }
 
 # Local deployment slugs from env.local AGENT_IDS, or agent-* dirs under the app agents root.
@@ -249,7 +299,7 @@ configured_agent_ids() {
       fi
     done
   fi
-  echo "${ids:-agent-a}"
+  echo "${ids:-agent-a agent-c agent-e}"
 }
 
 # Optional env override; default is Passport metadata.subjectuniqueidentifier_url (RoditClient).
@@ -687,11 +737,20 @@ resolve_local_agent_id() {
 }
 
 # First peer Passport token_id from A2A_PEER_AGENTS (not the local agent's own token_id).
-# Override: IDENTYCLAW_PEER_TOKEN_ID=<token_id> in env.local.
+# Precedence: CLI arg → process env / env.local IDENTYCLAW_PEER_TOKEN_ID → first A2A_PEER_AGENTS entry.
 resolve_peer_token_id() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
+  local cli_peer="${2:-}"
   local self_token_id p
   load_env
+  if [[ -n "$cli_peer" ]]; then
+    is_passport_token_id "$cli_peer" || {
+      echo "Peer must be a Passport token_id (got: ${cli_peer})" >&2
+      return 1
+    }
+    echo "$cli_peer"
+    return 0
+  fi
   if [[ -n "${IDENTYCLAW_PEER_TOKEN_ID:-}" ]]; then
     is_passport_token_id "$IDENTYCLAW_PEER_TOKEN_ID" || {
       echo "IDENTYCLAW_PEER_TOKEN_ID must be a Passport token_id (12 characters)" >&2
@@ -710,7 +769,25 @@ resolve_peer_token_id() {
   return 1
 }
 
-# curl --resolve for local HTTPS ingress (loopback health / A2A probes from host).
+# Passport token_ids in A2A_PEER_AGENTS excluding the local agent's own token_id.
+a2a_peer_token_ids_excluding_local() {
+  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
+  local self_token_id ref out=""
+  load_env
+  self_token_id="$(agent_token_id "$local_deploy_id" 2>/dev/null || true)"
+  for ref in $A2A_PEER_AGENTS; do
+    is_passport_token_id "$ref" || continue
+    [[ -n "$self_token_id" && "$ref" == "$self_token_id" ]] && continue
+    if [[ -z "$out" ]]; then
+      out="$ref"
+    else
+      out="$out $ref"
+    fi
+  done
+  echo "$out"
+}
+
+# curl --resolve for local HTTPS ingress (host + in-container probes; pod nginx on loopback).
 agent_ingress_curl_resolve_args() {
   local id="$1" host port url
   load_env
@@ -1400,16 +1477,25 @@ PY
       registry_json="$(<"$config_dir/a2a/outbound/peers.json")"
     fi
   fi
-  A2A_PEER_LOGS="$logs" A2A_PEER_AGENTS_JSON="$agents_json" A2A_PEER_REGISTRY_JSON="$registry_json" A2A_PEER_SELF_TOKEN_ID="${self_token_id:-}" python3 - <<'PY'
-import json, os, re
+  local peers_tmp agents_tmp registry_tmp peers_json
+  peers_tmp="$(mktemp)"
+  agents_tmp="$(mktemp)"
+  registry_tmp="$(mktemp)"
+  printf '%s' "$logs" >"$peers_tmp"
+  printf '%s' "$agents_json" >"$agents_tmp"
+  printf '%s' "$registry_json" >"$registry_tmp"
+  peers_json="$(python3 - "$agents_tmp" "$registry_tmp" "$peers_tmp" "${self_token_id:-}" <<'PY'
+import json, re, sys
+from pathlib import Path
 
+agents_file, registry_file, logs_file, self_token_id = sys.argv[1:5]
 peers = {}
 try:
-    peers.update(json.loads(os.environ.get("A2A_PEER_AGENTS_JSON", "{}") or "{}"))
+    peers.update(json.loads(Path(agents_file).read_text(encoding="utf-8") or "{}"))
 except Exception:
     pass
 
-logs = os.environ.get("A2A_PEER_LOGS", "")
+logs = Path(logs_file).read_text(encoding="utf-8")
 patterns = [
     re.compile(
         r"\[a2a\] Registered outbound peer ([A-Za-z][A-Za-z0-9]{11}) from identity contactUri \((https?://[^)]+)\)"
@@ -1442,7 +1528,7 @@ for line in logs.splitlines():
             peers[token_id] = ""
 
 try:
-    registry = json.loads(os.environ.get("A2A_PEER_REGISTRY_JSON", "{}") or "{}")
+    registry = json.loads(Path(registry_file).read_text(encoding="utf-8") or "{}")
     for token_id, entry in registry.items():
         if token_id in peers and peers[token_id]:
             continue
@@ -1462,12 +1548,15 @@ try:
 except Exception:
     pass
 
-self_token_id = os.environ.get("A2A_PEER_SELF_TOKEN_ID", "").strip()
+self_token_id = self_token_id.strip()
 if self_token_id:
     peers.pop(self_token_id, None)
 peers = {k: v for k, v in peers.items() if k}
 print(json.dumps(peers, sort_keys=True))
 PY
+)"
+  rm -f "$peers_tmp" "$agents_tmp" "$registry_tmp"
+  echo "$peers_json"
 }
 
 # Merge harvested peers into env.local (A2A_PEER_AGENTS + A2A_PEER_URLS).
@@ -2337,7 +2426,7 @@ start_pod_agent() {
     ensure_session_memory_hook "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
-    ensure_openrouter_sqlite_auth "$id"
+    ensure_llm_sqlite_auth "$id"
     podman restart "$container" >/dev/null
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Restarted ${container}"
@@ -2354,7 +2443,7 @@ start_pod_agent() {
     ensure_session_memory_hook "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
-    ensure_openrouter_sqlite_auth "$id"
+    ensure_llm_sqlite_auth "$id"
     podman restart "$container" >/dev/null
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Started ${container} (pod container)"
@@ -4887,7 +4976,7 @@ ensure_agent_bootstrap() {
   ensure_a2a_config "$id" "$config_dir" "$container"
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    ensure_openrouter_sqlite_auth "$id"
+    ensure_llm_sqlite_auth "$id"
   fi
   write_agent_browser_doc "$config_dir"
   sync_quiet_plugin_env "$config_dir" "$container"
@@ -5075,9 +5164,12 @@ ensure_openclaw_model_defaults() {
   local container="${2:-}"
   load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  local providers_csv
+  providers_csv="$(openclaw_model_chain_providers_csv)"
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" \
-    "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" <<'PY'
+    "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" \
+    "$providers_csv" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -5085,8 +5177,11 @@ path = Path(sys.argv[1])
 primary, fb1, fb2 = sys.argv[2:5]
 agent_timeout = int(sys.argv[5])
 provider_timeout = int(sys.argv[6])
+providers_csv = sys.argv[7] if len(sys.argv) > 7 else "openrouter"
+provider_ids = [p.strip() for p in providers_csv.split(",") if p.strip()]
 fallbacks = [fb1, fb2]
 allowlist = {primary: {}, fb1: {}, fb2: {}}
+known_llm_plugins = {"openrouter", "opencode", "opencode-go"}
 
 def model_tail(model_id: str) -> str:
     return model_id.split("/", 1)[1] if "/" in model_id else model_id
@@ -5101,11 +5196,14 @@ defaults["model"] = {"primary": primary, "fallbacks": fallbacks}
 defaults["timeoutSeconds"] = agent_timeout
 
 providers = data.setdefault("models", {}).setdefault("providers", {})
-providers.setdefault("openrouter", {})["timeoutSeconds"] = provider_timeout
-
 plugins = data.setdefault("plugins", {}).setdefault("entries", {})
-openrouter = plugins.setdefault("openrouter", {})
-openrouter["enabled"] = True
+for pid in provider_ids:
+    providers.setdefault(pid, {})["timeoutSeconds"] = provider_timeout
+for pid in known_llm_plugins:
+    if pid in provider_ids:
+        plugins.setdefault(pid, {})["enabled"] = True
+    elif pid in plugins:
+        plugins[pid]["enabled"] = False
 
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
@@ -5122,12 +5220,16 @@ for entry in sessions.values():
     model = entry.get("model")
     if not model:
         continue
-    if (
-        model == paid_fallback
-        or model == fb2
-        or model_tail(str(model)) == paid_fallback
-        or str(model).endswith("grok-4.3")
-    ):
+    model_s = str(model)
+    stale = (
+        model_s == paid_fallback
+        or model_s == fb2
+        or model_tail(model_s) == paid_fallback
+        or model_s.endswith("grok-4.3")
+    )
+    if "openrouter" not in provider_ids and model_s.startswith("openrouter/"):
+        stale = True
+    if stale:
         entry.pop("model", None)
         entry.pop("modelProvider", None)
         entry.pop("modelOverrideSource", None)
@@ -5255,6 +5357,7 @@ write_openclaw_json() {
 }
 EOF
   chmod 600 "$config_dir/openclaw.json"
+  ensure_openclaw_model_defaults "$config_dir" ""
 }
 
 ensure_agent_env() {
@@ -5338,11 +5441,22 @@ NODE
 }
 
 write_openrouter_api_key() {
-  local config_dir="$1"
+  local id="$1"
   local key="$2"
-  local agent_dir="$config_dir/agents/main/agent"
+  local config_dir agent_dir
+  config_dir="$(agent_home "$id")"
+  agent_dir="$config_dir/agents/main/agent"
   validate_openrouter_api_key "$key"
-  mkdir -p "$agent_dir"
+  if mkdir -p "$agent_dir" 2>/dev/null; then
+    _write_openrouter_auth_profiles_host "$agent_dir" "$key"
+  else
+    _write_openrouter_auth_profiles_in_container "$id" "$key"
+  fi
+}
+
+_write_openrouter_auth_profiles_host() {
+  local agent_dir="$1"
+  local key="$2"
   python3 - "$agent_dir/auth-profiles.json" "$key" <<'PY'
 import json, sys, os
 path, key = sys.argv[1], sys.argv[2]
@@ -5363,6 +5477,170 @@ os.chmod(path, 0o600)
 PY
   printf '{"version":1,"usageStats":{}}\n' >"$agent_dir/auth-state.json"
   chmod 600 "$agent_dir/auth-state.json"
+}
+
+_write_openrouter_auth_profiles_in_container() {
+  local id="$1"
+  local key="$2"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Cannot store OpenRouter key: no access to agent dir and ${container} is not running" >&2
+    return 1
+  }
+  podman exec -i "$container" python3 - "$key" <<'PY'
+import json, os, sys
+key = sys.argv[1]
+root = "/home/node/.openclaw/agents/main/agent"
+os.makedirs(root, mode=0o700, exist_ok=True)
+path = os.path.join(root, "auth-profiles.json")
+data = {
+    "version": 1,
+    "profiles": {
+        "openrouter:default": {
+            "type": "api_key",
+            "provider": "openrouter",
+            "key": key,
+        }
+    },
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(path, 0o600)
+state = os.path.join(root, "auth-state.json")
+with open(state, "w", encoding="utf-8") as f:
+    f.write('{"version":1,"usageStats":{}}\n')
+os.chmod(state, 0o600)
+PY
+  ensure_openrouter_sqlite_auth "$id"
+}
+
+validate_opencode_api_key() {
+  local key="$1"
+  if [[ "$key" != sk-* ]]; then
+    echo "OpenCode API keys start with sk- (got something else — check you did not paste a shell command)." >&2
+    return 1
+  fi
+  if [[ "$key" == sk-or-* ]]; then
+    echo "That looks like an OpenRouter key (sk-or-...). Use set-api-key for OpenRouter." >&2
+    return 1
+  fi
+}
+
+ensure_opencode_sqlite_auth() {
+  local id="$1" rc=0
+  local container key listed
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+
+  key="$(podman exec "$container" python3 -c "
+import json
+from pathlib import Path
+p = Path('/home/node/.openclaw/agents/main/agent/auth-profiles.json')
+if not p.is_file():
+    raise SystemExit(0)
+profiles = json.loads(p.read_text(encoding='utf-8')).get('profiles', {})
+k = (profiles.get('opencode:default') or {}).get('key') or (profiles.get('opencode-go:default') or {}).get('key')
+if k and k.startswith('sk-') and not k.startswith('sk-or-'):
+    print(k, end='')
+" 2>/dev/null)" || return 0
+  [[ -n "$key" ]] || return 0
+
+  listed="$(podman exec "$container" node /app/openclaw.mjs models auth list 2>/dev/null || true)"
+  if ! grep -qE 'opencode:default|\[opencode/api_key\]' <<<"$listed"; then
+    podman exec -i "$container" node /app/openclaw.mjs models auth paste-api-key \
+      --provider opencode --profile-id opencode:default <<<"$key" >/dev/null 2>&1 || rc=1
+  fi
+  if ! grep -qE 'opencode-go:default|\[opencode-go/api_key\]' <<<"$listed"; then
+    podman exec -i "$container" node /app/openclaw.mjs models auth paste-api-key \
+      --provider opencode-go --profile-id opencode-go:default <<<"$key" >/dev/null 2>&1 || rc=1
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "    (${id}: OpenCode sqlite auth sync failed — openclaw models auth paste-api-key --provider opencode)" >&2
+  fi
+}
+
+write_opencode_api_key() {
+  local id="$1"
+  local key="$2"
+  local config_dir agent_dir
+  config_dir="$(agent_home "$id")"
+  agent_dir="$config_dir/agents/main/agent"
+  validate_opencode_api_key "$key"
+  if mkdir -p "$agent_dir" 2>/dev/null; then
+    _write_opencode_auth_profiles_host "$agent_dir" "$key"
+  else
+    _write_opencode_auth_profiles_in_container "$id" "$key"
+    return $?
+  fi
+  if agent_container_running "$id"; then
+    ensure_opencode_sqlite_auth "$id"
+  fi
+}
+
+_write_opencode_auth_profiles_host() {
+  local agent_dir="$1"
+  local key="$2"
+  python3 - "$agent_dir/auth-profiles.json" "$key" <<'PY'
+import json, sys, os
+path, key = sys.argv[1], sys.argv[2]
+profile = {"type": "api_key", "key": key}
+data = {
+    "version": 1,
+    "profiles": {
+        "opencode:default": {**profile, "provider": "opencode"},
+        "opencode-go:default": {**profile, "provider": "opencode-go"},
+    },
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(path, 0o600)
+PY
+  printf '{"version":1,"usageStats":{}}\n' >"$agent_dir/auth-state.json"
+  chmod 600 "$agent_dir/auth-state.json"
+}
+
+_write_opencode_auth_profiles_in_container() {
+  local id="$1"
+  local key="$2"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Cannot store OpenCode key: no access to agent dir and ${container} is not running" >&2
+    return 1
+  }
+  podman exec -i "$container" python3 - "$key" <<'PY'
+import json, os, sys
+key = sys.argv[1]
+root = "/home/node/.openclaw/agents/main/agent"
+os.makedirs(root, mode=0o700, exist_ok=True)
+path = os.path.join(root, "auth-profiles.json")
+profile = {"type": "api_key", "key": key}
+data = {
+    "version": 1,
+    "profiles": {
+        "opencode:default": {**profile, "provider": "opencode"},
+        "opencode-go:default": {**profile, "provider": "opencode-go"},
+    },
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(path, 0o600)
+state = os.path.join(root, "auth-state.json")
+with open(state, "w", encoding="utf-8") as f:
+    f.write('{"version":1,"usageStats":{}}\n')
+os.chmod(state, 0o600)
+PY
+  ensure_opencode_sqlite_auth "$id"
+}
+
+ensure_llm_sqlite_auth() {
+  local id="$1"
+  ensure_openrouter_sqlite_auth "$id"
+  ensure_opencode_sqlite_auth "$id"
 }
 
 mirror_agent_config() {
