@@ -6,7 +6,7 @@
 #
 # Commands:
 #   build-image          Pull base + build openclaw-himalaya:local
-#   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-b, agent-d, agent-f)
+#   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-d, agent-e)
 #   set-password <id>    Set Migadu mailbox password (agent-{a-z})
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
 #   set-instagram <id>      Store Instagram username/password in secrets/ (survives rebuilds)
@@ -120,9 +120,8 @@ cmd_init() {
   ensure_app_layout
   load_env
   init_one_agent agent-a "$AGENT_A_EMAIL" "$AGENT_A_DISPLAY_NAME" "${AGENT_A_PASSWORD:-}" "$AGENT_A_GATEWAY_PORT"
-  init_one_agent agent-b "$AGENT_B_EMAIL" "$AGENT_B_DISPLAY_NAME" "${AGENT_B_PASSWORD:-}" "$AGENT_B_GATEWAY_PORT"
   init_one_agent agent-d "$AGENT_D_EMAIL" "$AGENT_D_DISPLAY_NAME" "${AGENT_D_PASSWORD:-}" "$AGENT_D_GATEWAY_PORT"
-  init_one_agent agent-f "$AGENT_F_EMAIL" "$AGENT_F_DISPLAY_NAME" "${AGENT_F_PASSWORD:-}" "$AGENT_F_GATEWAY_PORT"
+  init_one_agent agent-e "$AGENT_E_EMAIL" "$AGENT_E_DISPLAY_NAME" "${AGENT_E_PASSWORD:-}" "$AGENT_E_GATEWAY_PORT"
   echo ""
   echo "Next:"
   echo "  1. Edit $(identyclaw_env_file) if needed"
@@ -853,8 +852,8 @@ cmd_test_webhook() {
 }
 
 cmd_send_rodit_webhook() {
-  local id="${1:?Usage: $0 send-rodit-webhook agent-b <peer-token-id> [message]}"
-  local peer_token_id="${2:?Usage: $0 send-rodit-webhook agent-b <peer-token-id> [message]}"
+  local id="${1:?Usage: $0 send-rodit-webhook agent-d <peer-token-id> [message]}"
+  local peer_token_id="${2:?Usage: $0 send-rodit-webhook agent-d <peer-token-id> [message]}"
   local text="${3:-}"
   local delay="${SEND_RODIT_WEBHOOK_DELAY:-10}"
   require_podman
@@ -1154,7 +1153,7 @@ cmd_set_api_key() {
 }
 
 cmd_mirror() {
-  local to_id="${1:?Usage: $0 mirror agent-b [agent-a]}"
+  local to_id="${1:?Usage: $0 mirror agent-d [agent-a]}"
   local from_id="${2:-agent-a}"
   require_rootless_user
   load_env

@@ -5,7 +5,7 @@
  * Usage:
  *   node scripts/test-rodit-webhooks.mjs \
  *     --creds /path/to/near-credentials.json \
- *     --target https://agent-b.dev.identyclaw.com:7443 \
+ *     --target https://agent-d.dev.identyclaw.com:7443 \
  *     [--path hooks/wake|hooks/agent|hooks/wake,hooks/agent]
  */
 import { createRequire } from "node:module";
