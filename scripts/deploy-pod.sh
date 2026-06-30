@@ -14,7 +14,7 @@
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
 #   REPO_ROOT            Git checkout path (for identyclaw.sh init/bootstrap)
-#   AGENT_IDS            Space-separated list (default: agent-a agent-b)
+#   AGENT_IDS            Space-separated list (default: agent-b)
 #   SKIP_PLUGIN_UPDATE=1 Skip GitHub plugin clone/build/install (requires git + npm when unset)
 
 set -euo pipefail
@@ -50,7 +50,7 @@ POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
 
 ensure_app_layout
 load_env
-AGENT_IDS="${AGENT_IDS:-agent-a agent-b}"
+AGENT_IDS="${AGENT_IDS:-agent-b}"
 
 require_podman() {
   command -v podman >/dev/null 2>&1 || { echo "podman not found" >&2; exit 1; }
