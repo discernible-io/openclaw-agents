@@ -1229,7 +1229,7 @@ PY
 }
 
 # Peer ingress from AGENT_{letter}_* when that letter is not in AGENT_IDS (split-host layout:
-# e.g. Juanelo runs agent-d,f remotely and uses AGENT_B_* for local Archimedes).
+# e.g. Juanelo runs agent-d,f remotely and uses AGENT_B_* for local Andrew).
 a2a_peer_public_base_from_env_slot() {
   local token_id="$1"
   local peer_ref="" p letter id url host port
