@@ -856,7 +856,7 @@ fetch_identyclaw_api_peer_token_ids() {
 }
 
 # Merge configured remote A2A_PEER_AGENTS + GET /api/agents (deduped, local excluded).
-a2a_discovered_test_candidate_token_ids() {
+a2a_merged_remote_peer_token_ids() {
   local configured api_json tid out="" seen=""
   load_env
   configured="$(a2a_remote_peer_token_ids)"
@@ -890,6 +890,94 @@ for tid in d.get('tokenIds') or []:
   echo "$out"
 }
 
+a2a_discovered_test_candidate_token_ids() {
+  a2a_merged_remote_peer_token_ids
+}
+
+# Probe GET /api/agents, resolve /full + chain URLs, keep peers with live agent-card.
+discover_live_api_peers_json_for_agent() {
+  local id="$1"
+  local config_dir cred ext_dir container api_base probed_json tid
+  [[ -n "$id" ]] || return 1
+  a2a_discover_peers_from_api_enabled || return 0
+  load_env
+  config_dir="$(agent_home "$id")"
+  agent_has_near_credentials "$config_dir" || return 0
+  api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
+  [[ -n "$api_base" ]] || api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
+
+  local -a exclude_args=()
+  for tid in $(local_host_agent_token_ids); do
+    [[ -n "$tid" ]] || continue
+    exclude_args+=(--exclude "$tid")
+  done
+
+  cred="$(agent_near_credentials_host_path "$id" 2>/dev/null || true)"
+  ext_dir="$(agent_a2a_ext_dir "$config_dir" 2>/dev/null || true)"
+  if [[ -n "$cred" && -d "$ext_dir" ]] && command -v node >/dev/null 2>&1; then
+    local -a discover_args=(
+      node "${IDENTYCLAW_ROOT}/scripts/discover-live-api-peers.mjs"
+      "$ext_dir" "$cred"
+    )
+    [[ -n "$api_base" ]] && discover_args+=(--api-base "$api_base")
+    discover_args+=("${exclude_args[@]}")
+    probed_json="$(
+      NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+        NODE_TLS_REJECT_UNAUTHORIZED=0 \
+        "${discover_args[@]}" 2>/dev/null || true
+    )"
+  else
+    container="$(agent_container "$id")"
+    podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+    cred="$(agent_near_credentials_in_container "$id" 2>/dev/null || true)"
+    ext_dir="$(a2a_api_probe_ext_dir_container "$container" 2>/dev/null || true)"
+    [[ -n "$cred" && -n "$ext_dir" ]] || return 0
+    podman_cp_lib_rodit_env "$container" || return 1
+    podman cp "${IDENTYCLAW_ROOT}/scripts/lib-discover-agents.mjs" \
+      "$container:/tmp/lib-discover-agents.mjs" >/dev/null 2>&1 || return 1
+    podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-gateway-url.mjs" \
+      "$container:/tmp/lib-peer-gateway-url.mjs" >/dev/null 2>&1 || return 1
+    podman cp "${IDENTYCLAW_ROOT}/scripts/discover-live-api-peers.mjs" \
+      "$container:/tmp/discover-live-api-peers.mjs" >/dev/null 2>&1 || return 1
+    local -a discover_args=(node /tmp/discover-live-api-peers.mjs "$ext_dir" "$cred")
+    [[ -n "$api_base" ]] && discover_args+=(--api-base "$api_base")
+    discover_args+=("${exclude_args[@]}")
+    probed_json="$(
+      podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
+        -e NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+        "$container" \
+        "${discover_args[@]}" 2>/dev/null || true
+    )"
+  fi
+  [[ -n "$probed_json" && "$probed_json" == \{* ]] || {
+    echo "{}"
+    return 0
+  }
+  printf '%s' "$probed_json"
+}
+
+# Merge two outbound.agents JSON objects (second wins on key collision).
+merge_a2a_peer_json_maps() {
+  local primary_json="${1:-{}}"
+  local secondary_json="${2:-{}}"
+  python3 - "$primary_json" "$secondary_json" <<'PY'
+import json, sys
+
+def load_obj(raw):
+    try:
+        data = json.loads(raw or "{}")
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+primary = load_obj(sys.argv[1])
+secondary = load_obj(sys.argv[2])
+merged = dict(primary)
+merged.update(secondary)
+print(json.dumps(merged, separators=(",", ":")))
+PY
+}
+
 # True when token_id came from A2A_PEER_AGENTS (remote configured peer).
 a2a_peer_token_id_is_configured() {
   local token_id="$1" ref
@@ -909,7 +997,7 @@ a2a_peer_token_id_is_configured() {
 resolve_peer_token_id() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
   local cli_peer="${2:-}"
-  local p
+  local reachable
   load_env
   if [[ -n "$cli_peer" ]]; then
     is_passport_token_id "$cli_peer" || {
@@ -934,35 +1022,132 @@ resolve_peer_token_id() {
     fi
     echo "    (skip IDENTYCLAW_PEER_TOKEN_ID=${IDENTYCLAW_PEER_TOKEN_ID} — runs on this host)" >&2
   fi
-  for p in $A2A_PEER_AGENTS; do
-    is_passport_token_id "$p" || continue
-    a2a_peer_token_id_on_this_host "$p" && continue
-    echo "$p"
-    return 0
-  done
-  if a2a_discover_peers_from_api_enabled; then
-    local api_json api_tid
-    api_json="$(fetch_identyclaw_api_peer_token_ids 2>/dev/null || true)"
-    if [[ -n "$api_json" ]]; then
-      api_tid="$(python3 -c "
-import json, sys
-try:
-    d = json.loads(sys.argv[1])
-except Exception:
-    sys.exit(0)
-ids = d.get('tokenIds') or []
-if ids:
-    print(ids[0])
-" "$api_json")"
-      [[ -n "$api_tid" ]] && { echo "$api_tid"; return 0; }
-    fi
-  fi
+  reachable="$(resolve_reachable_peer_token_id "$local_deploy_id" 2>/dev/null || true)"
+  [[ -n "$reachable" ]] && { echo "$reachable"; return 0; }
   return 1
 }
 
 # Remote A2A peer token_ids (excludes any Passport deployed in AGENT_IDS on this host).
 a2a_peer_token_ids_excluding_local() {
   a2a_remote_peer_token_ids
+}
+
+# True when POST /a2a without auth returns 401/403 (gateway alive, auth enforced).
+a2a_probe_endpoint_reachable() {
+  local base="$1"
+  local code resolve_args=()
+  [[ -n "$base" ]] || return 1
+  base="${base%/}"
+  command -v curl >/dev/null 2>&1 || return 1
+  while IFS= read -r resolve_arg; do
+    [[ -n "$resolve_arg" ]] && resolve_args+=("$resolve_arg")
+  done < <(agent_ingress_curl_resolve_args_for_base "$base" 2>/dev/null || true)
+  code="$(
+    curl -sk "${resolve_args[@]}" -o /dev/null -w '%{http_code}' \
+      --max-time "${A2A_PROBE_TIMEOUT:-8}" \
+      -X POST "${base}/a2a" \
+      -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":"probe","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"probe"}],"messageId":"probe"}}}' \
+      2>/dev/null || echo "000"
+  )"
+  [[ "$code" == "401" || "$code" == "403" ]]
+}
+
+# curl --resolve when base host matches a local agent public host (multi-host self-tests).
+agent_ingress_curl_resolve_args_for_base() {
+  local base="$1" id host port
+  load_env
+  [[ -n "$base" ]] || return 0
+  for id in $AGENT_IDS; do
+    host="$(agent_public_host "$id")"
+    port="$(agent_ingress_port "$id")"
+    [[ -n "$host" && -n "$port" ]] || continue
+    if [[ "$base" == *"${host}:${port}"* ]]; then
+      printf '%s\n' --resolve "${host}:${port}:127.0.0.1"
+      return 0
+    fi
+  done
+}
+
+# Probe external agent-card reachability (HTTP status + brief detail).
+a2a_probe_agent_card_status() {
+  local base="$1"
+  local code resolve_args=()
+  [[ -n "$base" ]] || { echo "missing-base"; return 1; }
+  base="${base%/}"
+  command -v curl >/dev/null 2>&1 || { echo "no-curl"; return 1; }
+  while IFS= read -r resolve_arg; do
+    [[ -n "$resolve_arg" ]] && resolve_args+=("$resolve_arg")
+  done < <(agent_ingress_curl_resolve_args_for_base "$base" 2>/dev/null || true)
+  code="$(
+    curl -sk "${resolve_args[@]}" -o /dev/null -w '%{http_code}' \
+      --max-time "${A2A_PROBE_TIMEOUT:-8}" \
+      "${base}/.well-known/agent-card.json" 2>/dev/null || echo "000"
+  )"
+  echo "$code"
+  [[ "$code" == "200" ]]
+}
+
+# First remote peer token_id whose resolved /a2a endpoint responds 401/403.
+resolve_reachable_peer_token_id() {
+  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
+  local resolver_config_dir
+  local p base
+  load_env
+  resolver_config_dir="$(agent_home "$local_deploy_id")"
+  for p in $(a2a_discovered_test_candidate_token_ids); do
+    is_passport_token_id "$p" || continue
+    a2a_peer_token_id_on_this_host "$p" && continue
+    base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
+    [[ -n "$base" ]] || continue
+    if a2a_probe_endpoint_reachable "$base"; then
+      echo "$p"
+      return 0
+    fi
+    echo "    (skip peer ${p} — ${base}/a2a not reachable or not auth-gated)" >&2
+  done
+  return 1
+}
+
+print_constitution_agent_preflight() {
+  local local_id="$1"
+  local config_dir registered expected card_code card_url
+  load_env
+  is_valid_agent_id "$local_id" || return 1
+  config_dir="$(agent_home "$local_id")"
+  expected="$(agent_container_ingress_base_url "$local_id" 2>/dev/null || true)"
+  [[ -n "$expected" ]] || expected="$(agent_a2a_public_base_url "$local_id" 2>/dev/null || true)"
+  [[ -n "$expected" ]] || expected="$(agent_ingress_base_url "$local_id" 2>/dev/null || true)"
+  registered="$(rodit_passport_webhook_url "$config_dir" 2>/dev/null || true)"
+  registered="${registered%/}"
+  expected="${expected%/}"
+
+  echo "==> Preflight (${local_id})"
+  if [[ -z "$registered" ]]; then
+    echo "    webhook_url: FAIL empty Passport metadata.webhook_url"
+  elif [[ "$registered" == "$expected" ]]; then
+    echo "    webhook_url: OK ${registered}"
+  else
+    echo "    webhook_url: MISMATCH registered=${registered} expected=${expected}"
+  fi
+
+  if [[ -n "$expected" ]]; then
+    card_url="${expected}/.well-known/agent-card.json"
+    card_code="$(a2a_probe_agent_card_status "$expected" 2>/dev/null || echo "000")"
+    if [[ "$card_code" == "200" ]]; then
+      echo "    agent-card:  OK HTTP ${card_code} ${card_url}"
+    else
+      echo "    agent-card:  FAIL HTTP ${card_code} ${card_url}"
+    fi
+    if a2a_probe_endpoint_reachable "$expected"; then
+      echo "    POST /a2a:   OK auth-gated (401/403 without JWT)"
+    else
+      echo "    POST /a2a:   FAIL not auth-gated or unreachable ${expected}/a2a"
+    fi
+  else
+    echo "    agent-card:  SKIP no ingress base URL resolved"
+  fi
+  echo ""
 }
 
 # Constitution cross-agent test mode from resolved peer capabilities.
@@ -1501,7 +1686,7 @@ a2a_peer_public_base_from_env_slot() {
   return 1
 }
 
-# Public HTTPS base for a peer token_id (env map → peer slot → local deploy → registry → API /full → chain webhook_url).
+# Public HTTPS base for a peer token_id (env map → local deploy → registry → API /full → env slot).
 a2a_peer_public_base_url() {
   local token_id="$1"
   local resolver_config_dir="${2:-}"
@@ -1509,8 +1694,6 @@ a2a_peer_public_base_url() {
   [[ -n "$token_id" ]] || return 1
   is_passport_token_id "$token_id" || return 1
   public_base="$(a2a_peer_public_base_url_from_env_map "$token_id" 2>/dev/null || true)"
-  [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
-  public_base="$(a2a_peer_public_base_from_env_slot "$token_id" 2>/dev/null || true)"
   [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
   deploy_id="$(find_deploy_id_for_token_id "$token_id" 2>/dev/null || true)"
   if [[ -n "$deploy_id" ]]; then
@@ -1523,6 +1706,8 @@ a2a_peer_public_base_url() {
     public_base="$(probe_identyclaw_peer_public_base_url "$resolver_config_dir" "$token_id" 2>/dev/null || true)"
     [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
   fi
+  public_base="$(a2a_peer_public_base_from_env_slot "$token_id" 2>/dev/null || true)"
+  [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
   return 1
 }
 
@@ -2608,7 +2793,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3324,17 +3509,19 @@ ensure_agent_identyclaw_tooling() {
 
 build_a2a_peer_map() {
   local self_id="$1"
-  local self_config_dir self_token_id
+  local self_config_dir self_token_id configured_json api_json peers_json
   load_env
   warn_invalid_a2a_peer_agents
   self_config_dir="$(agent_home "$self_id")"
   self_token_id="$(probe_rodit_own_token_id "$self_config_dir" 2>/dev/null || true)"
 
-  local peer_token_id public_base card_url peers_json="{"
+  local peer_token_id public_base card_url
   local first=1
+  configured_json="{"
   for peer_token_id in $A2A_PEER_AGENTS; do
     is_passport_token_id "$peer_token_id" || continue
     [[ -n "$self_token_id" && "$peer_token_id" == "$self_token_id" ]] && continue
+    a2a_peer_token_id_on_this_host "$peer_token_id" && continue
 
     public_base="$(a2a_peer_public_base_url "$peer_token_id" "$self_config_dir")"
     if [[ -z "$public_base" ]]; then
@@ -3349,13 +3536,22 @@ build_a2a_peer_map() {
     if [[ "$first" -eq 1 ]]; then
       first=0
     else
-      peers_json+=","
+      configured_json+=","
     fi
-    peers_json+="\"${peer_token_id}\":{\"url\":\"${card_url}\""
-    peers_json+=",\"loginBaseUrl\":\"${public_base}\""
-    peers_json+="}"
+    configured_json+="\"${peer_token_id}\":{\"url\":\"${card_url}\""
+    configured_json+=",\"loginBaseUrl\":\"${public_base}\""
+    configured_json+="}"
   done
-  peers_json+="}"
+  configured_json+="}"
+
+  api_json="{}"
+  if a2a_discover_peers_from_api_enabled; then
+    echo "    (${self_id}: proactive API peer discovery — GET /api/agents + live agent-card probe)" >&2
+    api_json="$(discover_live_api_peers_json_for_agent "$self_id")"
+    [[ -n "$api_json" && "$api_json" == \{* ]] || api_json="{}"
+  fi
+
+  peers_json="$(merge_a2a_peer_json_maps "$api_json" "$configured_json")"
   echo "$peers_json"
 }
 

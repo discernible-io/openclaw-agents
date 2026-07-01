@@ -222,6 +222,58 @@ export async function acquireP2pJwtForPeer(peerBase, openclawHome = "/home/node/
   return defaultRoditPeerLogin(peerBase.replace(/\/+$/, ""), { logLevel: "error" });
 }
 
+/** Parse send_rodit_webhook tool success from an A2A message/send JSON response. */
+export function parseSendRoditWebhookToolOk(a2aJson) {
+  if (!a2aJson || typeof a2aJson !== "object") return null;
+
+  function readOk(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    if ("ok" in payload) return Boolean(payload.ok);
+    return null;
+  }
+
+  function inspectToolNode(node) {
+    if (!node || typeof node !== "object") return null;
+    const name = String(node.name || node.toolName || node.tool || "").toLowerCase();
+    if (!name.includes("send_rodit_webhook") && !name.includes("send-rodit-webhook")) {
+      return null;
+    }
+    const direct = readOk(node.content ?? node.result ?? node.output ?? node.response);
+    if (direct !== null) return direct;
+    const raw = node.content ?? node.result ?? node.output ?? node.response;
+    if (typeof raw === "string") {
+      try {
+        return readOk(JSON.parse(raw));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  const stack = [a2aJson];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== "object") continue;
+    if (Array.isArray(cur)) {
+      stack.push(...cur);
+      continue;
+    }
+    const toolOk = inspectToolNode(cur);
+    if (toolOk !== null) return toolOk;
+    for (const value of Object.values(cur)) {
+      if (value && typeof value === "object") stack.push(value);
+    }
+  }
+
+  const text = JSON.stringify(a2aJson);
+  if (/send[_-]rodit[_-]webhook/i.test(text)) {
+    if (/"ok"\s*:\s*true/.test(text)) return true;
+    if (/"ok"\s*:\s*false/.test(text)) return false;
+  }
+  return null;
+}
+
 /** Ask a live peer agent (via A2A message/send) to run send_rodit_webhook toward us. */
 export async function requestLivePeerSendRoditWebhook(opts) {
   const {
@@ -309,16 +361,37 @@ export async function runInboundWebhookFromLivePeer(opts) {
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
 
+  const toolOk = parseSendRoditWebhookToolOk(a2a.json);
+  const httpOk = a2a.status >= 200 && a2a.status < 300;
+  let peerDeliveredOk;
+  let peerDeliveredDetail;
+  if (toolOk === true) {
+    peerDeliveredOk = true;
+    peerDeliveredDetail = `send_rodit_webhook tool ok=true (A2A HTTP ${a2a.status})`;
+  } else if (toolOk === false) {
+    peerDeliveredOk = false;
+    peerDeliveredDetail = `send_rodit_webhook tool ok=false (A2A HTTP ${a2a.status})`;
+  } else if (receipt.receiptOk) {
+    peerDeliveredOk = true;
+    peerDeliveredDetail = `webhook receipt verified (A2A HTTP ${a2a.status}; no parseable tool result)`;
+  } else {
+    peerDeliveredOk = false;
+    peerDeliveredDetail = httpOk
+      ? `A2A HTTP ${a2a.status} but send_rodit_webhook not confirmed (no tool result or receipt)`
+      : `A2A message/send failed HTTP ${a2a.status}`;
+  }
+
   return {
     direction: "inbound-live",
     marker,
     hookUrl: `${localBase.replace(/\/+$/, "")}/${hookPath.replace(/^\/+/, "")}`,
     a2aStatus: a2a.status,
-    peerDeliveredOk: a2a.status >= 200 && a2a.status < 300,
+    peerDeliveredOk,
     weReceivedOk: receipt.receiptOk,
-    peerDeliveredDetail: `live peer A2A message/send HTTP ${a2a.status} (peer send_rodit_webhook at origin)`,
+    peerDeliveredDetail,
     weReceivedDetail: receipt.receiptDetail,
     a2aResponse: a2a.json,
+    sendRoditWebhookToolOk: toolOk,
   };
 }
 

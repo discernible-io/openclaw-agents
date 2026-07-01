@@ -160,7 +160,27 @@ const client = await RoditClient.create({ role: "client" });
 const ownConfig = await client.getConfigOwnRodit();
 const registeredWebhook = (ownConfig?.own_rodit?.metadata?.webhook_url || "").replace(/\/$/, "");
 const expectedWebhook = agentBase.replace(/\/$/, "");
-if (registeredWebhook && registeredWebhook !== expectedWebhook) {
+const pollAttempts = Math.min(Math.max(Number(process.env.TESTHOLA_POLL_ATTEMPTS || "90") || 90, 10), 300);
+const pollIntervalMs = Math.min(Math.max(Number(process.env.TESTHOLA_POLL_MS || "500") || 500, 100), 5000);
+
+if (!registeredWebhook) {
+  console.log(`FAIL  Passport metadata.webhook_url is empty`);
+  console.log(`      /api/testhola cannot deliver webhooks without a registered ingress URL`);
+  console.log(`      expected: ${expectedWebhook}`);
+  console.log("");
+  tally.add(
+    record(
+      "Passport metadata.webhook_url",
+      false,
+      "empty — register webhook_url in Passport metadata (on-chain)",
+    ),
+  );
+  const { passed, notPassed } = tally.counts();
+  console.log(`Results: ${passed} passed, ${notPassed} not-passed`);
+  process.exit(tally.exitCode());
+}
+
+if (registeredWebhook !== expectedWebhook) {
   console.log(`WARN  Passport webhook_url mismatch`);
   console.log(`      registered: ${registeredWebhook}`);
   console.log(`      expected:   ${expectedWebhook}`);
@@ -198,20 +218,23 @@ tally.add(
 
 const requestId = testholaBody.requestId || null;
 let receipts = [];
-for (let i = 0; i < 30; i++) {
+for (let i = 0; i < pollAttempts; i++) {
   receipts = await fetchReceipts();
   const hits = receipts.filter(
     (r) => (!requestId || r.requestId === requestId) && TESTHOLA_EVENTS.has(r.event || ""),
   );
   if (hits.length >= 2) break;
-  await sleep(200);
+  const wakeHit = receipts.find((r) => r.path === "/hooks/wake");
+  const agentHit = receipts.find((r) => r.path === "/hooks/agent");
+  if (wakeHit && agentHit) break;
+  await sleep(pollIntervalMs);
 }
 
 const wake = receipts.find((r) => r.path === "/hooks/wake");
 const agentHook = receipts.find((r) => r.path === "/hooks/agent");
 const testholaReceipts = receipts.filter((r) => TESTHOLA_EVENTS.has(r.event || ""));
 
-const webhookUrlOk = !registeredWebhook || registeredWebhook === expectedWebhook;
+const webhookUrlOk = registeredWebhook === expectedWebhook;
 if (!webhookUrlOk) {
   tally.add(
     record(

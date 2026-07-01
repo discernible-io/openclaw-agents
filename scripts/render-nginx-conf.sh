@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render nginx.conf with AGENT_*_PUBLIC_HOST aliases for agents in AGENT_IDS.
+# Render nginx.conf for agents in AGENT_IDS (any agent-{a-z} slug).
 # Usage: render-nginx-conf.sh <development|main> <output-path>
 set -euo pipefail
 
@@ -19,26 +19,6 @@ case "$tier" in
 esac
 
 load_env
-AGENT_IDS="${AGENT_IDS:-agent-a agent-c agent-e}"
-
-template="${REPO_ROOT}/nginx/nginx.${tier}.conf"
-[[ -f "$template" ]] || { echo "missing template: $template" >&2; exit 1; }
-
-mkdir -p "$(dirname "$out")"
-cp "$template" "$out"
-
-agent_default_host() {
-  local id="$1"
-  case "$tier:$id" in
-    development:agent-a) echo "agent-a.dev.identyclaw.com" ;;
-    development:agent-c) echo "agent-c.dev.identyclaw.com" ;;
-    development:agent-e) echo "agent-e.dev.identyclaw.com" ;;
-    main:agent-a) echo "agent-a.identyclaw.com" ;;
-    main:agent-c) echo "agent-c.identyclaw.com" ;;
-    main:agent-e) echo "agent-e.identyclaw.com" ;;
-    *) return 1 ;;
-  esac
-}
 
 tier_default_ingress_port() {
   case "$tier" in
@@ -48,24 +28,92 @@ tier_default_ingress_port() {
 }
 
 tier_port="$(tier_default_ingress_port)"
+tier_comment="$([[ "$tier" == development ]] && echo "Development" || echo "Production")"
 
-for id in $AGENT_IDS; do
-  default="$(agent_default_host "$id")" || continue
-  host="$(agent_public_host "$id")"
-  [[ -n "$host" && "$host" != "$default" ]] || continue
-  if grep -q "server_name ${default} ${host};" "$out"; then
-    continue
-  fi
-  sed -i "s/server_name ${default};/server_name ${default} ${host};/" "$out"
-done
+mkdir -p "$(dirname "$out")"
 
-# Per-agent external A2A/webhook port (AGENT_*_INGRESS_PORT); template defaults to tier port.
-for id in agent-a agent-c agent-e; do
-  default="$(agent_default_host "$id")" || continue
-  port="$(agent_ingress_port "$id")"
-  [[ "$port" != "$tier_port" ]] || continue
-  sed -i "/# ${id} /,/^    }/ s/listen ${tier_port} ssl;/listen ${port} ssl;/" "$out"
-  sed -i "s/@ ${default}:${tier_port}/@ ${default}:${port}/" "$out"
-done
+{
+  cat <<HEADER
+# TLS sidecar for OpenClaw gateways — primary surfaces:
+#   A2A: POST /a2a, GET /.well-known/agent-card.json (RODiT JWT on POST)
+#   Webhooks: POST /hooks/wake, POST /hooks/agent, POST /hooks/<name> (RODiT x-signature + x-timestamp)
+# nginx terminates TLS and reverse-proxies; gateway enforces auth (not nginx).
+#
+# ${tier_comment} ingress — per-agent hosts (AGENT_*_PUBLIC_HOST from env.local).
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    include /etc/nginx/inc/http-common.inc;
+
+HEADER
+
+  for id in $AGENT_IDS; do
+    is_valid_agent_id "$id" || continue
+    host="$(agent_public_host "$id")"
+    [[ -n "$host" ]] || {
+      echo "    (render-nginx: skip ${id} — no AGENT_*_PUBLIC_HOST)" >&2
+      continue
+    }
+    gw_port="$(agent_internal_gateway_port "$id")"
+    upstream_name="openclaw_${id//-/_}"
+    cat <<UPSTREAM
+    upstream ${upstream_name} {
+        server 127.0.0.1:${gw_port};
+    }
+
+UPSTREAM
+  done
+
+  for id in $AGENT_IDS; do
+    is_valid_agent_id "$id" || continue
+    host="$(agent_public_host "$id")"
+    [[ -n "$host" ]] || continue
+    ingress_port="$(agent_ingress_port "$id")"
+    [[ -n "$ingress_port" ]] || ingress_port="$tier_port"
+    upstream_name="openclaw_${id//-/_}"
+    cat <<SERVER
+    # ${id} — A2A + webhooks @ ${host}:${ingress_port}
+    server {
+        listen ${ingress_port} ssl;
+        http2 on;
+        server_name ${host};
+        ssl_certificate /app/certs/fullchain.pem;
+        ssl_certificate_key /app/certs/privkey.pem;
+        include /etc/nginx/inc/security-headers.inc;
+
+        location @request_error {
+            internal;
+            default_type text/plain;
+            return 400 "request too large\n";
+        }
+
+        location = /health {
+            limit_req zone=openclaw_health burst=10 nodelay;
+            default_type text/plain;
+            return 200 "healthy\n";
+        }
+
+        location / {
+            limit_req zone=openclaw_ingress burst=240 nodelay;
+            limit_req zone=openclaw_public burst=120 nodelay;
+            include /etc/nginx/inc/openclaw-proxy.inc;
+            proxy_pass http://${upstream_name};
+        }
+    }
+
+SERVER
+  done
+
+  echo "}"
+} >"$out"
 
 echo "Rendered ${out} (tier=${tier}, AGENT_IDS=${AGENT_IDS})"

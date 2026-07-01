@@ -42,6 +42,7 @@
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
 #   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins from ClawHub (pinned in env.local)
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
+#   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
@@ -928,7 +929,8 @@ cmd_test_webhook_p2p() {
   local receiver_deploy_id reverse_via_container=0
   sender_container="$(agent_container "$sender")"
   receiver_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$sender")")"
-  local_base="$(agent_a2a_public_base_url "$sender")"
+  local_base="$(agent_container_ingress_base_url "$sender")"
+  [[ -n "$local_base" ]] || local_base="$(agent_a2a_public_base_url "$sender")"
   [[ -n "$local_base" ]] || local_base="$(agent_ingress_base_url "$sender")"
   [[ -n "$receiver_base" ]] || {
     if a2a_resolve_peers_by_token_id_enabled; then
@@ -1116,7 +1118,27 @@ print_agent_test_candidates() {
       source="api"
     fi
     if [[ "$source" == "api" ]]; then
-      echo "    candidate ${peer_token_id} [${source}]: listed via GET /api/agents (resolve A2A URL: authenticated GET /full with agent NEAR creds; probe: $0 test-a2a ${id} ${peer_token_id})"
+      a2a_base=""
+      peer_email=""
+      probed_json="$(probe_test_candidate_peer_json "$id" "$peer_token_id" 2>/dev/null || true)"
+      if [[ -n "$probed_json" ]]; then
+        read -r a2a_base peer_email <<<"$(python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    print(' ')
+    sys.exit(0)
+print(d.get('a2aBase') or '', d.get('peerEmail') or '')
+" "$probed_json")"
+      fi
+      [[ -z "$a2a_base" ]] && a2a_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$id")" 2>/dev/null || true)"
+      if [[ -n "$a2a_base" ]]; then
+        mode="$(classify_constitution_test_mode "$a2a_base" "$peer_email" "$local_email")"
+        echo "    candidate ${peer_token_id} [${source}]: mode=${mode} a2a=${a2a_base} peer_email=${peer_email:-—}"
+      else
+        echo "    candidate ${peer_token_id} [${source}]: listed via GET /api/agents (no live gateway URL yet)"
+      fi
       continue
     fi
     a2a_base=""
@@ -1210,6 +1232,7 @@ cmd_test_constitution_for_agent() {
     echo "Invalid agent id: ${local_id}" >&2
     return 1
   }
+  print_constitution_agent_preflight "$local_id"
   peer_token_id="$(resolve_peer_token_id "$local_id" 2>/dev/null || true)"
   echo "==> Test constitution (local=${local_id}${peer_token_id:+, peer token_id=${peer_token_id}})"
   if [[ -n "$peer_token_id" ]]; then
@@ -1323,6 +1346,12 @@ cmd_test_all_agents() {
     echo "Start failed for one or more agents — fix before running constitution suites" >&2
     return 1
   }
+  echo ""
+
+  echo "==> Sync A2A config (ensure outbound peers + public base, even when already running)"
+  for id in $AGENT_IDS; do
+    ensure_a2a_config "$id" "$(agent_home "$id")" "$(agent_container "$id")" || true
+  done
   echo ""
 
   print_test_peer_roster
@@ -1574,6 +1603,39 @@ cmd_sync_a2a_peers() {
   echo "Updated $(identyclaw_env_file) — restart to apply: $0 restart ${target}"
 }
 
+cmd_discover_a2a_peers() {
+  require_podman
+  require_rootless_user
+  load_env
+  local target="${1:-all}" id peers_json count
+  echo "==> Discover live A2A peers via IdentyClaw API (GET /api/agents)"
+  if ! a2a_discover_peers_from_api_enabled; then
+    echo "API discovery is off — set IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1 in env.local" >&2
+    exit 1
+  fi
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      echo ""
+      echo "--- ${id} ---"
+      peers_json="$(discover_live_api_peers_json_for_agent "$id")"
+      count="$(python3 -c "import json,sys; print(len(json.loads(sys.argv[1] or '{}')))" "$peers_json")"
+      echo "    live peers discovered: ${count}"
+      ensure_a2a_config "$id" "$(agent_home "$id")" "$(agent_container "$id")" || true
+    done
+  else
+    is_valid_agent_id "$target" || {
+      echo "Usage: $0 discover-a2a-peers [agent-id|all]" >&2
+      exit 1
+    }
+    peers_json="$(discover_live_api_peers_json_for_agent "$target")"
+    count="$(python3 -c "import json,sys; print(len(json.loads(sys.argv[1] or '{}')))" "$peers_json")"
+    echo "    live peers discovered: ${count}"
+    ensure_a2a_config "$target" "$(agent_home "$target")" "$(agent_container "$target")" || true
+  fi
+  echo ""
+  echo "Updated openclaw.json outbound.agents — restart to load: $0 restart ${target}"
+}
+
 cmd_onboard() {
   local id="${1:?Usage: $0 onboard agent-b}"
   shift
@@ -1679,6 +1741,7 @@ main() {
     onboard) cmd_onboard "$@" ;;
     upgrade-plugins) cmd_upgrade_plugins "$@" ;;
     sync-a2a-peers) cmd_sync_a2a_peers "$@" ;;
+    discover-a2a-peers) cmd_discover_a2a_peers "$@" ;;
     -h|--help|help|"") usage ;;
     *)
       echo "Unknown command: $cmd" >&2
