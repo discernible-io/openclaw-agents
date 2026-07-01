@@ -382,12 +382,15 @@ a2a_tls_skip_verify_enabled() {
 
 sync_a2a_tls_env() {
   local config_dir="$1"
-  local env_file="$config_dir/.env"
-  local key="NODE_TLS_REJECT_UNAUTHORIZED"
-  local value="0"
-  [[ -f "$env_file" ]] || return 0
+  local container="${2:-}"
+  local env_file key="NODE_TLS_REJECT_UNAUTHORIZED" value="0"
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  env_file="$(agent_env_file_path "$config_dir" "$container")"
+  if ! agent_env_use_container "$config_dir" "$container"; then
+    [[ -f "$config_dir/.env" ]] || return 0
+  fi
   if a2a_tls_skip_verify_enabled; then
-    python3 - "$env_file" "$key" "$value" <<'PY'
+    _agent_env_python "$config_dir" "$container" "$env_file" "$key" "$value" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -403,7 +406,7 @@ with open(env_file, "w", encoding="utf-8") as f:
 os.chmod(env_file, 0o600)
 PY
   else
-    python3 - "$env_file" "$key" <<'PY'
+    _agent_env_python "$config_dir" "$container" "$env_file" "$key" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -576,6 +579,50 @@ agent_near_cred_path_for_config_sync() {
   fi
   cred="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1)"
   [[ -n "$cred" ]] && echo "$cred"
+}
+
+agent_container_for_config_dir() {
+  local config_dir="$1"
+  local container="${2:-}"
+  if [[ -n "$container" ]]; then
+    echo "$container"
+  else
+    agent_container "${config_dir##*/}"
+  fi
+}
+
+# Pod agents chown .env to the container uid; write via podman exec when the host cannot.
+agent_env_use_container() {
+  local config_dir="$1"
+  local container="${2:-}"
+  if [[ -w "$config_dir/.env" ]] 2>/dev/null; then
+    return 1
+  fi
+  if [[ ! -f "$config_dir/.env" ]] && [[ -w "$config_dir" ]] 2>/dev/null; then
+    return 1
+  fi
+  [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"
+}
+
+agent_env_file_path() {
+  local config_dir="$1"
+  local container="${2:-}"
+  if agent_env_use_container "$config_dir" "$container"; then
+    echo "/home/node/.openclaw/.env"
+  else
+    echo "$config_dir/.env"
+  fi
+}
+
+_agent_env_python() {
+  local config_dir="$1"
+  local container="$2"
+  shift 2
+  if agent_env_use_container "$config_dir" "$container"; then
+    podman exec -i "$container" python3 - "$@"
+  else
+    python3 - "$@"
+  fi
 }
 
 # Run python against the bind-mounted openclaw.json (host path or in-container path).
@@ -1344,11 +1391,13 @@ warn_invalid_a2a_peer_agents() {
 
 sync_rodit_token_id_env() {
   local config_dir="$1"
-  local env_file="$config_dir/.env"
-  local token_id
+  local container="${2:-}"
+  local env_file token_id
   token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
   [[ -n "$token_id" ]] || return 0
-  python3 - "$env_file" "$token_id" <<'PY'
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  env_file="$(agent_env_file_path "$config_dir" "$container")"
+  _agent_env_python "$config_dir" "$container" "$env_file" "$token_id" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -1718,7 +1767,7 @@ probe_rodit_passport_urls_json() {
   [[ -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]] || return 1
 
   load_env
-  sync_quiet_plugin_env "$config_dir"
+  sync_quiet_plugin_env "$config_dir" "$(agent_container "${config_dir##*/}")"
 
   cache="$config_dir/.rodit-passport-urls.json"
   cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
@@ -2703,19 +2752,22 @@ PY
 
 sync_identyclaw_env() {
   local config_dir="$1"
-  local env_file="$config_dir/.env"
-  local cred_file contract_id api_base near_rpc_url
+  local container="${2:-}"
+  local env_file cred_file contract_id api_base near_rpc_url
   load_env
   contract_id="${IDENTYCLAW_NEAR_CONTRACT_ID}"
   near_rpc_url="${NEAR_RPC_URL:-}"
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
   ensure_near_credentials_in_agent "$config_dir" || return 0
-  cred_file="$(resolve_near_credentials_file "$config_dir")" || return 0
+  cred_file="$(agent_near_cred_path_for_config_sync "$config_dir" "$container")" || return 0
+  [[ -n "$cred_file" ]] || return 0
+  env_file="$(agent_env_file_path "$config_dir" "$container")"
   api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
   [[ -n "$api_base" ]] || {
     echo "    (${config_dir##*/}: skip .env sync — no Passport api_base; set IDENTYCLAW_API_BASE_URL to override)" >&2
     return 0
   }
-  python3 - "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" <<'PY'
+  _agent_env_python "$config_dir" "$container" "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" <<'PY'
 import json, os, sys
 from pathlib import Path
 
@@ -2762,14 +2814,15 @@ PY
 sync_quiet_plugin_env() {
   local config_dir="$1"
   local container="${2:-}"
-  local env_file="$config_dir/.env"
+  local env_file
   load_env
   local fallback_ms="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-1000}"
   local near_rpc_url="${NEAR_RPC_URL:-}"
-  if [[ -f "$env_file" ]] || [[ ! -d "$config_dir" ]]; then
-    _write_quiet_plugin_env_file "$env_file" "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url"
-  fi
-  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  env_file="$(agent_env_file_path "$config_dir" "$container")"
+  if ! agent_env_use_container "$config_dir" "$container"; then
+    _write_quiet_plugin_env_file "$config_dir/.env" "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url"
+  elif podman ps --format '{{.Names}}' | grep -qx "$container"; then
     podman exec -i "$container" python3 - /home/node/.openclaw/.env \
       "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url" <<'PY'
 import os, sys
@@ -2939,7 +2992,7 @@ ensure_identyclaw_config() {
   if [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]; then
     has_creds=1
     cred_path="$(agent_near_cred_path_for_config_sync "$config_dir" "$container")"
-    sync_identyclaw_env "$config_dir"
+    sync_identyclaw_env "$config_dir" "$container"
   fi
   local api_base=""
   if [[ "$has_creds" -eq 1 ]]; then
@@ -3103,9 +3156,7 @@ ensure_a2a_config() {
 
   load_env
   [[ -n "$container" ]] || container="$(agent_container "$id")"
-  if [[ -w "$config_dir/.env" ]] 2>/dev/null; then
-    sync_identyclaw_env "$config_dir"
-  fi
+  sync_identyclaw_env "$config_dir" "$container"
 
   a2a_warn_legacy_auth_mode_env "$id"
 
@@ -3115,7 +3166,7 @@ ensure_a2a_config() {
   public_base_url="$(agent_a2a_public_base_url "$id")"
   own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
   api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
-  sync_rodit_token_id_env "$config_dir"
+  sync_rodit_token_id_env "$config_dir" "$container"
   peers_json="$(build_a2a_peer_map "$id")"
   dynamic_peers_from_jwt="0"
   if a2a_dynamic_peers_from_jwt_enabled; then
@@ -3276,9 +3327,9 @@ if changed:
 PY
 
   if [[ -n "$peers_json" && "$peers_json" != "{}" ]]; then
-    sync_a2a_tls_env "$config_dir"
+    sync_a2a_tls_env "$config_dir" "$container"
   elif a2a_resolve_peers_by_token_id_enabled && [[ -n "$(a2a_configured_peer_token_ids)" ]]; then
-    sync_a2a_tls_env "$config_dir"
+    sync_a2a_tls_env "$config_dir" "$container"
   fi
 }
 
