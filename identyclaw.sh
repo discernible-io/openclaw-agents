@@ -21,6 +21,7 @@
 #   test [id]            Run gateway test suites (default: first AGENT_IDS entry)
 #   test-candidates      List remote test peers per agent and mode (a2a / a2a+email / email only)
 #   test-all-agents      Start AGENT_IDS, resolve peers, run constitution per local agent
+#   test-all-agents-chat Constitution suites + chat-driven peer discovery (A2A + email) per agent
 #   test-all-peers       Run constitution suites against every A2A_PEER_AGENTS peer (excl. own token_id)
 #   test-peer-gateway    Unit tests: metadata.webhook_url → agent card URL
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
@@ -1358,6 +1359,52 @@ cmd_test_all_agents() {
   return "$failed"
 }
 
+cmd_test_all_agents_chat() {
+  local id constitution_failed=0 chat_failed=0
+  local -a chat_results=()
+  require_podman
+  require_rootless_user
+  load_env
+
+  echo "==> Full test run — constitution suites + chat peer discovery (all agents)"
+  echo ""
+
+  cmd_test_all_agents || constitution_failed=1
+  echo ""
+  echo "========================================"
+  echo "==> Chat-driven peer discovery (A2A + email)"
+  echo "========================================"
+  echo ""
+
+  for id in $AGENT_IDS; do
+    require_agent_running "$id"
+    echo "########################################"
+    echo "### CHAT TEST ${id}"
+    echo "########################################"
+    echo ""
+    if cmd_ask "$id" "$(agent_chat_peer_discovery_test_prompt "$id")"; then
+      chat_results+=("${id}: chat passed")
+    else
+      chat_results+=("${id}: chat not-passed")
+      chat_failed=1
+    fi
+    echo ""
+  done
+
+  echo "========================================"
+  echo "==> Chat peer-discovery summary"
+  for line in "${chat_results[@]}"; do
+    echo "    ${line}"
+  done
+  echo "========================================"
+  if [[ $constitution_failed -eq 0 && $chat_failed -eq 0 ]]; then
+    echo "All tests (constitution + chat): passed"
+    return 0
+  fi
+  echo "Tests not-passed (constitution=${constitution_failed}, chat=${chat_failed})" >&2
+  return 1
+}
+
 cmd_token() {
   local id="${1:?Usage: $0 token agent-b}"
   agent_gateway_token "$id"
@@ -1658,6 +1705,7 @@ main() {
     test) cmd_test "$@" ;;
     test-candidates) cmd_test_candidates "$@" ;;
     test-all-agents) cmd_test_all_agents "$@" ;;
+    test-all-agents-chat) cmd_test_all_agents_chat "$@" ;;
     test-all-peers) cmd_test_all_peers "$@" ;;
     test-peer-gateway) cmd_test_peer_gateway "$@" ;;
     test-mail) cmd_test_mail "$@" ;;

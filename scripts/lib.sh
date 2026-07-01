@@ -1269,6 +1269,39 @@ agent_token_id() {
   probe_rodit_own_token_id_in_container "$container" 2>/dev/null || true
 }
 
+# Chat prompt: discover remote peers via API and exercise A2A + email cross-agent tests.
+agent_chat_peer_discovery_test_prompt() {
+  local id="$1"
+  local self_token email api_base local_tokens
+  load_env
+  self_token="$(agent_token_id "$id" 2>/dev/null || true)"
+  email="$(agent_env_value "$id" EMAIL "")"
+  api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
+  [[ -n "$api_base" ]] || api_base="$(identyclaw_api_base_url_for_agent "$id" 2>/dev/null || true)"
+  api_base="${api_base:-https://api.identyclaw.com}"
+  local_tokens="$(local_host_agent_token_ids)"
+  cat <<EOF
+Run an IdentyClaw cross-agent peer discovery and test report. Use your tools only — do not invent token_ids or URLs.
+
+Context:
+- You are deployment ${id} (Passport token_id: ${self_token:-unknown}, email: ${email:-none})
+- IdentyClaw API base: ${api_base}
+- Local agents on THIS host (never use as cross-agent test targets): ${AGENT_IDS}
+- Local Passport token_ids to exclude: ${local_tokens:-none}
+
+Steps:
+1. identyclaw_list_agents — list public agents (GET /api/agents; token_ids only)
+2. Exclude your token_id and every local-host token_id above
+3. Pick up to 3 remote candidates. For each, identyclaw_get_agent_identity (authenticated GET /full) and record metadata.webhook_url and contactUri email
+4. Classify each: a2a+email (both), a2a (webhook_url only), or email only (email, no webhook_url)
+5. Best a2a candidate: a2a_send_message with a one-line test ping; report task_id/context_id or error
+6. Best email candidate (or same if a2a+email): identyclaw_create_hola then send via himalaya to peer contactUri with HOLA in body; report outcome
+7. Final summary table: token_id | mode | webhook_url | peer_email | a2a result | email result
+
+If no remote candidates remain after exclusions, say so and stop.
+EOF
+}
+
 # Map token_id → local deployment slug when this host runs that Passport (AGENT_IDS / agents/).
 find_deploy_id_for_token_id() {
   local token_id="$1" id config_dir probed app_dir entry
