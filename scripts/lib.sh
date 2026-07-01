@@ -70,8 +70,8 @@ deploy_tier_health_domain() {
     [[ -n "$host" ]] && { printf '%s' "$host"; return 0; }
   done
   case "$1" in
-    development) printf 'agent-b.dev.identyclaw.com' ;;
-    main) printf 'agent-b.identyclaw.com' ;;
+    development) printf 'agent-a.dev.identyclaw.com' ;;
+    main) printf 'agent-a.identyclaw.com' ;;
     *) return 1 ;;
   esac
 }
@@ -128,8 +128,8 @@ ensure_tls_certs() {
     [[ -n "$extra_sans" ]] && extra_sans+=","
     extra_sans+="DNS:${h}"
   done
-  if [[ -n "${AGENT_B_INGRESS_ALT_HOST:-}" ]]; then
-    extra_sans="${extra_sans},DNS:${AGENT_B_INGRESS_ALT_HOST}"
+  if [[ -n "${IDENTYCLAW_INGRESS_ALT_HOST:-}" ]]; then
+    extra_sans="${extra_sans},DNS:${IDENTYCLAW_INGRESS_ALT_HOST}"
   fi
   case "$force" in
     --force|1|true) args+=(--force) ;;
@@ -177,18 +177,18 @@ load_env() {
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
   HIMALAYA_VERSION="${HIMALAYA_VERSION:-v1.2.0}"
   PUBLISH_HOST="${PUBLISH_HOST:-127.0.0.1}"
-  AGENT_B_EMAIL="${AGENT_B_EMAIL:-agent-b@identyclaw.com}"
-  AGENT_B_DISPLAY_NAME="${AGENT_B_DISPLAY_NAME:-Identyclaw Agent B}"
-  AGENT_B_GATEWAY_PORT="${AGENT_B_GATEWAY_PORT:-18791}"
-  AGENT_B_BRIDGE_PORT="${AGENT_B_BRIDGE_PORT:-18792}"
-  AGENT_D_EMAIL="${AGENT_D_EMAIL:-agent-d@identyclaw.com}"
-  AGENT_D_DISPLAY_NAME="${AGENT_D_DISPLAY_NAME:-Identyclaw Agent D}"
-  AGENT_D_GATEWAY_PORT="${AGENT_D_GATEWAY_PORT:-18795}"
-  AGENT_D_BRIDGE_PORT="${AGENT_D_BRIDGE_PORT:-18796}"
-  AGENT_F_EMAIL="${AGENT_F_EMAIL:-agent-f@identyclaw.com}"
-  AGENT_F_DISPLAY_NAME="${AGENT_F_DISPLAY_NAME:-Identyclaw Agent F}"
-  AGENT_F_GATEWAY_PORT="${AGENT_F_GATEWAY_PORT:-18799}"
-  AGENT_F_BRIDGE_PORT="${AGENT_F_BRIDGE_PORT:-18800}"
+  AGENT_A_EMAIL="${AGENT_A_EMAIL:-agent-a@identyclaw.com}"
+  AGENT_A_DISPLAY_NAME="${AGENT_A_DISPLAY_NAME:-Identyclaw Agent A}"
+  AGENT_A_GATEWAY_PORT="${AGENT_A_GATEWAY_PORT:-18789}"
+  AGENT_A_BRIDGE_PORT="${AGENT_A_BRIDGE_PORT:-18790}"
+  AGENT_C_EMAIL="${AGENT_C_EMAIL:-agent-c@identyclaw.com}"
+  AGENT_C_DISPLAY_NAME="${AGENT_C_DISPLAY_NAME:-Identyclaw Agent C}"
+  AGENT_C_GATEWAY_PORT="${AGENT_C_GATEWAY_PORT:-18793}"
+  AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
+  AGENT_E_EMAIL="${AGENT_E_EMAIL:-agent-e@identyclaw.com}"
+  AGENT_E_DISPLAY_NAME="${AGENT_E_DISPLAY_NAME:-Identyclaw Agent E}"
+  AGENT_E_GATEWAY_PORT="${AGENT_E_GATEWAY_PORT:-18797}"
+  AGENT_E_BRIDGE_PORT="${AGENT_E_BRIDGE_PORT:-18798}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   resolve_openclaw_model_defaults
@@ -207,7 +207,7 @@ load_env() {
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
   NEAR_RPC_URL="${IDENTYCLAW_NEAR_RPC_URL:-${NEAR_RPC_URL:-}}"
   # https://clawhub.ai/identyclaw/identyclaw
-  IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.1}"
+  IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.2}"
   IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
   IDENTYCLAW_CLAWHUB_SKILL_VERSION="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-1.4.0}"
   IDENTYCLAW_CLAWHUB_TWITTER_SKILL="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
@@ -215,9 +215,9 @@ load_env() {
   IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
   IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
-  AGENT_B_PUBLIC_HOST="${AGENT_B_PUBLIC_HOST:-agent-b.identyclaw.com}"
-  AGENT_D_PUBLIC_HOST="${AGENT_D_PUBLIC_HOST:-agent-d.identyclaw.com}"
-  AGENT_F_PUBLIC_HOST="${AGENT_F_PUBLIC_HOST:-agent-f.identyclaw.com}"
+  AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
+  AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
+  AGENT_E_PUBLIC_HOST="${AGENT_E_PUBLIC_HOST:-agent-e.identyclaw.com}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
   AGENT_IDS="${AGENT_IDS:-}"
@@ -299,7 +299,7 @@ configured_agent_ids() {
       fi
     done
   fi
-  echo "${ids:-agent-b}"
+  echo "${ids:-agent-a agent-c agent-e}"
 }
 
 # Optional env override; default is Passport metadata.subjectuniqueidentifier_url (RoditClient).
@@ -733,7 +733,7 @@ resolve_local_agent_id() {
   for id in $(configured_agent_ids); do
     [[ -n "$id" ]] && { echo "$id"; return 0; }
   done
-  echo "agent-b"
+  echo "agent-a"
 }
 
 # First peer Passport token_id from A2A_PEER_AGENTS (not the local agent's own token_id).
@@ -1228,8 +1228,7 @@ except Exception:
 PY
 }
 
-# Peer ingress from AGENT_{letter}_* when that letter is not in AGENT_IDS (split-host layout:
-# e.g. Juanelo runs agent-d,f remotely and uses AGENT_B_* for local Andrew).
+# Peer ingress from AGENT_{letter}_* when that letter is not in AGENT_IDS (split-host layout).
 a2a_peer_public_base_from_env_slot() {
   local token_id="$1"
   local peer_ref="" p letter id url host port
@@ -2058,7 +2057,7 @@ agent_ingress_base_url() {
 }
 
 # Pod agents resolve their public ingress host to loopback so self-tests hit nginx in-pod
-# (container DNS may differ from the host; e.g. agent-b.dev.identyclaw.com:7443).
+# (container DNS may differ from the host; e.g. agent-d.dev.identyclaw.com:7443).
 pod_agent_ingress_host_args() {
   local id="$1" host
   load_env
@@ -4291,19 +4290,20 @@ EOF
 
 write_linkedin_workspace_guidance() {
   local config_dir="$1"
-  local slug
+  local slug agent_id
   slug="$(linkedin_skill_slug)"
+  agent_id="$(basename "$config_dir")"
   local tools="$config_dir/workspace/TOOLS.md"
   local agents="$config_dir/workspace/AGENTS.md"
   [[ -f "$tools" ]] || return 0
-  python3 - "$tools" "$slug" <<'PY'
+  python3 - "$tools" "$slug" "$agent_id" <<'PY'
 import re, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-slug = sys.argv[2]
+slug, agent_id = sys.argv[2], sys.argv[3]
 block = f"""
-## LinkedIn (agent-b)
+## LinkedIn ({agent_id})
 
 - **Post on LinkedIn:** `{slug}` + ClawLink (`clawlink-plugin`) — read **`LINKEDIN.md`**
 - **Connect:** https://claw-link.dev/dashboard?add=linkedin (OAuth, no API keys in chat)
@@ -4392,16 +4392,17 @@ PY
 
 _write_linkedin_workspace_guidance_in_container() {
   local container="$1"
-  local slug
+  local slug agent_id
   slug="$(linkedin_skill_slug)"
-  podman exec -i "$container" python3 - "$slug" <<'PY'
+  agent_id="${container#openclaw-}"
+  podman exec -i "$container" python3 - "$slug" "$agent_id" <<'PY'
 import os, re, sys
-slug = sys.argv[1]
+slug, agent_id = sys.argv[1], sys.argv[2]
 workspace = "/home/node/.openclaw/workspace"
 tools_path = os.path.join(workspace, "TOOLS.md")
 agents_path = os.path.join(workspace, "AGENTS.md")
 tools_block = f"""
-## LinkedIn (agent-b)
+## LinkedIn ({agent_id})
 
 - **Post on LinkedIn:** `{slug}` + ClawLink (`clawlink-plugin`) — read **`LINKEDIN.md`**
 - **Connect:** https://claw-link.dev/dashboard?add=linkedin (OAuth, no API keys in chat)
@@ -4563,9 +4564,10 @@ PY
 write_agent_twitter_doc() {
   local config_dir="$1"
   local username="$2"
-  local slug bird_bin
+  local slug bird_bin agent_id
   slug="$(twitter_clawhub_skill_slug)"
   bird_bin="workspace/node_modules/.bin/bird"
+  agent_id="$(basename "$config_dir")"
   mkdir -p "$config_dir/workspace/twitter"/{threads,drafts,posts}
   cat >"$config_dir/workspace/TWITTER.md" <<EOF
 # X / Twitter (Discernible)
@@ -4581,7 +4583,7 @@ Account: \`${username}\` — post via **bird** CLI + ClawHub skill \`${slug}\` (
 - **You CAN post on X** using **\`${slug}\`** + \`exec\` + \`bird\` (not \`message\`).
 - \`message\` is Discord/Slack only — never use it for X.
 - **Do not** use browser password login to post (breaks in container). Use session cookies instead.
-- If cookies missing, ask operator to run \`./identyclaw.sh set-twitter-cookies agent-b\`.
+- If cookies missing, ask operator to run \`./identyclaw.sh set-twitter-cookies ${agent_id}\`.
 
 ## Get session cookies (one-time, Firefox)
 
@@ -4591,7 +4593,7 @@ Account: \`${username}\` — post via **bird** CLI + ClawHub skill \`${slug}\` (
 4. Left sidebar: **Cookies** → **https://x.com**
 5. In the table, copy the **Value** for \`auth_token\` (paste as \`AUTH_TOKEN\`)
 6. Copy the **Value** for \`ct0\` (paste as \`CT0\`)
-7. Run \`./identyclaw.sh set-twitter-cookies agent-b\` and paste each value when prompted
+7. Run \`./identyclaw.sh set-twitter-cookies ${agent_id}\` and paste each value when prompted
 
 **Chrome:** DevTools → **Application** → **Cookies** → **https://x.com** — same cookie names.
 
@@ -4625,22 +4627,23 @@ write_twitter_workspace_guidance() {
   local config_dir="$1"
   local tools="$config_dir/workspace/TOOLS.md"
   local agents="$config_dir/workspace/AGENTS.md"
-  local slug bird_bin
+  local slug bird_bin agent_id
   slug="$(twitter_clawhub_skill_slug)"
   bird_bin="workspace/node_modules/.bin/bird"
+  agent_id="$(basename "$config_dir")"
   [[ -f "$tools" ]] || return 0
-  python3 - "$tools" "$slug" "$bird_bin" <<'PY'
+  python3 - "$tools" "$slug" "$bird_bin" "$agent_id" <<'PY'
 import re, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-slug, bird_bin = sys.argv[2], sys.argv[3]
+slug, bird_bin, agent_id = sys.argv[2], sys.argv[3], sys.argv[4]
 block = f"""
-## X / Twitter (agent-b)
+## X / Twitter ({agent_id})
 
 - **Post on x.com:** `{slug}` + `bird` CLI — read **`TWITTER.md`**
 - **Command:** `{bird_bin} tweet "…"`
-- **Session:** `AUTH_TOKEN` + `CT0` — `./identyclaw.sh set-twitter-cookies agent-b`
+- **Session:** `AUTH_TOKEN` + `CT0` — `./identyclaw.sh set-twitter-cookies {agent_id}`
 - **Not for X:** `message` tool (Discord only). No paid AIsa API.
 """
 text = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -4648,18 +4651,18 @@ text = re.sub(r"\n## X / Twitter[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
 path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
 PY
   [[ -f "$agents" ]] || return 0
-  python3 - "$agents" "$slug" "$bird_bin" <<'PY'
+  python3 - "$agents" "$slug" "$bird_bin" "$agent_id" <<'PY'
 import re, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-slug, bird_bin = sys.argv[2], sys.argv[3]
+slug, bird_bin, agent_id = sys.argv[2], sys.argv[3], sys.argv[4]
 block = f"""
 ## X / Twitter
 
 - You **can** post on x.com via **`{slug}`** + `{bird_bin} tweet "…"` — read **`TWITTER.md`** first.
 - Requires `AUTH_TOKEN` and `CT0` session cookies (not password login in browser).
-- If cookies missing, tell operator to run `./identyclaw.sh set-twitter-cookies agent-b`.
+- If cookies missing, tell operator to run `./identyclaw.sh set-twitter-cookies {agent_id}`.
 - **Do not** use `message` for X. Never paste cookies in chat.
 """
 text = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -4671,11 +4674,12 @@ PY
 _write_agent_twitter_doc_in_container() {
   local container="$1"
   local username="$2"
-  local slug
+  local slug agent_id
   slug="$(twitter_clawhub_skill_slug)"
-  podman exec -i "$container" python3 - "$username" "$slug" <<'PY'
+  agent_id="${container#openclaw-}"
+  podman exec -i "$container" python3 - "$username" "$slug" "$agent_id" <<'PY'
 import os, sys
-username, slug = sys.argv[1], sys.argv[2]
+username, slug, agent_id = sys.argv[1], sys.argv[2], sys.argv[3]
 workspace = "/home/node/.openclaw/workspace"
 bird_bin = "workspace/node_modules/.bin/bird"
 for sub in ("twitter/threads", "twitter/drafts", "twitter/posts"):
@@ -4693,7 +4697,7 @@ Account: `{username}` — post via **bird** CLI + ClawHub skill `{slug}` (free �
 - **You CAN post on X** using **`{slug}`** + `exec` + `bird` (not `message`).
 - `message` is Discord/Slack only — never use it for X.
 - **Do not** use browser password login to post (breaks in container). Use session cookies instead.
-- If cookies missing, ask operator to run `./identyclaw.sh set-twitter-cookies agent-b`.
+- If cookies missing, ask operator to run `./identyclaw.sh set-twitter-cookies {agent_id}`.
 
 ## Get session cookies (one-time, Firefox)
 
@@ -4703,7 +4707,7 @@ Account: `{username}` — post via **bird** CLI + ClawHub skill `{slug}` (free �
 4. Left sidebar: **Cookies** → **https://x.com**
 5. In the table, copy the **Value** for `auth_token` (paste as `AUTH_TOKEN`)
 6. Copy the **Value** for `ct0` (paste as `CT0`)
-7. Run `./identyclaw.sh set-twitter-cookies agent-b` and paste each value when prompted
+7. Run `./identyclaw.sh set-twitter-cookies {agent_id}` and paste each value when prompted
 
 **Chrome:** DevTools → **Application** → **Cookies** → **https://x.com** — same cookie names.
 
@@ -4739,21 +4743,22 @@ PY
 
 _write_twitter_workspace_guidance_in_container() {
   local container="$1"
-  local slug
+  local slug agent_id
   slug="$(twitter_clawhub_skill_slug)"
-  podman exec -i "$container" python3 - "$slug" <<'PY'
+  agent_id="${container#openclaw-}"
+  podman exec -i "$container" python3 - "$slug" "$agent_id" <<'PY'
 import os, re, sys
-slug = sys.argv[1]
+slug, agent_id = sys.argv[1], sys.argv[2]
 workspace = "/home/node/.openclaw/workspace"
 bird_bin = "workspace/node_modules/.bin/bird"
 tools_path = os.path.join(workspace, "TOOLS.md")
 agents_path = os.path.join(workspace, "AGENTS.md")
 tools_block = f"""
-## X / Twitter (agent-b)
+## X / Twitter ({agent_id})
 
 - **Post on x.com:** `{slug}` + `bird` CLI — read **`TWITTER.md`**
 - **Command:** `{bird_bin} tweet "…"`
-- **Session:** `AUTH_TOKEN` + `CT0` — `./identyclaw.sh set-twitter-cookies agent-b`
+- **Session:** `AUTH_TOKEN` + `CT0` — `./identyclaw.sh set-twitter-cookies {agent_id}`
 - **Not for X:** `message` tool (Discord only). No paid AIsa API.
 """
 agents_block = f"""
@@ -4761,7 +4766,7 @@ agents_block = f"""
 
 - You **can** post on x.com via **`{slug}`** + `{bird_bin} tweet "…"` — read **`TWITTER.md`** first.
 - Requires `AUTH_TOKEN` and `CT0` session cookies (not password login in browser).
-- If cookies missing, tell operator to run `./identyclaw.sh set-twitter-cookies agent-b`.
+- If cookies missing, tell operator to run `./identyclaw.sh set-twitter-cookies {agent_id}`.
 - **Do not** use `message` for X. Never paste cookies in chat.
 """
 for path, block in ((tools_path, tools_block), (agents_path, agents_block)):
@@ -4777,8 +4782,10 @@ PY
 
 write_twitter_heartbeat_doc() {
   local config_dir="$1"
+  local agent_id
+  agent_id="$(basename "$config_dir")"
   mkdir -p "$config_dir/workspace"
-  cat >"$config_dir/workspace/HEARTBEAT.md" <<'EOF'
+  cat >"$config_dir/workspace/HEARTBEAT.md" <<EOF
 tasks:
 
 - name: twitter-mentions
@@ -4787,17 +4794,19 @@ tasks:
 
 # X/Twitter monitoring (hourly)
 
-Follow TWITTER.md. If bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies agent-b. If nothing needs attention, reply HEARTBEAT_OK.
+Follow TWITTER.md. If bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK.
 EOF
   chmod 644 "$config_dir/workspace/HEARTBEAT.md"
 }
 
 _write_twitter_heartbeat_doc_in_container() {
   local container="$1"
-  podman exec -i "$container" python3 <<'PY'
-import os
+  local agent_id="${container#openclaw-}"
+  podman exec -i "$container" python3 - "$agent_id" <<'PY'
+import os, sys
+agent_id = sys.argv[1]
 workspace = "/home/node/.openclaw/workspace"
-content = """tasks:
+content = f"""tasks:
 
 - name: twitter-mentions
   interval: 1h
@@ -4805,7 +4814,7 @@ content = """tasks:
 
 # X/Twitter monitoring (hourly)
 
-Follow TWITTER.md. If bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies agent-b. If nothing needs attention, reply HEARTBEAT_OK.
+Follow TWITTER.md. If bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies {agent_id}. If nothing needs attention, reply HEARTBEAT_OK.
 """
 path = os.path.join(workspace, "HEARTBEAT.md")
 with open(path, "w", encoding="utf-8") as f:

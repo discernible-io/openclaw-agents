@@ -18,9 +18,9 @@ env:
   SSH_PRIVATE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SSH_PRIVATE_KEY_MAIN || secrets.SSH_PRIVATE_KEY_DEVELOPMENT }}
   SSH_KNOWN_HOSTS: ${{ github.ref == 'refs/heads/main' && secrets.SSH_KNOWN_HOSTS_MAIN || secrets.SSH_KNOWN_HOSTS_DEVELOPMENT }}
   APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/identyclaw-agents-app
-  # Primary health-check host — must match nginx server_name for agent-b.
+  # Primary health-check host — must match nginx server_name for agent-a.
   # Development tier uses main config until dev-specific hosts/ports are provisioned.
-  DOMAIN: agent-b.identyclaw.com
+  DOMAIN: agent-a.identyclaw.com
   APP_PORT: '9443'
   NGINX_BUILD_ENV: main
   POD_NAME: identyclaw-agents-pod
@@ -154,7 +154,7 @@ jobs:
             APP_DIR='${{ env.APP_DIR }}'
             # Undo container-namespace ownership from prior deploys before host mkdir/chmod.
             podman unshare chown -R 0:0 \"\${APP_DIR}/logs/nginx\" 2>/dev/null || true
-            AGENT_IDS=\"agent-b\"
+            AGENT_IDS=\"agent-a agent-c agent-e\"
             if [ -f \"\${APP_DIR}/env.local\" ]; then
               line=\$(grep -E '^AGENT_IDS=' \"\${APP_DIR}/env.local\" | head -1 || true)
               if [ -n \"\${line}\" ]; then
