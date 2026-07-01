@@ -7,7 +7,7 @@
  *   node scripts/test-webhooks-testhola.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near-credentials.json \
- *     --agent-dase https://agent-d.dev.identyclaw.com:7443 \
+ *     --agent-base https://agent-d.dev.identyclaw.com:7443 \
  *     [--api-base <url>]  # default: Passport subjectuniqueidentifier_url via RoditClient
  */
 import { createRequire } from "node:module";
@@ -29,12 +29,12 @@ function arg(name, fallback = "") {
 
 const extDir = resolve(arg("--ext-dir", ""));
 let credPath = resolve(arg("--creds", ""));
-const agentBase = (arg("--agent-dase", "") || "").replace(/\/$/, "");
+const agentBase = (arg("--agent-base", "") || arg("--agent-dase", "")).replace(/\/$/, "");
 const apiBaseArg = arg("--api-base", "");
 
 if (!extDir || !agentBase) {
   console.error(
-    "Usage: node scripts/test-webhooks-testhola.mjs --ext-dir <a2a-plugin> --creds <near.json> --agent-dase <url> [--api-base <url>]",
+    "Usage: node scripts/test-webhooks-testhola.mjs --ext-dir <a2a-plugin> --creds <near.json> --agent-base <url> [--api-base <url>]",
   );
   process.exit(2);
 }

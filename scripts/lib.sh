@@ -787,18 +787,139 @@ resolve_local_agent_id() {
   echo "agent-a"
 }
 
-# First peer Passport token_id from A2A_PEER_AGENTS (not the local agent's own token_id).
-# Precedence: CLI arg → process env / env.local IDENTYCLAW_PEER_TOKEN_ID → first A2A_PEER_AGENTS entry.
+# Passport token_ids for agents in AGENT_IDS on this host (container probe when host cannot read secrets).
+local_host_agent_token_ids() {
+  local id tid out=""
+  load_env
+  for id in $AGENT_IDS; do
+    tid="$(agent_token_id "$id" 2>/dev/null || true)"
+    [[ -n "$tid" ]] || continue
+    if [[ -z "$out" ]]; then
+      out="$tid"
+    else
+      out="$out $tid"
+    fi
+  done
+  echo "$out"
+}
+
+# True when token_id belongs to an agent in AGENT_IDS on this host.
+a2a_peer_token_id_on_this_host() {
+  local token_id="$1" local_tid
+  [[ -n "$token_id" ]] || return 1
+  for local_tid in $(local_host_agent_token_ids); do
+    [[ "$local_tid" == "$token_id" ]] && return 0
+  done
+  return 1
+}
+
+# Passport token_ids from A2A_PEER_AGENTS that are not deployed on this host (remote A2A peers).
+a2a_remote_peer_token_ids() {
+  local ref out=""
+  load_env
+  for ref in $A2A_PEER_AGENTS; do
+    is_passport_token_id "$ref" || continue
+    a2a_peer_token_id_on_this_host "$ref" && continue
+    if [[ -z "$out" ]]; then
+      out="$ref"
+    else
+      out="$out $ref"
+    fi
+  done
+  echo "$out"
+}
+
+# Public agent registry at GET /api/agents (same as identyclaw_list_agents tool).
+a2a_discover_peers_from_api_enabled() {
+  load_env
+  [[ "${IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API:-1}" != "0" ]]
+}
+
+# JSON line: {"tokenIds":[...],"apiBase":"...","pages":N} — excludes local AGENT_IDS token_ids.
+fetch_identyclaw_api_peer_token_ids() {
+  local exclude_args=() api_base tid id
+  load_env
+  a2a_discover_peers_from_api_enabled || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
+  if [[ -z "$api_base" ]]; then
+    for id in $AGENT_IDS; do
+      api_base="$(identyclaw_api_base_url_for_agent "$id" 2>/dev/null || true)"
+      [[ -n "$api_base" ]] && break
+    done
+  fi
+  [[ -n "$api_base" ]] || return 1
+  for tid in $(local_host_agent_token_ids); do
+    exclude_args+=(--exclude "$tid")
+  done
+  node "${IDENTYCLAW_ROOT}/scripts/probe-list-api-agents.mjs" --api-base "$api_base" "${exclude_args[@]}"
+}
+
+# Merge configured remote A2A_PEER_AGENTS + GET /api/agents (deduped, local excluded).
+a2a_discovered_test_candidate_token_ids() {
+  local configured api_json tid out="" seen=""
+  load_env
+  configured="$(a2a_remote_peer_token_ids)"
+  for tid in $configured; do
+    [[ -n "$tid" ]] || continue
+    if [[ " $seen " != *" $tid "* ]]; then
+      seen="${seen:+$seen }$tid"
+      out="${out:+$out }$tid"
+    fi
+  done
+  if a2a_discover_peers_from_api_enabled; then
+    api_json="$(fetch_identyclaw_api_peer_token_ids 2>/dev/null || true)"
+    if [[ -n "$api_json" ]]; then
+      while IFS= read -r tid; do
+        [[ -n "$tid" ]] || continue
+        if [[ " $seen " != *" $tid "* ]]; then
+          seen="${seen:+$seen }$tid"
+          out="${out:+$out }$tid"
+        fi
+      done < <(python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+for tid in d.get('tokenIds') or []:
+    print(tid)
+" "$api_json")
+    fi
+  fi
+  echo "$out"
+}
+
+# True when token_id came from A2A_PEER_AGENTS (remote configured peer).
+a2a_peer_token_id_is_configured() {
+  local token_id="$1" ref
+  [[ -n "$token_id" ]] || return 1
+  load_env
+  for ref in $A2A_PEER_AGENTS; do
+    is_passport_token_id "$ref" || continue
+    a2a_peer_token_id_on_this_host "$ref" && continue
+    [[ "$ref" == "$token_id" ]] && return 0
+  done
+  return 1
+}
+
+# First remote A2A peer Passport token_id from A2A_PEER_AGENTS.
+# Precedence: CLI arg → IDENTYCLAW_PEER_TOKEN_ID → first remote A2A_PEER_AGENTS entry.
+# Skips any token_id deployed in AGENT_IDS on this host.
 resolve_peer_token_id() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
   local cli_peer="${2:-}"
-  local self_token_id p
+  local p
   load_env
   if [[ -n "$cli_peer" ]]; then
     is_passport_token_id "$cli_peer" || {
       echo "Peer must be a Passport token_id (got: ${cli_peer})" >&2
       return 1
     }
+    if a2a_peer_token_id_on_this_host "$cli_peer"; then
+      echo "Peer token_id ${cli_peer} runs on this host (AGENT_IDS) — constitution peers must be remote A2A agents" >&2
+      return 1
+    fi
     echo "$cli_peer"
     return 0
   fi
@@ -807,35 +928,102 @@ resolve_peer_token_id() {
       echo "IDENTYCLAW_PEER_TOKEN_ID must be a Passport token_id (12 characters)" >&2
       return 1
     }
-    echo "$IDENTYCLAW_PEER_TOKEN_ID"
-    return 0
+    if ! a2a_peer_token_id_on_this_host "$IDENTYCLAW_PEER_TOKEN_ID"; then
+      echo "$IDENTYCLAW_PEER_TOKEN_ID"
+      return 0
+    fi
+    echo "    (skip IDENTYCLAW_PEER_TOKEN_ID=${IDENTYCLAW_PEER_TOKEN_ID} — runs on this host)" >&2
   fi
-  self_token_id="$(agent_token_id "$local_deploy_id")"
   for p in $A2A_PEER_AGENTS; do
     is_passport_token_id "$p" || continue
-    [[ -n "$self_token_id" && "$p" == "$self_token_id" ]] && continue
+    a2a_peer_token_id_on_this_host "$p" && continue
     echo "$p"
     return 0
   done
+  if a2a_discover_peers_from_api_enabled; then
+    local api_json api_tid
+    api_json="$(fetch_identyclaw_api_peer_token_ids 2>/dev/null || true)"
+    if [[ -n "$api_json" ]]; then
+      api_tid="$(python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+ids = d.get('tokenIds') or []
+if ids:
+    print(ids[0])
+" "$api_json")"
+      [[ -n "$api_tid" ]] && { echo "$api_tid"; return 0; }
+    fi
+  fi
   return 1
 }
 
-# Passport token_ids in A2A_PEER_AGENTS excluding the local agent's own token_id.
+# Remote A2A peer token_ids (excludes any Passport deployed in AGENT_IDS on this host).
 a2a_peer_token_ids_excluding_local() {
-  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local self_token_id ref out=""
-  load_env
-  self_token_id="$(agent_token_id "$local_deploy_id" 2>/dev/null || true)"
-  for ref in $A2A_PEER_AGENTS; do
-    is_passport_token_id "$ref" || continue
-    [[ -n "$self_token_id" && "$ref" == "$self_token_id" ]] && continue
-    if [[ -z "$out" ]]; then
-      out="$ref"
-    else
-      out="$out $ref"
+  a2a_remote_peer_token_ids
+}
+
+# Constitution cross-agent test mode from resolved peer capabilities.
+# a2a+email — remote A2A + email HOLA; a2a — A2A/webhooks only; email only — HOLA without A2A base.
+classify_constitution_test_mode() {
+  local a2a_base="$1" peer_email="$2" local_email="$3"
+  local has_a2a=0 has_email=0
+  [[ -n "$a2a_base" ]] && has_a2a=1
+  [[ -n "$peer_email" && -n "$local_email" && "${SKIP_MAIL_HOLA:-0}" != 1 ]] && has_email=1
+  if [[ $has_a2a -eq 1 && $has_email -eq 1 ]]; then
+    echo "a2a+email"
+  elif [[ $has_a2a -eq 1 ]]; then
+    echo "a2a"
+  elif [[ $has_email -eq 1 ]]; then
+    echo "email only"
+  else
+    echo "unavailable"
+  fi
+}
+
+# Probe remote peer A2A base + Passport contactUri email (host paths or running container).
+probe_test_candidate_peer_json() {
+  local local_id="$1" peer_token_id="$2"
+  local config_dir cred ext_dir container probed_json a2a_base
+  [[ -n "$local_id" && -n "$peer_token_id" ]] || return 1
+  is_passport_token_id "$peer_token_id" || return 1
+  config_dir="$(agent_home "$local_id")"
+  a2a_base="$(a2a_peer_public_base_url "$peer_token_id" "$config_dir" 2>/dev/null || true)"
+  cred="$(agent_near_credentials_host_path "$local_id" 2>/dev/null || true)"
+  ext_dir="$(agent_a2a_ext_dir "$config_dir" 2>/dev/null || true)"
+  if [[ -z "$cred" || ! -d "$ext_dir" ]]; then
+    container="$(agent_container "$local_id")"
+    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      cred="$(agent_near_credentials_in_container "$local_id" 2>/dev/null || true)"
+      ext_dir="$(a2a_api_probe_ext_dir_container "$container" 2>/dev/null || true)"
+      if [[ -n "$cred" && -n "$ext_dir" ]]; then
+        podman_cp_lib_rodit_env "$container" || return 1
+        podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-identity.mjs" \
+          "$container:/tmp/lib-peer-identity.mjs" >/dev/null 2>&1 || return 1
+        podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-gateway-url.mjs" \
+          "$container:/tmp/lib-peer-gateway-url.mjs" >/dev/null 2>&1 || return 1
+        podman cp "${IDENTYCLAW_ROOT}/scripts/probe-test-candidate-peer.mjs" \
+          "$container:/tmp/probe-test-candidate-peer.mjs" >/dev/null 2>&1 || return 1
+        local -a probe_args=(node /tmp/probe-test-candidate-peer.mjs "$ext_dir" "$cred" "$peer_token_id")
+        [[ -n "$a2a_base" ]] && probe_args+=(--a2a-base "$a2a_base")
+        probed_json="$(
+          podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
+            "${probe_args[@]}" 2>/dev/null || true
+        )"
+      fi
     fi
-  done
-  echo "$out"
+  else
+    local -a probe_args=(
+      node "${IDENTYCLAW_ROOT}/scripts/probe-test-candidate-peer.mjs"
+      "$ext_dir" "$cred" "$peer_token_id"
+    )
+    [[ -n "$a2a_base" ]] && probe_args+=(--a2a-base "$a2a_base")
+    probed_json="$("${probe_args[@]}" 2>/dev/null || true)"
+  fi
+  [[ -n "$probed_json" ]] || return 1
+  printf '%s' "$probed_json"
 }
 
 # curl --resolve for local HTTPS ingress (host + in-container probes; pod nginx on loopback).
@@ -2969,7 +3157,7 @@ EOF
 | \`a2a_update_agent_card\` | Update this agent’s public Agent Card |
 | \`send_rodit_webhook\` | After a delay (default 10s), sign and POST \`/hooks/wake\` to a peer \`token_id\` from \`outbound.agents\` |
 
-For unknown senders: \`identyclaw_verify_hola\` before trusting chat claims. Open P2P inbound does not replace HOLA for impersonation checks. To message a never-seen peer proactively, use \`identyclaw_get_agent_identity\` / \`identyclaw_list_agents\` for discovery; they must expose a public Agent Card and accept P2P login.
+For unknown senders: \`identyclaw_verify_hola\` before trusting chat claims. Open P2P inbound does not replace HOLA for impersonation checks. To message a never-seen peer proactively, use \`identyclaw_list_agents\` (public GET \`/api/agents\` — token_ids only) then \`identyclaw_get_agent_identity\` / authenticated GET \`/api/identity/token/{tokenId}/full\` (session JWT from \`/api/login\` with NEAR creds) for \`metadata.webhook_url\` and \`contactUri\`. On-chain RODiT metadata is a fallback when API lookup fails. They must expose a public Agent Card and accept P2P login.
 EOF
   else
     cat >>"$config_dir/workspace/IDENTYCLAW.md" <<'EOF'

@@ -1,6 +1,7 @@
 /**
  * Peer gateway URL helpers — IdentyClaw API identity.metadata.webhook_url
- * (GET /api/identity/token/{tokenId}/full), with on-chain RODiT fallback.
+ * (GET /api/identity/token/{tokenId}/full with Bearer JWT from /api/login),
+ * with on-chain RODiT fallback.
  */
 
 export function parseWebhookBase(raw) {
