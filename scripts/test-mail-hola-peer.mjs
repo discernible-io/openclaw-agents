@@ -9,7 +9,7 @@
  *     --creds /path/to/near-credentials.json \
  *     --peer-token-id bdbfsdcfsnbd \
  *     --from-email archimedes@agenthood.me \
- *     --from-name Archimedes \
+ *     --from-name Andrew \
  *     [--api-base <url>] \
  *     [--poll-seconds 120]
  */
