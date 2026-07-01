@@ -386,7 +386,10 @@ cmd_status() {
   podman ps -a --filter 'name=openclaw-agent-' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
   echo ""
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-    echo "Production ingress (A2A + webhooks — port ${IDENTYCLAW_INGRESS_PORT}):"
+    local first_id ingress_port
+    first_id="${AGENT_IDS%% *}"
+    ingress_port="$(agent_ingress_port "${first_id}")"
+    echo "Production ingress (A2A + webhooks — port ${ingress_port}):"
     for id in $AGENT_IDS; do
       print_agent_ingress_urls "$id"
     done

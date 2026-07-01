@@ -9,7 +9,7 @@
 #
 # Optional env (defaults match deploy.yml):
 #   DEPLOY_TIER / TARGET   main or development (default: image tag, else git branch)
-#   APP_PORT=9443 (both tiers for now)
+#   APP_PORT=9443 (main) or 7443 (development) — defaults via deploy_tier_app_port
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)

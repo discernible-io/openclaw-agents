@@ -11,7 +11,7 @@
 #
 # Env:
 #   APP_DIR                  Default: ../identyclaw-agents-app (sibling of repo)
-#   APP_PORT                 Default: 9443 (both tiers for now)
+#   APP_PORT                 Default: 9443 (main) or 7443 (development) via deploy_tier_app_port
 #   TARGET                   Override tier (default: from current git branch)
 #   GITHUB_SHA               Image tag (default: git HEAD)
 #   PULL_FROM_GHCR=1         Pull images instead of local build

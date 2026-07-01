@@ -56,7 +56,7 @@ resolve_deploy_tier() {
 
 deploy_tier_app_port() {
   case "$1" in
-    development) printf '4443' ;;
+    development) printf '7443' ;;
     main) printf '9443' ;;
     *) return 1 ;;
   esac
@@ -2128,7 +2128,7 @@ pod_agent_ingress_host_args() {
   [[ -n "$host" ]] && printf '%s\n' "--add-host=${host}:127.0.0.1"
 }
 
-# HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 4443).
+# HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 7443).
 agent_container_ingress_base_url() {
   local id="$1"
   load_env
@@ -2530,10 +2530,25 @@ sync_deploy_scripts_to_app_dir() {
   cp -a "${repo_root}/identyclaw.sh" "${repo_root}/env.example" "${app_dir}/repo/"
 }
 
+agent_smtp_settings() {
+  local id="$1"
+  local port enc
+  load_env
+  is_valid_agent_id "$id" || { echo "587|start-tls"; return 0; }
+  port="$(agent_env_value "$id" SMTP_PORT "")"
+  enc="$(agent_env_value "$id" SMTP_ENCRYPTION "")"
+  echo "${port:-587}|${enc:-start-tls}"
+}
+
 write_himalaya_config() {
   local email="$1"
   local display_name="$2"
   local config_dir="$3"
+  local id smtp_port smtp_enc smtp_settings
+  id="$(basename "$config_dir")"
+  smtp_settings="$(agent_smtp_settings "$id")"
+  smtp_port="${smtp_settings%%|*}"
+  smtp_enc="${smtp_settings#*|}"
   mkdir -p "$config_dir/.config/himalaya"
   cat >"$config_dir/.config/himalaya/config.toml" <<EOF
 [accounts.default]
@@ -2551,8 +2566,8 @@ backend.auth.cmd = "/home/node/.openclaw/secrets/imap.sh"
 
 message.send.backend.type = "smtp"
 message.send.backend.host = "smtp.migadu.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
+message.send.backend.port = ${smtp_port}
+message.send.backend.encryption.type = "${smtp_enc}"
 message.send.backend.login = "${email}"
 message.send.backend.auth.type = "password"
 message.send.backend.auth.cmd = "/home/node/.openclaw/secrets/smtp.sh"
@@ -2595,13 +2610,17 @@ write_agent_email_doc() {
   local email="$1"
   local display_name="$2"
   local config_dir="$3"
+  local id smtp_port smtp_settings
+  id="$(basename "$config_dir")"
+  smtp_settings="$(agent_smtp_settings "$id")"
+  smtp_port="${smtp_settings%%|*}"
   mkdir -p "$config_dir/workspace"
   cat >"$config_dir/workspace/EMAIL.md" <<EOF
 # Email (Himalaya / Migadu)
 
 - **Account:** \`${email}\` (${display_name})
 - **Config:** \`/home/node/.config/himalaya/config.toml\`
-- **IMAP/SMTP:** Migadu (\`imap.migadu.com:993\`, \`smtp.migadu.com:587\`)
+- **IMAP/SMTP:** Migadu (\`imap.migadu.com:993\`, \`smtp.migadu.com:${smtp_port}\`)
 
 ## Read inbox
 
@@ -2662,6 +2681,7 @@ ensure_agent_email_tooling() {
   mailbox="$(agent_mailbox "$id")"
   email="${mailbox%%|*}"
   display_name="${mailbox#*|}"
+  write_himalaya_config "$email" "$display_name" "$config_dir"
   write_himalaya_send_script "$email" "$display_name" "$config_dir"
   write_agent_email_doc "$email" "$display_name" "$config_dir"
 }
