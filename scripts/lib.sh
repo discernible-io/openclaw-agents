@@ -1959,33 +1959,42 @@ agent_internal_gateway_port() {
   fi
 }
 
-# Pod agents chown state to the container uid; read the live gateway token from openclaw.json.
+# Pod agents chown state to the container uid; token may live in openclaw.json or .env.
 agent_gateway_token() {
   local id="$1"
-  local config_dir config container
+  local config_dir config container token=""
   config_dir="$(agent_home "$id")"
   config="${config_dir}/openclaw.json"
   if [[ -r "$config" ]]; then
-    python3 - "$config" <<'PY'
+    token="$(python3 - "$config" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
     cfg = json.load(f)
 print(cfg.get("gateway", {}).get("auth", {}).get("token", ""))
 PY
-    return 0
-  fi
-  container="$(agent_container "$id")"
-  if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    podman exec "$container" python3 -c "
+)"
+  else
+    container="$(agent_container "$id")"
+    if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      token="$(podman exec "$container" python3 -c "
 import json
 with open('/home/node/.openclaw/openclaw.json', encoding='utf-8') as f:
     cfg = json.load(f)
 print(cfg.get('gateway', {}).get('auth', {}).get('token', ''))
-"
-    return 0
+" 2>/dev/null || true)"
+    fi
   fi
-  if [[ -r "${config_dir}/.env" ]]; then
-    grep '^OPENCLAW_GATEWAY_TOKEN=' "${config_dir}/.env" | cut -d= -f2-
+  if [[ -z "$token" && -r "${config_dir}/.env" ]]; then
+    token="$(grep '^OPENCLAW_GATEWAY_TOKEN=' "${config_dir}/.env" | cut -d= -f2- || true)"
+  fi
+  if [[ -z "$token" ]]; then
+    container="$(agent_container "$id")"
+    if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      token="$(podman exec "$container" grep '^OPENCLAW_GATEWAY_TOKEN=' /home/node/.openclaw/.env 2>/dev/null | cut -d= -f2- || true)"
+    fi
+  fi
+  if [[ -n "$token" ]]; then
+    echo "$token"
   fi
 }
 
