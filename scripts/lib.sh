@@ -956,16 +956,18 @@ discover_live_api_peers_json_for_agent() {
   printf '%s' "$probed_json"
 }
 
-# Merge two outbound.agents JSON objects (second wins on key collision).
-merge_a2a_peer_json_maps() {
-  local primary_json="${1:-{}}"
-  local secondary_json="${2:-{}}"
-  python3 - "$primary_json" "$secondary_json" <<'PY'
+# Merge two outbound.agents JSON objects from files (second wins on key collision).
+# File-based I/O avoids ARG_MAX when API discovery returns thousands of peers.
+merge_a2a_peer_json_maps_files() {
+  local primary_file="$1"
+  local secondary_file="$2"
+  python3 - "$primary_file" "$secondary_file" <<'PY'
 import json, sys
+from pathlib import Path
 
-def load_obj(raw):
+def load_obj(path):
     try:
-        data = json.loads(raw or "{}")
+        data = json.loads(Path(path).read_text(encoding="utf-8") or "{}")
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -3584,7 +3586,13 @@ build_a2a_peer_map() {
     [[ -n "$api_json" && "$api_json" == \{* ]] || api_json="{}"
   fi
 
-  peers_json="$(merge_a2a_peer_json_maps "$api_json" "$configured_json")"
+  local api_file cfg_file peers_json
+  api_file="$(mktemp)"
+  cfg_file="$(mktemp)"
+  printf '%s' "$api_json" > "$api_file"
+  printf '%s' "$configured_json" > "$cfg_file"
+  peers_json="$(merge_a2a_peer_json_maps_files "$api_file" "$cfg_file")"
+  rm -f "$api_file" "$cfg_file"
   echo "$peers_json"
 }
 
@@ -3614,8 +3622,17 @@ ensure_a2a_config() {
     dynamic_peers_from_jwt="1"
   fi
 
+  local peers_file peers_arg
+  peers_file="$(mktemp)"
+  printf '%s' "$peers_json" > "$peers_file"
+  peers_arg="$peers_file"
+  if agent_config_use_container "$config_dir" "$container"; then
+    peers_arg="/tmp/a2a-peers-$$.json"
+    podman cp "$peers_file" "${container}:${peers_arg}" >/dev/null
+  fi
+
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "$audience" "$display_name" "$public_base_url" "$peers_json" \
+    "$audience" "$display_name" "$public_base_url" "$peers_arg" \
     "$api_base" "$dynamic_peers_from_jwt" "$own_token_id" <<'PY'
 import json, sys
 from pathlib import Path
@@ -3624,7 +3641,7 @@ path = Path(sys.argv[1])
 audience = sys.argv[2]
 display_name = sys.argv[3]
 public_base_url = sys.argv[4]
-peers = json.loads(sys.argv[5])
+peers = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
 issuer = sys.argv[6]
 dynamic_peers_from_jwt = sys.argv[7] == "1"
 own_token_id = sys.argv[8] if len(sys.argv) > 8 else ""
@@ -3766,6 +3783,10 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+  rm -f "$peers_file"
+  if agent_config_use_container "$config_dir" "$container"; then
+    podman exec "$container" rm -f "$peers_arg" 2>/dev/null || true
+  fi
 
   if [[ -n "$peers_json" && "$peers_json" != "{}" ]]; then
     sync_a2a_tls_env "$config_dir" "$container"
