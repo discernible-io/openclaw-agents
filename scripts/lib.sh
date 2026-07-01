@@ -960,7 +960,10 @@ discover_live_api_peers_json_for_agent() {
 merge_a2a_peer_json_maps() {
   local primary_json="${1:-{}}"
   local secondary_json="${2:-{}}"
-  python3 - "$primary_json" "$secondary_json" <<'PY'
+  {
+    printf '%s\n' "$primary_json"
+    printf '%s\n' "$secondary_json"
+  } | python3 - <<'PY'
 import json, sys
 
 def load_obj(raw):
@@ -970,8 +973,9 @@ def load_obj(raw):
     except Exception:
         return {}
 
-primary = load_obj(sys.argv[1])
-secondary = load_obj(sys.argv[2])
+lines = [ln for ln in sys.stdin.read().splitlines() if ln.strip()]
+primary = load_obj(lines[0] if len(lines) > 0 else "{}")
+secondary = load_obj(lines[1] if len(lines) > 1 else "{}")
 merged = dict(primary)
 merged.update(secondary)
 print(json.dumps(merged, separators=(",", ":")))
@@ -3614,8 +3618,11 @@ ensure_a2a_config() {
     dynamic_peers_from_jwt="1"
   fi
 
+  local peers_tmp
+  peers_tmp="$(mktemp)"
+  printf '%s' "$peers_json" > "$peers_tmp"
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "$audience" "$display_name" "$public_base_url" "$peers_json" \
+    "$audience" "$display_name" "$public_base_url" "$peers_tmp" \
     "$api_base" "$dynamic_peers_from_jwt" "$own_token_id" <<'PY'
 import json, sys
 from pathlib import Path
@@ -3624,7 +3631,7 @@ path = Path(sys.argv[1])
 audience = sys.argv[2]
 display_name = sys.argv[3]
 public_base_url = sys.argv[4]
-peers = json.loads(sys.argv[5])
+peers = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
 issuer = sys.argv[6]
 dynamic_peers_from_jwt = sys.argv[7] == "1"
 own_token_id = sys.argv[8] if len(sys.argv) > 8 else ""
@@ -3766,6 +3773,7 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+  rm -f "$peers_tmp"
 
   if [[ -n "$peers_json" && "$peers_json" != "{}" ]]; then
     sync_a2a_tls_env "$config_dir" "$container"
