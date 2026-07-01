@@ -211,6 +211,7 @@ fi
 for id in $AGENT_IDS; do
   echo "==> Start ${id} in pod"
   start_agent_in_pod "$id"
+  sync_agent_openclaw_json_when_container_running "$id"
   ensure_discord_plugin_compat_and_restart "$id"
 done
 

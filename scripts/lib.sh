@@ -193,9 +193,13 @@ load_env() {
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   resolve_openclaw_model_defaults
   # OpenClaw model failover: provider idle/request watchdog + agent turn cap (seconds).
-  OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-30}"
+  OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-60}"
   OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-30}"
-  OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-1000}"
+  OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-60000}"
+  # Memory: QMD backend + optional session transcript recall (synced to openclaw.json on bootstrap).
+  IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
+  IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
+  IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
@@ -2481,7 +2485,7 @@ start_pod_agent() {
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
     ensure_openclaw_model_defaults "$dir" "$container"
-    ensure_session_memory_hook "$dir" "$container"
+    ensure_memory_config "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
@@ -2498,7 +2502,7 @@ start_pod_agent() {
     podman start "$container"
     wait_for_running_agent_container "$container" || return 1
     ensure_openclaw_model_defaults "$dir" "$container"
-    ensure_session_memory_hook "$dir" "$container"
+    ensure_memory_config "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
@@ -5029,7 +5033,7 @@ ensure_agent_bootstrap() {
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
   ensure_openclaw_model_defaults "$config_dir" "$container"
-  ensure_session_memory_hook "$config_dir" "$container"
+  ensure_memory_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
   fi
@@ -5301,30 +5305,111 @@ if changed:
 PY
 }
 
-ensure_session_memory_hook() {
+ensure_memory_config() {
   local config_dir="$1"
   local container="${2:-}"
+  load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "$IDENTYCLAW_MEMORY_BACKEND" "$IDENTYCLAW_QMD_SESSION_RECALL" \
+    "$IDENTYCLAW_QMD_SESSION_RETENTION_DAYS" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+backend = sys.argv[2]
+session_recall = sys.argv[3] == "1"
+retention_days = int(sys.argv[4])
+
 data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+memory = data.setdefault("memory", {})
+if memory.get("backend") != backend:
+    memory["backend"] = backend
+    changed = True
+
 hooks = data.setdefault("hooks", {}).setdefault("internal", {})
 entries = hooks.setdefault("entries", {})
 entry = entries.setdefault("session-memory", {})
-changed = False
 if hooks.get("enabled") is not True:
     hooks["enabled"] = True
     changed = True
 if entry.get("enabled") is not True:
     entry["enabled"] = True
     changed = True
+
+if session_recall:
+    agents = data.setdefault("agents", {})
+    defaults = agents.setdefault("defaults", {})
+    memory_search = defaults.setdefault("memorySearch", {})
+    experimental = memory_search.setdefault("experimental", {})
+    if experimental.get("sessionMemory") is not True:
+        experimental["sessionMemory"] = True
+        changed = True
+    desired_sources = ["memory", "sessions"]
+    if memory_search.get("sources") != desired_sources:
+        memory_search["sources"] = desired_sources
+        changed = True
+
+    qmd = memory.setdefault("qmd", {})
+    sessions_cfg = qmd.setdefault("sessions", {})
+    if sessions_cfg.get("enabled") is not True:
+        sessions_cfg["enabled"] = True
+        changed = True
+    if sessions_cfg.get("retentionDays") != retention_days:
+        sessions_cfg["retentionDays"] = retention_days
+        changed = True
+
+    tools = data.setdefault("tools", {})
+    sessions_tool = tools.setdefault("sessions", {})
+    if sessions_tool.get("visibility") != "agent":
+        sessions_tool["visibility"] = "agent"
+        changed = True
+else:
+    agents = data.get("agents", {})
+    defaults = agents.get("defaults", {}) if isinstance(agents, dict) else {}
+    memory_search = defaults.get("memorySearch", {}) if isinstance(defaults, dict) else {}
+    if isinstance(memory_search, dict) and memory_search:
+        experimental = memory_search.get("experimental", {})
+        if isinstance(experimental, dict) and experimental.get("sessionMemory") is True:
+            experimental["sessionMemory"] = False
+            changed = True
+        sources = memory_search.get("sources")
+        if isinstance(sources, list) and "sessions" in sources:
+            memory_search["sources"] = [s for s in sources if s != "sessions"] or ["memory"]
+            changed = True
+    qmd = memory.get("qmd", {})
+    sessions_cfg = qmd.get("sessions", {}) if isinstance(qmd, dict) else {}
+    if isinstance(sessions_cfg, dict) and sessions_cfg.get("enabled") is True:
+        sessions_cfg["enabled"] = False
+        changed = True
+
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+}
+
+# Pod agents may own openclaw.json on the host — sync repo-managed settings after the gateway is up.
+sync_agent_openclaw_json_when_container_running() {
+  local id="$1"
+  local restart="${2:-1}"
+  local dir container
+  load_env
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  wait_for_running_agent_container "$container" || return 1
+  ensure_openclaw_model_defaults "$dir" "$container"
+  ensure_memory_config "$dir" "$container"
+  sync_quiet_plugin_env "$dir" "$container"
+  if [[ "$restart" == "1" ]]; then
+    podman restart "$container" >/dev/null
+  fi
+}
+
+ensure_session_memory_hook() {
+  ensure_memory_config "$@"
 }
 
 write_openclaw_json() {
@@ -5363,7 +5448,10 @@ write_openclaw_json() {
       "sessions_list",
       "sessions_history",
       "sessions_send"
-    ]
+    ],
+    "sessions": {
+      "visibility": "agent"
+    }
   },
   "plugins": {
     "entries": {
@@ -5393,6 +5481,10 @@ write_openclaw_json() {
           "${OPENCLAW_MODEL_FALLBACK_1}",
           "${OPENCLAW_MODEL_FALLBACK_2}"
         ]
+      },
+      "memorySearch": {
+        "experimental": { "sessionMemory": true },
+        "sources": ["memory", "sessions"]
       }
     }
   },
@@ -5404,7 +5496,13 @@ write_openclaw_json() {
     }
   },
   "memory": {
-    "backend": "qmd"
+    "backend": "${IDENTYCLAW_MEMORY_BACKEND:-qmd}",
+    "qmd": {
+      "sessions": {
+        "enabled": true,
+        "retentionDays": ${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}
+      }
+    }
   },
   "hooks": {
     "internal": {
@@ -5418,6 +5516,7 @@ write_openclaw_json() {
 EOF
   chmod 600 "$config_dir/openclaw.json"
   ensure_openclaw_model_defaults "$config_dir" ""
+  ensure_memory_config "$config_dir" ""
 }
 
 ensure_agent_env() {

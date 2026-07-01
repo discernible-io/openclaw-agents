@@ -274,6 +274,7 @@ start_one() {
     "$OPENCLAW_LOCAL_IMAGE" \
     node dist/index.js gateway --bind lan --port 18789
 
+  sync_agent_openclaw_json_when_container_running "$id"
   ensure_openclaw_cli_link "$container"
   ensure_agent_packages "$id"
   ensure_discord_plugin_compat_and_restart "$id"
