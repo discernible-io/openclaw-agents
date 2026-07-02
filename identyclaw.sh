@@ -585,7 +585,9 @@ cmd_test_a2a() {
   load_env
   from_id="${1:-$(resolve_local_agent_id)}"
   peer_token_id="${2:-}"
-  if [[ -z "$peer_token_id" ]]; then
+  if [[ "${CONSTITUTION_LOCAL_ONLY:-0}" == 1 ]]; then
+    peer_token_id=""
+  elif [[ -z "$peer_token_id" && "${CONSTITUTION_PEER_ONLY:-0}" != 1 ]]; then
     peer_token_id="$(resolve_peer_token_id "$from_id" 2>/dev/null || true)"
   fi
   require_agent_running "$from_id"
@@ -618,12 +620,14 @@ cmd_test_a2a() {
     echo ""
   fi
 
-  echo "==> Discovery: local ${from_id}"
-  a2a_fetch_agent_card "$from_id" "$from_id"
-  echo ""
+  if [[ "${CONSTITUTION_PEER_ONLY:-0}" != 1 ]]; then
+    echo "==> Discovery: local ${from_id}"
+    a2a_fetch_agent_card "$from_id" "$from_id"
+    echo ""
 
-  echo "==> Inbound auth probe: POST /a2a without Authorization"
-  a2a_probe_unauth_post "$from_id"
+    echo "==> Inbound auth probe: POST /a2a without Authorization"
+    a2a_probe_unauth_post "$from_id"
+  fi
   if [[ -n "$peer_token_id" ]]; then
     local peer_a2a_url peer_resolver_dir
     peer_resolver_dir="$(agent_home "$from_id")"

@@ -1111,6 +1111,34 @@ resolve_reachable_peer_token_id() {
   return 1
 }
 
+# All live remote peers for constitution suites — one token_id per distinct live gateway
+# base URL. "Live" = URL resolved from the registry (API /full metadata.webhook_url, on-chain
+# fallback) AND the gateway answers /a2a auth-gated (401/403). Deduped by base because the
+# P2P login/auth flow targets the resolved base, so multiple token_ids sharing one gateway
+# are the same peer under test (and dead token_ids that resolve to no live host are dropped).
+resolve_live_peer_token_ids() {
+  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
+  local resolver_config_dir p base seen_bases="" out=""
+  load_env
+  resolver_config_dir="$(agent_home "$local_deploy_id")"
+  for p in $(a2a_discovered_test_candidate_token_ids); do
+    is_passport_token_id "$p" || continue
+    a2a_peer_token_id_on_this_host "$p" && continue
+    base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
+    [[ -n "$base" ]] || continue
+    base="${base%/}"
+    [[ " $seen_bases " == *" $base "* ]] && continue
+    if a2a_probe_endpoint_reachable "$base"; then
+      seen_bases="${seen_bases:+$seen_bases }$base"
+      out="${out:+$out }$p"
+    else
+      echo "    (skip peer ${p} — ${base}/a2a not reachable or not auth-gated)" >&2
+    fi
+  done
+  [[ -n "$out" ]] || return 1
+  echo "$out"
+}
+
 print_constitution_agent_preflight() {
   local local_id="$1"
   local config_dir registered own_token expected card_code card_url
