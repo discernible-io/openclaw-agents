@@ -1340,15 +1340,25 @@ podman_cp_lib_test_report() {
     "$container:/tmp/lib-test-report.mjs" >/dev/null 2>&1 || return 1
 }
 
-# Email HOLA peer probe copies shared libs beside /tmp/test-mail-hola-peer.mjs.
-podman_cp_mail_hola_test_libs() {
+# Shared mail HOLA libs (responder + probe) beside /tmp/*.mjs runners.
+podman_cp_mail_responder_libs() {
   local container="$1"
   [[ -n "$container" ]] || return 1
   podman_cp_lib_rodit_env "$container" || return 1
-  podman_cp_lib_test_report "$container" || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-hola.mjs" "$container:/tmp/lib-hola.mjs" >/dev/null 2>&1 || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-identity.mjs" "$container:/tmp/lib-peer-identity.mjs" >/dev/null 2>&1 || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-himalaya-mail.mjs" "$container:/tmp/lib-himalaya-mail.mjs" >/dev/null 2>&1 || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-mail-responder.mjs" "$container:/tmp/lib-mail-responder.mjs" >/dev/null 2>&1 || return 1
+}
+
+# Email HOLA peer probe copies shared libs beside /tmp/test-mail-hola-peer.mjs.
+# Includes the responder (inbound direction) and webhook lib (P2P login to drive peer).
+podman_cp_mail_hola_test_libs() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman_cp_mail_responder_libs "$container" || return 1
+  podman_cp_lib_test_report "$container" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null 2>&1 || return 1
 }
 
 probe_rodit_own_owner_id_in_container() {
@@ -2869,7 +2879,7 @@ prepare_pod_deploy_host_paths() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3100,6 +3110,24 @@ MAIL
 \`\`\`
 
 **Critical:** \`From:\` must be \`${email}\`. Migadu rejects other senders (553 *Sender address rejected*).
+
+## Inbound HOLA probes (reciprocal testing)
+
+Peers verify us over email the same way we verify them: they send an
+\`IDENTYCLAW_HOLA_PROBE:{id}:{variant}\` email with a HOLA line, and expect a
+\`HOLA_RESPONSE:{id}:{variant}\` reply. This is handled automatically by the
+deterministic responder — no LLM action needed:
+
+\`\`\`bash
+# On the host (single agent or all):
+./identyclaw.sh respond-mail ${id}
+# Or run it on a schedule (user systemd timer, default every 5min):
+./identyclaw.sh enable-mail-responder
+\`\`\`
+
+The responder only replies with a signed HOLA when the inbound HOLA verifies; a
+tampered probe gets a rejection reply with no credential. If the responder is not
+scheduled, inbound email HOLA tests from peers will time out.
 EOF
   chmod 644 "$config_dir/workspace/EMAIL.md"
 }

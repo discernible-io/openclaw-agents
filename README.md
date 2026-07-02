@@ -285,6 +285,18 @@ Set `AGENT_A_PASSWORD`, `AGENT_D_PASSWORD`, and `AGENT_E_PASSWORD` in `env.local
 
 Success lists INBOX envelopes. `Authentication failed` means the Migadu password in `secrets/imap.pass` is wrong — fix with `set-password`, not by editing the pass file by hand.
 
+### Reciprocal email HOLA (peers test us, we test peers)
+
+Email verification is symmetric: just as `test-mail-hola` sends a HOLA probe to a peer and expects a signed reply, peers send probes to us and expect ours. Two pieces make this work:
+
+- **Responder** (`respond-mail`): a deterministic script that polls INBOX for `IDENTYCLAW_HOLA_PROBE:{id}:{variant}` messages, verifies each inbound HOLA via the IdentyClaw API, and replies `HOLA_RESPONSE:{id}:{variant}` — with a signed HOLA only when the probe verifies (a tampered probe gets a no-credential rejection). Schedule it with `./identyclaw.sh enable-mail-responder` so inbound probes don't time out.
+- **Bidirectional test** (`test-mail-hola`): the **outbound** direction probes the peer and polls for its reply; the **inbound** direction P2P-logs into the peer and (via A2A `message/send`) asks it to email *us* a probe, then exercises our own responder to confirm we receive, verify, and reply. Both directions are best-effort (reported as skips) unless `REQUIRE_MAIL_HOLA=1`, which turns missing replies into failures.
+
+```bash
+./identyclaw.sh enable-mail-responder          # keep our inbox answered on a timer
+REQUIRE_MAIL_HOLA=1 ./identyclaw.sh test-mail-hola agent-a <peer-token-id>
+```
+
 ## Rootful (optional, not recommended)
 
 Only if you intentionally run Podman as root:
@@ -832,12 +844,15 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh restart all` | Restart after password or config changes |
 | `./identyclaw.sh enable-boot` | One-time: background + start agents in `AGENT_IDS` after reboot |
 | `./identyclaw.sh test-mail agent-a` | Verify IMAP via Himalaya |
+| `./identyclaw.sh respond-mail [id\|all]` | Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point) |
+| `./identyclaw.sh enable-mail-responder [interval]` | Install user systemd timer running `respond-mail` (default 5min) |
 | `./identyclaw.sh logs agent-a` | Follow logs |
 | `./identyclaw.sh token agent-a` | Print Control UI gateway token |
 | `./identyclaw.sh chat agent-a` | Interactive terminal chat |
 | `./identyclaw.sh ask agent-a "..."` | One-shot message to an agent |
 | `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks) |
 | `./identyclaw.sh test` | Full gateway suite (A2A, webhooks, mail — see local `test-constitution.md`) |
+| `./identyclaw.sh test-mail-hola [id] [peer-token-id]` | Reciprocal email HOLA: we probe the peer **and** drive the peer to probe us; `REQUIRE_MAIL_HOLA=1` makes missing replies a failure |
 | `./identyclaw.sh test-a2a [from] [peer-token-id]` | Agent Card discovery (peer URL via API when dynamic mode on) + unauthenticated `/a2a` → 401 |
 | `./identyclaw.sh test-a2a-auth` | P2P JWT on `/a2a` (peer via API/registry, then local inbound) |
 | `./identyclaw.sh upgrade-plugins [id\|all]` | Refresh A2A + IdentyClaw plugins from ClawHub pins |

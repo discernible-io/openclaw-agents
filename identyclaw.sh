@@ -25,7 +25,9 @@
 #   test-all-peers       Run constitution suites against every A2A_PEER_AGENTS peer (excl. own token_id)
 #   test-peer-gateway    Unit tests: metadata.webhook_url → agent card URL
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
-#   test-mail-hola [id] [peer-token-id]  HOLA over email: API peer contactUri, good/bad HOLA send, inbox poll
+#   test-mail-hola [id] [peer-token-id]  Reciprocal email HOLA: we probe peer + peer probes us (REQUIRE_MAIL_HOLA=1 to enforce)
+#   respond-mail [id|all]  Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point)
+#   enable-mail-responder [interval]  Install user systemd timer to run respond-mail (default 5min)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
 #   test-a2a-auth [peer-token-id]    P2P JWT on /a2a (peer when configured, then local inbound)
@@ -483,14 +485,119 @@ cmd_test_mail_hola() {
     --from-email "$email"
     --from-name "$display_name"
   )
-  local api_base poll_sec
+  local api_base poll_sec peer_base
   api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
   [[ -n "$api_base" ]] && hola_args+=(--api-base "$api_base")
   poll_sec="${MAIL_HOLA_POLL_SECONDS:-60}"
   hola_args+=(--poll-seconds "$poll_sec")
-  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-mail-hola-peer.mjs \
+  # Peer A2A gateway lets us drive the reciprocal inbound probe (peer → us).
+  peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$id")" 2>/dev/null || true)"
+  if [[ -n "$peer_base" ]]; then
+    hola_args+=(--peer-base "$peer_base")
+  else
+    hola_args+=(--skip-inbound)
+  fi
+  [[ "${REQUIRE_MAIL_HOLA:-0}" == 1 ]] && hola_args+=(--require)
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 -e "REQUIRE_MAIL_HOLA=${REQUIRE_MAIL_HOLA:-0}" \
+    "$container" node /tmp/test-mail-hola-peer.mjs \
     "${hola_args[@]}" || failed=1
   return "$failed"
+}
+
+# Run the inbound HOLA email responder once for a single agent (cron/timer entry point).
+respond_mail_one() {
+  local id="$1"
+  local container creds ext_dir mailbox email display_name
+  container="$(agent_container "$id")"
+  if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    echo "    (${id}: container not running — skip mail responder)" >&2
+    return 0
+  fi
+  creds="$(agent_near_credentials_in_container "$id")"
+  [[ -n "$creds" ]] || {
+    echo "    (${id}: no NEAR credentials — cannot verify HOLA, skip)" >&2
+    return 0
+  }
+  mailbox="$(agent_mailbox "$id")"
+  email="${mailbox%%|*}"
+  display_name="${mailbox#*|}"
+  [[ -n "$email" ]] || {
+    echo "    (${id}: no AGENT_*_EMAIL — skip mail responder)" >&2
+    return 0
+  }
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_mail_responder_libs "$container" || {
+    echo "    (${id}: failed to copy responder libs)" >&2
+    return 1
+  }
+  podman cp "${IDENTYCLAW_ROOT}/scripts/respond-agent-mail.mjs" "$container:/tmp/respond-agent-mail.mjs" >/dev/null
+  local -a args=(
+    --ext-dir "$ext_dir"
+    --creds "$creds"
+    --from-email "$email"
+    --from-name "$display_name"
+  )
+  local api_base
+  api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
+  [[ -n "$api_base" ]] && args+=(--api-base "$api_base")
+  [[ "${MAIL_RESPONDER_DRY_RUN:-0}" == 1 ]] && args+=(--dry-run)
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
+    node /tmp/respond-agent-mail.mjs "${args[@]}"
+}
+
+cmd_respond_mail() {
+  local target="${1:-}"
+  load_env
+  require_podman
+  if [[ -z "$target" || "$target" == "all" ]]; then
+    local rc=0
+    for id in $AGENT_IDS; do
+      echo "==> Mail responder: ${id}"
+      respond_mail_one "$id" || rc=1
+    done
+    return "$rc"
+  fi
+  is_valid_agent_id "$target" || { echo "Invalid agent id: ${target}" >&2; return 1; }
+  echo "==> Mail responder: ${target}"
+  respond_mail_one "$target"
+}
+
+# Install a user systemd timer that runs `respond-mail` on an interval (cron-style).
+cmd_enable_mail_responder() {
+  require_rootless_user
+  local interval="${1:-5min}"
+  local unit_dir="${HOME}/.config/systemd/user"
+  local script_path="${ROOT}/identyclaw.sh"
+  mkdir -p "$unit_dir"
+  cat >"${unit_dir}/identyclaw-mail-responder.service" <<EOF
+[Unit]
+Description=IdentyClaw inbound HOLA email responder (poll INBOX, verify, reply)
+After=podman-restart.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${ROOT}
+ExecStart=/usr/bin/env bash ${script_path} respond-mail all
+EOF
+  cat >"${unit_dir}/identyclaw-mail-responder.timer" <<EOF
+[Unit]
+Description=Run IdentyClaw mail responder every ${interval}
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=${interval}
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now identyclaw-mail-responder.timer
+  echo "==> Mail responder timer enabled (every ${interval})."
+  echo "    Status:  systemctl --user status identyclaw-mail-responder.timer"
+  echo "    Logs:    journalctl --user -u identyclaw-mail-responder.service -f"
+  echo "    Disable: systemctl --user disable --now identyclaw-mail-responder.timer"
 }
 
 cmd_generate_certs() {
@@ -1815,6 +1922,8 @@ main() {
     test-peer-gateway) cmd_test_peer_gateway "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
     test-mail-hola) cmd_test_mail_hola "$@" ;;
+    respond-mail) cmd_respond_mail "$@" ;;
+    enable-mail-responder) cmd_enable_mail_responder "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-a2a-auth) cmd_test_a2a_auth "$@" ;;
