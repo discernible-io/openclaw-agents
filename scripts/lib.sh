@@ -1113,24 +1113,37 @@ resolve_reachable_peer_token_id() {
 
 print_constitution_agent_preflight() {
   local local_id="$1"
-  local config_dir registered expected card_code card_url
+  local config_dir registered own_token expected card_code card_url
   load_env
   is_valid_agent_id "$local_id" || return 1
   config_dir="$(agent_home "$local_id")"
   expected="$(agent_container_ingress_base_url "$local_id" 2>/dev/null || true)"
   [[ -n "$expected" ]] || expected="$(agent_a2a_public_base_url "$local_id" 2>/dev/null || true)"
   [[ -n "$expected" ]] || expected="$(agent_ingress_base_url "$local_id" 2>/dev/null || true)"
-  registered="$(rodit_passport_webhook_url "$config_dir" 2>/dev/null || true)"
+  # webhook_url source of truth: IdentyClaw API GET /api/identity/token/{tokenId}/full
+  # (metadata.webhook_url), with on-chain RODiT fallback — same resolution the peer path uses.
+  # Runs in-container when the host cannot read the mounted NEAR credentials (rootless podman
+  # uid mapping), so host filesystem permissions never produce a false "empty webhook_url".
+  own_token="$(agent_token_id "$local_id" 2>/dev/null || true)"
+  if [[ -n "$own_token" ]]; then
+    registered="$(probe_identyclaw_peer_public_base_url "$config_dir" "$own_token" 2>/dev/null || true)"
+  fi
   registered="${registered%/}"
   expected="${expected%/}"
 
   echo "==> Preflight (${local_id})"
-  if [[ -z "$registered" ]]; then
-    echo "    webhook_url: FAIL empty Passport metadata.webhook_url"
+  if [[ -z "$own_token" ]]; then
+    echo "    webhook_url: FAIL cannot resolve own Passport token_id (need readable NEAR creds or a running container)"
+  elif [[ -z "$registered" ]]; then
+    if a2a_resolve_peers_by_token_id_enabled; then
+      echo "    webhook_url: FAIL API /full + on-chain have no metadata.webhook_url for token_id=${own_token}"
+    else
+      echo "    webhook_url: SKIP token_id=${own_token} (set IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 to resolve via API /full)"
+    fi
   elif [[ "$registered" == "$expected" ]]; then
-    echo "    webhook_url: OK ${registered}"
+    echo "    webhook_url: OK ${registered} (API /full token_id=${own_token})"
   else
-    echo "    webhook_url: MISMATCH registered=${registered} expected=${expected}"
+    echo "    webhook_url: MISMATCH registered=${registered} expected=${expected} (API /full token_id=${own_token})"
   fi
 
   if [[ -n "$expected" ]]; then
