@@ -654,7 +654,11 @@ cmd_test_a2a_auth() {
   require_podman
   load_env
   local_id="${local_id:-$(resolve_local_agent_id)}"
-  peer_token_id="$(resolve_peer_token_id "$local_id" "$peer_token_id" 2>/dev/null || true)"
+  if [[ "${CONSTITUTION_LOCAL_ONLY:-0}" == 1 ]]; then
+    peer_token_id=""
+  else
+    peer_token_id="$(resolve_peer_token_id "$local_id" "$peer_token_id" 2>/dev/null || true)"
+  fi
   require_agent_running "$local_id"
 
   container="$(agent_container "$local_id")"
@@ -691,15 +695,17 @@ cmd_test_a2a_auth() {
     echo ""
   fi
 
-  target="$(agent_a2a_public_base_url "$local_id")"
-  [[ -n "$target" ]] || target="$(agent_ingress_base_url "$local_id")"
-  [[ -n "$target" ]] || {
-    echo "No ingress URL for local ${local_id}" >&2
-    return 1
-  }
-  echo "==> A2A RODiT auth (→ local ${local_id} at ${target})"
-  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
-    --ext-dir "$ext_dir" --creds "$creds" --target "$target" || failed=1
+  if [[ "${CONSTITUTION_PEER_ONLY:-0}" != 1 ]]; then
+    target="$(agent_a2a_public_base_url "$local_id")"
+    [[ -n "$target" ]] || target="$(agent_ingress_base_url "$local_id")"
+    [[ -n "$target" ]] || {
+      echo "No ingress URL for local ${local_id}" >&2
+      return 1
+    }
+    echo "==> A2A RODiT auth (→ local ${local_id} at ${target})"
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-rodit-auth.mjs \
+      --ext-dir "$ext_dir" --creds "$creds" --target "$target" || failed=1
+  fi
 
   return "$failed"
 }
@@ -715,7 +721,11 @@ cmd_test_auth_boundaries() {
   require_podman
   load_env
   local_id="${local_id:-$(resolve_local_agent_id)}"
-  peer_token_id="$(resolve_peer_token_id "$local_id" "$peer_token_id" 2>/dev/null || true)"
+  if [[ "${CONSTITUTION_LOCAL_ONLY:-0}" == 1 ]]; then
+    peer_token_id=""
+  else
+    peer_token_id="$(resolve_peer_token_id "$local_id" "$peer_token_id" 2>/dev/null || true)"
+  fi
   require_agent_running "$local_id"
 
   container="$(agent_container "$local_id")"
@@ -1231,21 +1241,62 @@ cmd_test_candidates() {
 
 cmd_test_constitution_for_agent() {
   local local_id="$1"
-  local peer_token_id failed=0
+  local failed=0 peers peer base local_email peer_email a2a_base constitution_mode
+  local peer_count=0
   load_env
   is_valid_agent_id "$local_id" || {
     echo "Invalid agent id: ${local_id}" >&2
     return 1
   }
   print_constitution_agent_preflight "$local_id"
-  peer_token_id="$(resolve_peer_token_id "$local_id" 2>/dev/null || true)"
-  echo "==> Test constitution (local=${local_id}${peer_token_id:+, peer token_id=${peer_token_id}})"
-  if [[ -n "$peer_token_id" ]]; then
-    local probed_json a2a_base peer_email local_email constitution_mode
-    local_email="$(agent_env_value "$local_id" EMAIL "")"
-    probed_json="$(probe_test_candidate_peer_json "$local_id" "$peer_token_id" 2>/dev/null || true)"
-    a2a_base=""
+
+  # All live remote peers (registry-resolved, deduped by gateway base) — test every one.
+  peers="$(resolve_live_peer_token_ids "$local_id" 2>/dev/null || true)"
+  local_email="$(agent_env_value "$local_id" EMAIL "")"
+  echo "==> Test constitution (local=${local_id})"
+  if [[ -n "$peers" ]]; then
+    echo "    live peers detected:"
+    for peer in $peers; do
+      base="$(a2a_peer_public_base_url "$peer" "$(agent_home "$local_id")" 2>/dev/null || true)"
+      echo "      - ${peer} → ${base:-unresolved}"
+      peer_count=$((peer_count + 1))
+    done
+  else
+    echo "    live peers detected: none (local-only run)"
+  fi
+  echo ""
+
+  # --- Local coverage (once, peer-independent) ---
+  echo "======== LOCAL SUITES (${local_id}) ========"
+  CONSTITUTION_LOCAL_ONLY=1 cmd_test_a2a "$local_id" || failed=1
+  echo ""
+  CONSTITUTION_LOCAL_ONLY=1 cmd_test_a2a_auth "$local_id" || failed=1
+  echo ""
+  cmd_test_webhook "$local_id" || failed=1
+  echo ""
+  cmd_test_mail "$local_id" || failed=1
+
+  if [[ -z "$peers" ]]; then
+    echo ""
+    CONSTITUTION_LOCAL_ONLY=1 cmd_test_auth_boundaries "$local_id" || failed=1
+    echo ""
+    echo "==> Skip peer suites (no live remote peers detected)"
+    echo ""
+    if [[ $failed -eq 0 ]]; then
+      echo "Constitution suites (${local_id}): passed"
+    else
+      echo "Constitution suites (${local_id}): not-passed (see output above)" >&2
+    fi
+    return "$failed"
+  fi
+
+  # --- Per-peer coverage (every live peer detected) ---
+  for peer in $peers; do
+    base="$(a2a_peer_public_base_url "$peer" "$(agent_home "$local_id")" 2>/dev/null || true)"
     peer_email=""
+    a2a_base=""
+    local probed_json
+    probed_json="$(probe_test_candidate_peer_json "$local_id" "$peer" 2>/dev/null || true)"
     if [[ -n "$probed_json" ]]; then
       read -r a2a_base peer_email <<<"$(python3 -c "
 import json, sys
@@ -1257,42 +1308,28 @@ except Exception:
 print(d.get('a2aBase') or '', d.get('peerEmail') or '')
 " "$probed_json")"
     fi
-    [[ -z "$a2a_base" ]] && a2a_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$local_id")" 2>/dev/null || true)"
+    [[ -z "$a2a_base" ]] && a2a_base="$base"
     constitution_mode="$(classify_constitution_test_mode "$a2a_base" "$peer_email" "$local_email")"
-    echo "    test mode: ${constitution_mode}"
-  else
-    echo "    test mode: local-only"
-  fi
-  echo ""
-
-  cmd_test_a2a "$local_id" "${peer_token_id:-}" || failed=1
-  echo ""
-  cmd_test_a2a_auth "$local_id" "${peer_token_id:-}" || failed=1
-  echo ""
-  cmd_test_auth_boundaries "$local_id" "${peer_token_id:-}" || failed=1
-  echo ""
-  cmd_test_webhook "$local_id" || failed=1
-  if [[ -n "$peer_token_id" ]]; then
     echo ""
-    cmd_test_webhook_p2p "$local_id" "$peer_token_id" || failed=1
-  else
+    echo "======== PEER ${peer} (${base:-unresolved}) — from ${local_id} [mode=${constitution_mode}] ========"
+    CONSTITUTION_PEER_ONLY=1 cmd_test_a2a "$local_id" "$peer" || failed=1
     echo ""
-    echo "==> Skip test-webhook-p2p (no remote A2A peer — peers on this host are excluded)"
-  fi
-  echo ""
-  cmd_test_mail "$local_id" || failed=1
-  if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
+    CONSTITUTION_PEER_ONLY=1 cmd_test_a2a_auth "$local_id" "$peer" || failed=1
     echo ""
-    echo "==> Skip test-mail-hola (SKIP_MAIL_HOLA=1)"
-  elif [[ -n "$peer_token_id" ]]; then
+    cmd_test_auth_boundaries "$local_id" "$peer" || failed=1
     echo ""
-    cmd_test_mail_hola "$local_id" "${peer_token_id:-}" || failed=1
-  else
-    echo ""
-    echo "==> Skip test-mail-hola (no remote A2A peer — peers on this host are excluded)"
-  fi
+    cmd_test_webhook_p2p "$local_id" "$peer" || failed=1
+    if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
+      echo ""
+      echo "==> Skip test-mail-hola for peer ${peer} (SKIP_MAIL_HOLA=1)"
+    else
+      echo ""
+      cmd_test_mail_hola "$local_id" "$peer" || failed=1
+    fi
+  done
 
   echo ""
+  echo "==> Constitution peer coverage (${local_id}): ${peer_count} live peer(s) tested"
   if [[ $failed -eq 0 ]]; then
     echo "Constitution suites (${local_id}): passed"
   else
