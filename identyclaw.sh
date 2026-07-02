@@ -1060,11 +1060,10 @@ cmd_test_all_peers() {
   local local_id peer_token_id peers failed=0
   load_env
   local_id="$(resolve_local_agent_id)"
-  peers="$(a2a_remote_peer_token_ids)"
-  echo "==> Test constitution — all remote A2A peers (local=$(resolve_local_agent_id))"
+  peers="$(resolve_live_peer_token_ids "$local_id" 2>/dev/null || true)"
+  echo "==> Test constitution — all live remote peers (local=${local_id})"
   echo "    AGENT_IDS=${AGENT_IDS} (excluded from peer targets)"
-  echo "    A2A_PEER_AGENTS=${A2A_PEER_AGENTS}"
-  echo "    remote peers=${peers:-none}"
+  echo "    live peers (registry-resolved, deduped by gateway base)=${peers:-none}"
   echo ""
 
   cmd_test_peer_gateway || failed=1
