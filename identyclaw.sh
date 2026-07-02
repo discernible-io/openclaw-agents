@@ -1591,12 +1591,25 @@ cmd_token() {
 
 require_agent_running() {
   local id="$1"
-  local container
+  local container attempt=0 max_attempts=5
   load_env
   container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || {
-    if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
-      cat >&2 <<EOF
+  while (( attempt < max_attempts )); do
+    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      ensure_agent_state_for_container_exec "$id"
+      ensure_openclaw_cli_link "$container"
+      return 0
+    fi
+    if podman container inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+      ensure_agent_state_for_container_exec "$id"
+      ensure_openclaw_cli_link "$container"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    [[ $attempt -lt $max_attempts ]] && sleep 1
+  done
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    cat >&2 <<EOF
 ${container} is not running.
 
   ./identyclaw.sh restart ${id}
@@ -1604,13 +1617,10 @@ ${container} is not running.
   ./scripts/deploy-local-podman.sh   # full pod redeploy
 
 EOF
-    else
-      echo "Start ${container} first: $0 start ${id}" >&2
-    fi
-    exit 1
-  }
-  ensure_agent_state_for_container_exec "$id"
-  ensure_openclaw_cli_link "$container"
+  else
+    echo "Start ${container} first: $0 start ${id}" >&2
+  fi
+  exit 1
 }
 
 cmd_chat() {

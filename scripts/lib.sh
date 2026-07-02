@@ -890,7 +890,28 @@ for tid in d.get('tokenIds') or []:
   echo "$out"
 }
 
+# Optional test allowlist: when A2A_TEST_ONLY_PEERS is set, constitution peer
+# suites target exactly these Passport token_ids (still deduped/reachability-probed
+# and with local-host token_ids skipped). Empty means test all discovered peers.
+a2a_test_only_peer_token_ids() {
+  local ref out=""
+  load_env
+  for ref in ${A2A_TEST_ONLY_PEERS:-}; do
+    is_passport_token_id "$ref" || continue
+    if [[ " $out " != *" $ref "* ]]; then
+      out="${out:+$out }$ref"
+    fi
+  done
+  echo "$out"
+}
+
 a2a_discovered_test_candidate_token_ids() {
+  local only
+  only="$(a2a_test_only_peer_token_ids)"
+  if [[ -n "$only" ]]; then
+    echo "$only"
+    return 0
+  fi
   a2a_merged_remote_peer_token_ids
 }
 
