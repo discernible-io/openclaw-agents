@@ -1123,18 +1123,34 @@ a2a_probe_agent_card_status() {
   [[ "$code" == "200" ]]
 }
 
+# Resolved gateway base URL for a local (this-host) agent — used to detect peers that
+# resolve to our own ingress (e.g. an alternate token_id registered to this agent).
+agent_own_gateway_base_url() {
+  local id="$1" base
+  [[ -n "$id" ]] || return 1
+  base="$(agent_container_ingress_base_url "$id" 2>/dev/null || true)"
+  [[ -n "$base" ]] || base="$(agent_a2a_public_base_url "$id" 2>/dev/null || true)"
+  [[ -n "$base" ]] || base="$(agent_ingress_base_url "$id" 2>/dev/null || true)"
+  echo "${base%/}"
+}
+
 # First remote peer token_id whose resolved /a2a endpoint responds 401/403.
 resolve_reachable_peer_token_id() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir
+  local resolver_config_dir local_base
   local p base
   load_env
   resolver_config_dir="$(agent_home "$local_deploy_id")"
+  local_base="$(agent_own_gateway_base_url "$local_deploy_id" 2>/dev/null || true)"
   for p in $(a2a_discovered_test_candidate_token_ids); do
     is_passport_token_id "$p" || continue
     a2a_peer_token_id_on_this_host "$p" && continue
     base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$base" ]] || continue
+    if [[ -n "$local_base" && "${base%/}" == "$local_base" ]]; then
+      echo "    (skip peer ${p} — resolves to local agent base ${base%/}; self is covered by local suites)" >&2
+      continue
+    fi
     if a2a_probe_endpoint_reachable "$base"; then
       echo "$p"
       return 0
@@ -1151,15 +1167,25 @@ resolve_reachable_peer_token_id() {
 # are the same peer under test (and dead token_ids that resolve to no live host are dropped).
 resolve_live_peer_token_ids() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir p base seen_bases="" out=""
+  local resolver_config_dir p base seen_bases="" out="" local_base=""
   load_env
   resolver_config_dir="$(agent_home "$local_deploy_id")"
+  # Seed the dedup set with the local agent's own gateway base so any peer that
+  # resolves to the same ingress (e.g. an alternate token_id registered to this
+  # host's agent) is skipped instead of "tested against self" — self-resolution
+  # mis-resolves the peer URL and aborts the run.
+  local_base="$(agent_own_gateway_base_url "$local_deploy_id" 2>/dev/null || true)"
+  [[ -n "$local_base" ]] && seen_bases="$local_base"
   for p in $(a2a_discovered_test_candidate_token_ids); do
     is_passport_token_id "$p" || continue
     a2a_peer_token_id_on_this_host "$p" && continue
     base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$base" ]] || continue
     base="${base%/}"
+    if [[ -n "$local_base" && "$base" == "$local_base" ]]; then
+      echo "    (skip peer ${p} — resolves to local agent base ${base}; self is covered by local suites)" >&2
+      continue
+    fi
     [[ " $seen_bases " == *" $base "* ]] && continue
     if a2a_probe_endpoint_reachable "$base"; then
       seen_bases="${seen_bases:+$seen_bases }$base"
