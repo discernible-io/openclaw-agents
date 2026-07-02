@@ -245,9 +245,9 @@ resolve_openclaw_model_defaults() {
       OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-opencode-go/kimi-k2.6}"
       ;;
     openrouter)
-      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
-      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder:free}"
-      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/x-ai/grok-4.3}"
+      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/x-ai/grok-4.3}"
+      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
+      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/qwen/qwen3-coder:free}"
       ;;
     *)
       echo "Unknown OPENCLAW_LLM_PROVIDER: ${provider} (use openrouter or opencode)" >&2
@@ -5816,7 +5816,6 @@ for entry in sessions.values():
         model_s == paid_fallback
         or model_s == fb2
         or model_tail(model_s) == paid_fallback
-        or model_s.endswith("grok-4.3")
     )
     if "openrouter" not in provider_ids and model_s.startswith("openrouter/"):
         stale = True
