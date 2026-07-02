@@ -1123,18 +1123,41 @@ a2a_probe_agent_card_status() {
   [[ "$code" == "200" ]]
 }
 
+# Normalized gateway base URLs (protocol//host[:port], trailing slash stripped) for a local
+# agent. A discovered peer that resolves to one of these shares the agent's own gateway (self
+# or a co-located agent behind the same ingress), so it is not a real cross-gateway peer and
+# is skipped — the agent still gets its local coverage instead of the run aborting on self.
+local_agent_gateway_bases() {
+  local id="$1" b out=""
+  for b in \
+    "$(agent_container_ingress_base_url "$id" 2>/dev/null || true)" \
+    "$(agent_a2a_public_base_url "$id" 2>/dev/null || true)" \
+    "$(agent_ingress_base_url "$id" 2>/dev/null || true)"; do
+    b="${b%/}"
+    [[ -n "$b" ]] || continue
+    [[ " $out " == *" $b "* ]] && continue
+    out="${out:+$out }$b"
+  done
+  echo "$out"
+}
+
 # First remote peer token_id whose resolved /a2a endpoint responds 401/403.
 resolve_reachable_peer_token_id() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir
+  local resolver_config_dir local_bases
   local p base
   load_env
   resolver_config_dir="$(agent_home "$local_deploy_id")"
+  local_bases="$(local_agent_gateway_bases "$local_deploy_id")"
   for p in $(a2a_discovered_test_candidate_token_ids); do
     is_passport_token_id "$p" || continue
     a2a_peer_token_id_on_this_host "$p" && continue
     base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$base" ]] || continue
+    if [[ " $local_bases " == *" ${base%/} "* ]]; then
+      echo "    (skip peer ${p} — shares local gateway base ${base%/}; treating ${local_deploy_id} as local-only)" >&2
+      continue
+    fi
     if a2a_probe_endpoint_reachable "$base"; then
       echo "$p"
       return 0
@@ -1151,15 +1174,20 @@ resolve_reachable_peer_token_id() {
 # are the same peer under test (and dead token_ids that resolve to no live host are dropped).
 resolve_live_peer_token_ids() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir p base seen_bases="" out=""
+  local resolver_config_dir p base seen_bases="" out="" local_bases
   load_env
   resolver_config_dir="$(agent_home "$local_deploy_id")"
+  local_bases="$(local_agent_gateway_bases "$local_deploy_id")"
   for p in $(a2a_discovered_test_candidate_token_ids); do
     is_passport_token_id "$p" || continue
     a2a_peer_token_id_on_this_host "$p" && continue
     base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$base" ]] || continue
     base="${base%/}"
+    if [[ " $local_bases " == *" $base "* ]]; then
+      echo "    (skip peer ${p} — shares local gateway base ${base}; testing ${local_deploy_id} local-only)" >&2
+      continue
+    fi
     [[ " $seen_bases " == *" $base "* ]] && continue
     if a2a_probe_endpoint_reachable "$base"; then
       seen_bases="${seen_bases:+$seen_bases }$base"
