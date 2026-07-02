@@ -890,16 +890,35 @@ for tid in d.get('tokenIds') or []:
   echo "$out"
 }
 
-# Constitution / smoke-test peer candidates. When A2A_PEER_AGENTS lists valid
-# token_ids, only those peers are exercised in ./identyclaw.sh test* (live /a2a
-# probe still drops unreachable gateways). When unset, candidates come from
-# A2A_PEER_AGENTS + GET /api/agents (merged, deduped). Peer gateway URLs and
+# Optional test allowlist: when A2A_TEST_ONLY_PEERS is set, constitution peer
+# suites target exactly these Passport token_ids (still deduped/reachability-probed
+# and with local-host token_ids skipped). Empty means test all discovered peers.
+a2a_test_only_peer_token_ids() {
+  local ref out=""
+  load_env
+  for ref in ${A2A_TEST_ONLY_PEERS:-}; do
+    is_passport_token_id "$ref" || continue
+    if [[ " $out " != *" $ref "* ]]; then
+      out="${out:+$out }$ref"
+    fi
+  done
+  echo "$out"
+}
+
+# Constitution / smoke-test peer candidates. Precedence: A2A_TEST_ONLY_PEERS when
+# set; else A2A_PEER_AGENTS when it lists valid token_ids (configured peers only);
+# else A2A_PEER_AGENTS + GET /api/agents (merged, deduped). Peer gateway URLs and
 # contactUri email are always resolved at run time via GET /api/identity/token/
 # {tokenId}/full metadata.webhook_url (+ on-chain fallback) when
 # IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 — independent of this list.
 a2a_discovered_test_candidate_token_ids() {
-  local configured
+  local only configured
   load_env
+  only="$(a2a_test_only_peer_token_ids)"
+  if [[ -n "$only" ]]; then
+    echo "$only"
+    return 0
+  fi
   configured="$(a2a_configured_peer_token_ids)"
   if [[ -n "$configured" ]]; then
     echo "$configured"
