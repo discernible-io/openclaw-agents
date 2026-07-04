@@ -1188,12 +1188,17 @@ cmd_test_all_peers() {
       echo "========================================"
       echo "=== PEER ${peer_token_id} ==="
       echo "========================================"
-      cmd_test_a2a "$local_id" "$peer_token_id" || failed=1
-      echo ""
-      cmd_test_a2a_auth "$peer_token_id" || failed=1
-      echo ""
-      cmd_test_auth_boundaries "$peer_token_id" || failed=1
-      echo ""
+      if peer_shares_local_gateway_base "$local_id" "$peer_token_id"; then
+        echo "==> Skip A2A suites for peer ${peer_token_id} (same gateway as ${local_id}; local suites cover this ingress)"
+        echo ""
+      else
+        cmd_test_a2a "$local_id" "$peer_token_id" || failed=1
+        echo ""
+        cmd_test_a2a_auth "$peer_token_id" || failed=1
+        echo ""
+        cmd_test_auth_boundaries "$peer_token_id" || failed=1
+        echo ""
+      fi
       cmd_test_webhook_p2p "$local_id" "$peer_token_id" || failed=1
       if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
         echo ""
@@ -1401,7 +1406,7 @@ cmd_test_constitution_for_agent() {
     base="$(a2a_peer_public_base_url "$peer" "$(agent_home "$local_id")" 2>/dev/null || true)"
     peer_email=""
     a2a_base=""
-    local probed_json
+    local probed_json peer_shares_gateway=0
     probed_json="$(probe_test_candidate_peer_json "$local_id" "$peer" 2>/dev/null || true)"
     if [[ -n "$probed_json" ]]; then
       read -r a2a_base peer_email <<<"$(python3 -c "
@@ -1415,15 +1420,24 @@ print(d.get('a2aBase') or '', d.get('peerEmail') or '')
 " "$probed_json")"
     fi
     [[ -z "$a2a_base" ]] && a2a_base="$base"
+    if peer_shares_local_gateway_base "$local_id" "$peer"; then
+      peer_shares_gateway=1
+      a2a_base=""
+    fi
     constitution_mode="$(classify_constitution_test_mode "$a2a_base" "$peer_email" "$local_email")"
     echo ""
     echo "======== PEER ${peer} (${base:-unresolved}) — from ${local_id} [mode=${constitution_mode}] ========"
-    CONSTITUTION_PEER_ONLY=1 cmd_test_a2a "$local_id" "$peer" || failed=1
-    echo ""
-    CONSTITUTION_PEER_ONLY=1 cmd_test_a2a_auth "$local_id" "$peer" || failed=1
-    echo ""
-    cmd_test_auth_boundaries "$local_id" "$peer" || failed=1
-    echo ""
+    if [[ $peer_shares_gateway -eq 1 ]]; then
+      echo "==> Skip A2A suites for peer ${peer} (same gateway as ${local_id}; local suites cover this ingress)"
+      echo ""
+    else
+      CONSTITUTION_PEER_ONLY=1 cmd_test_a2a "$local_id" "$peer" || failed=1
+      echo ""
+      CONSTITUTION_PEER_ONLY=1 cmd_test_a2a_auth "$local_id" "$peer" || failed=1
+      echo ""
+      cmd_test_auth_boundaries "$local_id" "$peer" || failed=1
+      echo ""
+    fi
     cmd_test_webhook_p2p "$local_id" "$peer" || failed=1
     if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
       echo ""
