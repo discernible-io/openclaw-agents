@@ -575,10 +575,9 @@ agent_near_cred_path_for_config_sync() {
   local config_dir="$1"
   local container="${2:-}"
   local cred=""
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
   if agent_config_use_container "$config_dir" "$container"; then
-    podman exec "$container" sh -c \
-      'find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name "*.json" -type f 2>/dev/null | head -1' \
-      2>/dev/null || true
+    _agent_near_cred_path_in_container "$container"
     return 0
   fi
   cred="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1)"
@@ -650,7 +649,7 @@ sync_agent_plugin_configs() {
   local container
   container="$(agent_container "$id")"
   ensure_identyclaw_config "$config_dir" "$container" || return 1
-  if agent_has_near_credentials "$config_dir"; then
+  if agent_has_near_credentials "$config_dir" "$container"; then
     ensure_a2a_config "$id" "$config_dir" "$container" || return 1
     ensure_webhooks_plugin_config "$config_dir" "$container" || return 1
   fi
@@ -2432,42 +2431,71 @@ agent_near_credentials_in_container() {
   local id="$1"
   local container
   container="$(agent_container "$id")"
-  podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true
+  _agent_near_cred_path_in_container "$container"
+}
+
+# In-container path to the first NEAR passport JSON (empty if none / container down).
+_agent_near_cred_path_in_container() {
+  local container="$1"
+  [[ -n "$container" ]] || return 0
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  podman exec "$container" sh -c \
+    'find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name "*.json" -type f 2>/dev/null | head -1' \
+    2>/dev/null || true
 }
 
 # Resolve NEAR passport JSON for an agent (canonical: agents/<id>/secrets/near-credentials/).
 resolve_near_credentials_file() {
   local config_dir="$1"
-  local agent_cred_dir candidate legacy_dir legacy_app_secrets
+  local container="${2:-}"
+  local agent_cred_dir candidate legacy_dir legacy_app_secrets agent_count
   load_env
   agent_cred_dir="$config_dir/secrets/near-credentials"
   mkdir -p "$agent_cred_dir" 2>/dev/null || true
 
   for candidate in "$agent_cred_dir"/*.json; do
-    [[ -f "$candidate" ]] || continue
+    [[ -f "$candidate" && -r "$candidate" ]] || continue
     echo "$candidate"
     return 0
   done
 
-  # Legacy: app-level secrets/<account>.json or secrets/peer-credentials/<agent-id>/
-  legacy_app_secrets="$(identyclaw_app_dir)/secrets"
-  for candidate in "$legacy_app_secrets"/*.json; do
-    [[ -f "$candidate" ]] || continue
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  candidate="$(_agent_near_cred_path_in_container "$container")"
+  if [[ -n "$candidate" ]]; then
     echo "$candidate"
     return 0
-  done
+  fi
+
+  # Legacy: per-agent peer-credentials first (never share app-level secrets across agents).
+  legacy_app_secrets="$(identyclaw_app_dir)/secrets"
   legacy_dir="$legacy_app_secrets/peer-credentials/$(basename "$config_dir")"
-  candidate="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true)"
-  [[ -n "$candidate" ]] || return 1
-  echo "$candidate"
-  return 0
+  candidate="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1 || true)"
+  if [[ -n "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+
+  agent_count="$(configured_agent_ids | wc -w | tr -d ' ')"
+  if [[ "${agent_count:-0}" -le 1 ]]; then
+    for candidate in "$legacy_app_secrets"/*.json; do
+      [[ -f "$candidate" && -r "$candidate" ]] || continue
+      echo "$candidate"
+      return 0
+    done
+  fi
+
+  return 1
 }
 
 # Copy resolved creds into agents/<id>/secrets/near-credentials/ (one-way migration from legacy layouts).
 ensure_near_credentials_in_agent() {
   local config_dir="$1"
+  local container="${2:-}"
   local cred_file agent_cred_dir account_id dest
-  cred_file="$(resolve_near_credentials_file "$config_dir")" || return 1
+  cred_file="$(resolve_near_credentials_file "$config_dir" "$container")" || return 1
+  if [[ "$cred_file" == /home/node/* ]]; then
+    return 0
+  fi
   agent_cred_dir="$config_dir/secrets/near-credentials"
   account_id="$(python3 - "$cred_file" <<'PY'
 import json, sys
@@ -2477,18 +2505,26 @@ print(data.get("implicit_account_id") or data.get("account_id") or Path(sys.argv
 PY
 )"
   dest="$agent_cred_dir/${account_id}.json"
-  mkdir -p "$agent_cred_dir"
-  chmod 700 "$config_dir/secrets" "$agent_cred_dir" 2>/dev/null || true
-  if [[ "$cred_file" != "$dest" ]]; then
-    cp -a "$cred_file" "$dest"
-    chmod 600 "$dest"
-    echo "    ($(basename "$config_dir"): migrated NEAR creds → secrets/near-credentials/${account_id}.json)" >&2
+  if [[ "$cred_file" == "$dest" ]]; then
+    return 0
   fi
+  if ! mkdir -p "$agent_cred_dir" 2>/dev/null; then
+    [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+    if [[ -n "$(_agent_near_cred_path_in_container "$container")" ]]; then
+      return 0
+    fi
+    return 1
+  fi
+  chmod 700 "$config_dir/secrets" "$agent_cred_dir" 2>/dev/null || true
+  cp -a "$cred_file" "$dest"
+  chmod 600 "$dest"
+  echo "    ($(basename "$config_dir"): migrated NEAR creds → secrets/near-credentials/${account_id}.json)" >&2
 }
 
 agent_has_near_credentials() {
   local config_dir="$1"
-  resolve_near_credentials_file "$config_dir" >/dev/null 2>&1
+  local container="${2:-}"
+  resolve_near_credentials_file "$config_dir" "$container" >/dev/null 2>&1
 }
 
 # Legacy layouts used secrets/near/*.json — bootstrap expects secrets/near-credentials/.
@@ -2951,10 +2987,31 @@ prepare_pod_deploy_host_paths() {
   restore_pod_path_for_host "${app}/logs/nginx"
 }
 
+# Stop pod agents and map state dirs back to the deploy user (for editing creds/.env on the host).
+restore_host_access_for_agents() {
+  local ids="${1:-$(configured_agent_ids)}"
+  local id container
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || {
+    echo "restore-host-access is only needed when IDENTYCLAW_DEPLOY_MODE=pod" >&2
+    return 1
+  }
+  for id in $ids; do
+    container="$(agent_container "$id")"
+    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      echo "==> Stopping ${container}"
+      podman stop "$container" >/dev/null || true
+    fi
+  done
+  restore_pod_agent_state_for_host "$ids"
+  echo "Host ownership restored under ${IDENTYCLAW_AGENT_STATE_ROOT:-$(identyclaw_app_dir)/agents}."
+  echo "Edit creds or .env, then: ./identyclaw.sh start all"
+}
+
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3012,7 +3069,10 @@ start_pod_agent() {
 
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     if [[ "$mode" == "start" ]]; then
-      echo "Already running: ${container} (use './identyclaw.sh restart ${id}' to bounce the gateway)"
+      ensure_agent_state_for_container_exec "$id"
+      sync_quiet_plugin_env "$dir" "$container"
+      sync_agent_plugin_configs "$id" "$dir" || true
+      echo "Already running: ${container} (synced .env + plugins; use './identyclaw.sh restart ${id}' to bounce the gateway)"
       return 0
     fi
     echo "==> ${id} already running in pod — syncing A2A config and restarting gateway"
@@ -3334,7 +3394,7 @@ sync_identyclaw_env() {
   contract_id="${IDENTYCLAW_NEAR_CONTRACT_ID}"
   near_rpc_url="${NEAR_RPC_URL:-}"
   [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
-  ensure_near_credentials_in_agent "$config_dir" || return 0
+  ensure_near_credentials_in_agent "$config_dir" "$container" || return 0
   cred_file="$(agent_near_cred_path_for_config_sync "$config_dir" "$container")" || return 0
   [[ -n "$cred_file" ]] || return 0
   env_file="$(agent_env_file_path "$config_dir" "$container")"
@@ -3565,7 +3625,7 @@ ensure_identyclaw_config() {
   config="$config_dir/openclaw.json"
   cred_dir="$config_dir/secrets/near-credentials"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  if [[ -d "$cred_dir" ]] && [[ -n "$(find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)" ]]; then
+  if agent_has_near_credentials "$config_dir" "$container"; then
     has_creds=1
     cred_path="$(agent_near_cred_path_for_config_sync "$config_dir" "$container")"
     sync_identyclaw_env "$config_dir" "$container"
