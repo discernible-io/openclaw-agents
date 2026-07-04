@@ -1204,6 +1204,80 @@ peer_shares_local_gateway_base() {
   [[ " $local_bases " == *" $peer_base "* ]]
 }
 
+# host[:port] from a gateway base URL (scheme and path stripped).
+gateway_base_host_port() {
+  local url="${1%/}"
+  [[ -n "$url" ]] || return 1
+  url="${url#*://}"
+  url="${url%%/*}"
+  [[ -n "$url" ]] || return 1
+  echo "$url"
+}
+
+# True when two gateway host:port pairs hit the same pod nginx (multi-agent subdomain layout).
+# e.g. peer https://john.dihola.io:7443 vs local https://agent-a.john.dihola.io:7443.
+gateway_host_on_same_pod_ingress() {
+  local peer_hp="$1" local_hp="$2"
+  local peer_host="${peer_hp%%:*}" peer_port="${peer_hp#*:}"
+  local local_host="${local_hp%%:*}" local_port="${local_hp#*:}"
+  [[ -n "$peer_host" && -n "$local_host" && -n "$peer_port" && -n "$local_port" ]] || return 1
+  [[ "$peer_port" == "$local_port" ]] || return 1
+  [[ "$peer_host" == "$local_host" ]] && return 0
+  [[ "$local_host" == "$peer_host" || "$local_host" == *".$peer_host" ]] && return 0
+  load_env
+  [[ -n "${IDENTYCLAW_INGRESS_ALT_HOST:-}" && "$peer_host" == "$IDENTYCLAW_INGRESS_ALT_HOST" ]] && return 0
+  return 1
+}
+
+# Email HOLA peerTokenId binding is unreliable when the peer shares this host's pod ingress
+# (exact URL match, co-located Passport, or parent/alt hostname on the same listen port).
+peer_mail_hola_ambiguous() {
+  local local_id="$1" peer_token_id="$2"
+  local config_dir peer_base peer_hp id b local_hp deploy_id
+  [[ -n "$local_id" && -n "$peer_token_id" ]] || return 1
+  load_env
+  a2a_peer_token_id_on_this_host "$peer_token_id" && return 0
+  deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
+  [[ -n "$deploy_id" ]] && return 0
+  config_dir="$(agent_home "$local_id")"
+  for id in $AGENT_IDS; do
+    peer_shares_local_gateway_base "$id" "$peer_token_id" && return 0
+  done
+  peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$config_dir" 2>/dev/null || true)"
+  [[ -n "$peer_base" ]] || return 1
+  peer_hp="$(gateway_base_host_port "${peer_base%/}")"
+  [[ -n "$peer_hp" ]] || return 1
+  for id in $AGENT_IDS; do
+    for b in $(local_agent_gateway_bases "$id"); do
+      local_hp="$(gateway_base_host_port "$b")"
+      [[ -n "$local_hp" ]] || continue
+      gateway_host_on_same_pod_ingress "$peer_hp" "$local_hp" && return 0
+    done
+  done
+  return 1
+}
+
+# Agents in AGENT_IDS missing secrets/imap.pass (blocks test-mail and email HOLA).
+constitution_agents_missing_mail_password() {
+  local id out="" dir container
+  load_env
+  for id in $AGENT_IDS; do
+    dir="$(agent_home "$id")"
+    if [[ -f "${dir}/secrets/imap.pass" ]]; then
+      continue
+    fi
+    # Pod deploy chowns agent state to the container uid — verify inside a running gateway.
+    if [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] && agent_container_running "$id"; then
+      container="$(agent_container "$id")"
+      if podman exec "$container" test -f /home/node/.openclaw/secrets/imap.pass 2>/dev/null; then
+        continue
+      fi
+    fi
+    out="${out:+$out }${id}"
+  done
+  echo "$out"
+}
+
 # Primary local gateway base (first resolved) — used to detect peers that resolve to our own
 # ingress (e.g. an alternate token_id registered to this agent).
 agent_own_gateway_base_url() {

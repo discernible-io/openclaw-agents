@@ -240,5 +240,12 @@ if [[ "$POD_HOST_PORT" == "$POD_LISTEN_PORT" ]]; then
 else
   echo "==> Deploy complete — pod ${POD_NAME} on host port ${POD_HOST_PORT} (container ${POD_LISTEN_PORT})"
 fi
+
+if [[ "${IDENTYCLAW_ENABLE_MAIL_RESPONDER:-1}" != 0 ]]; then
+  echo "==> Enable inbound HOLA mail responder (systemd user timer)"
+  bash "$REPO_ROOT/identyclaw.sh" enable-mail-responder "${IDENTYCLAW_MAIL_RESPONDER_INTERVAL:-5min}" || \
+    echo "    (mail responder timer not installed — run ./identyclaw.sh enable-mail-responder manually)" >&2
+fi
+
 echo "Restart gateway(s): ${REPO_ROOT}/identyclaw.sh restart all"
 echo "Full redeploy: ./scripts/deploy-local-podman.sh --skip-build"

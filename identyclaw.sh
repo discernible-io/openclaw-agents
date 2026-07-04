@@ -507,9 +507,12 @@ cmd_test_mail_hola() {
   hola_args+=(--poll-seconds "$poll_sec")
   # Peer A2A gateway lets us drive the reciprocal inbound probe (peer → us).
   peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$id")" 2>/dev/null || true)"
-  if [[ -n "$peer_base" ]]; then
+  if [[ -n "$peer_base" ]] && ! peer_mail_hola_ambiguous "$id" "$peer_token_id"; then
     hola_args+=(--peer-base "$peer_base")
   else
+    if [[ -n "$peer_base" ]] && peer_mail_hola_ambiguous "$id" "$peer_token_id"; then
+      echo "    skip inbound reciprocal (peer gateway shares this host's pod ingress; peerTokenId binding is ambiguous)"
+    fi
     hola_args+=(--skip-inbound)
   fi
   [[ "${REQUIRE_MAIL_HOLA:-0}" == 1 ]] && hola_args+=(--require)
@@ -1218,9 +1221,9 @@ cmd_test_all_peers() {
       if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
         echo ""
         echo "==> Skip test-mail-hola for peer ${peer_token_id} (SKIP_MAIL_HOLA=1)"
-      elif peer_shares_local_gateway_base "$local_id" "$peer_token_id"; then
+      elif peer_mail_hola_ambiguous "$local_id" "$peer_token_id"; then
         echo ""
-        echo "==> Skip test-mail-hola for peer ${peer_token_id} (shares gateway with ${local_id}; HOLA peerTokenId binding is ambiguous on shared ingress)"
+        echo "==> Skip test-mail-hola for peer ${peer_token_id} (shares this host's pod ingress; HOLA peerTokenId binding is ambiguous)"
       else
         echo ""
         cmd_test_mail_hola "$local_id" "$peer_token_id" || failed=1
@@ -1465,9 +1468,9 @@ print(d.get('a2aBase') or '', d.get('peerEmail') or '')
     if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
       echo ""
       echo "==> Skip test-mail-hola for peer ${peer} (SKIP_MAIL_HOLA=1)"
-    elif peer_shares_local_gateway_base "$local_id" "$peer"; then
+    elif peer_mail_hola_ambiguous "$local_id" "$peer"; then
       echo ""
-      echo "==> Skip test-mail-hola for peer ${peer} (shares gateway with ${local_id}; HOLA peerTokenId binding is ambiguous on shared ingress)"
+      echo "==> Skip test-mail-hola for peer ${peer} (shares this host's pod ingress; HOLA peerTokenId binding is ambiguous)"
     else
       echo ""
       cmd_test_mail_hola "$local_id" "$peer" || failed=1
@@ -1519,6 +1522,16 @@ cmd_test_all_agents() {
   load_env
 
   echo "==> Test constitution — all agents on this host"
+  echo ""
+
+  local missing_mail_pw
+  missing_mail_pw="$(constitution_agents_missing_mail_password)"
+  if [[ -n "$missing_mail_pw" ]]; then
+    echo "==> Preflight FAIL: missing Migadu mailbox password for:${missing_mail_pw}" >&2
+    echo "    Run: ./identyclaw.sh set-password <agent-id> for each, then re-run test-all-agents" >&2
+    return 1
+  fi
+  echo "==> Preflight: Migadu passwords present for all AGENT_IDS"
   echo ""
 
   echo "==> Start agents in AGENT_IDS"
