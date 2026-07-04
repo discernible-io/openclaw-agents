@@ -205,7 +205,7 @@ load_env() {
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.3}"
-  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.4}"
+  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.5}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
@@ -2542,7 +2542,14 @@ ensure_near_credentials_layout() {
   local legacy_json
   legacy_json="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
   [[ -n "$legacy_json" ]] || return 0
-  mkdir -p "$cred_dir"
+  if ! mkdir -p "$cred_dir" 2>/dev/null; then
+    local container="${2:-}"
+    [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+    if [[ -n "$(_agent_near_cred_path_in_container "$container")" ]]; then
+      return 0
+    fi
+    return 1
+  fi
   cp -a "$legacy_dir"/*.json "$cred_dir/" 2>/dev/null || cp "$legacy_json" "$cred_dir/"
   chmod 700 "$cred_dir"
   find "$cred_dir" -maxdepth 1 -name '*.json' -type f -exec chmod 600 {} +

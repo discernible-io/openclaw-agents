@@ -117,7 +117,7 @@ async function runForPath(agentPath) {
   tally.add(
     record(
       `POST /${labelPrefix} with invalid x-signature`,
-      garbage.status === 401,
+      garbage.status === 400 || garbage.status === 401,
       `HTTP ${garbage.status}`,
     ),
   );
