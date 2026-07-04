@@ -2627,7 +2627,14 @@ ensure_near_credentials_layout() {
   local legacy_json
   legacy_json="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
   [[ -n "$legacy_json" ]] || return 0
-  mkdir -p "$cred_dir"
+  if ! mkdir -p "$cred_dir" 2>/dev/null; then
+    local container="${2:-}"
+    [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+    if [[ -n "$(_agent_near_cred_path_in_container "$container")" ]]; then
+      return 0
+    fi
+    return 1
+  fi
   cp -a "$legacy_dir"/*.json "$cred_dir/" 2>/dev/null || cp "$legacy_json" "$cred_dir/"
   chmod 700 "$cred_dir"
   find "$cred_dir" -maxdepth 1 -name '*.json' -type f -exec chmod 600 {} +
