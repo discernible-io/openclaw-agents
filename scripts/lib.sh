@@ -171,7 +171,7 @@ load_env() {
       esac
     done <"$f"
   fi
-  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.6.10-slim}"
+  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.6.11-slim}"
   OPENCLAW_GATEWAY_VERSION="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
   OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@${OPENCLAW_GATEWAY_VERSION}}"
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
@@ -204,8 +204,8 @@ load_env() {
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
-  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.2}"
-  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.2}"
+  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.3}"
+  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.4}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
@@ -4139,7 +4139,7 @@ install_a2a_plugin() {
   fi
 
   migrate_legacy_a2a_extension "$config_dir" "$container"
-  if [[ "$force" == "1" ]]; then
+  if [[ "$force" == "1" || ( -n "$desired_ver" && -n "$installed_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
     if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
       podman exec "$container" rm -rf "$(agent_a2a_ext_dir_container)" 2>/dev/null || true
     else
@@ -4151,7 +4151,9 @@ install_a2a_plugin() {
   strip_a2a_dynamic_peers_config_for_install "$config_dir" "$container"
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
   local install_args=()
-  [[ "$force" == "1" ]] && install_args+=(--force)
+  if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
+    install_args+=(--force)
+  fi
   if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
     return 1
   fi
@@ -4386,13 +4388,13 @@ upgrade_agent_plugins() {
 
   echo "==> Upgrading plugins for ${id}"
   echo "    (A2A: ${IDENTYCLAW_CLAWHUB_A2A_PLUGIN})"
-  install_a2a_plugin "$config_dir" 1 "$id" || {
+  install_a2a_plugin "$config_dir" 0 "$id" || {
     echo "A2A plugin install failed for ${id}" >&2
     return 1
   }
 
   echo "    (IdentyClaw: ${IDENTYCLAW_CLAWHUB_PLUGIN})"
-  install_identyclaw_plugin "$config_dir" 1 "$id" || {
+  install_identyclaw_plugin "$config_dir" 0 "$id" || {
     echo "IdentyClaw plugin install failed for ${id}" >&2
     return 1
   }
@@ -4404,7 +4406,7 @@ upgrade_agent_plugins() {
 
   echo "    (IdentyClaw webhooks: ${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN})"
   strip_a2a_dynamic_peers_config_for_install "$config_dir" "$container"
-  install_identyclaw_webhooks_plugin "$config_dir" 1 "$id" || {
+  install_identyclaw_webhooks_plugin "$config_dir" 0 "$id" || {
     echo "IdentyClaw webhooks plugin install failed for ${id}" >&2
     return 1
   }
