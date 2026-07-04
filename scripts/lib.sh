@@ -201,11 +201,13 @@ load_env() {
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
   IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
+  A2A_TEST_EXCLUDE_PEERS="${A2A_TEST_EXCLUDE_PEERS:-}"
+  A2A_TEST_ONLY_PEERS="${A2A_TEST_ONLY_PEERS:-}"
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.3}"
-  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.4}"
+  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.6}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
@@ -889,6 +891,54 @@ for tid in d.get('tokenIds') or []:
   echo "$out"
 }
 
+# True when token_id is listed in A2A_TEST_EXCLUDE_PEERS (still usable for discovery/bootstrap).
+a2a_peer_token_id_excluded_from_tests() {
+  local token_id="$1" ref
+  [[ -n "$token_id" ]] || return 1
+  load_env
+  for ref in ${A2A_TEST_EXCLUDE_PEERS:-}; do
+    is_passport_token_id "$ref" || continue
+    [[ "$ref" == "$token_id" ]] && return 0
+  done
+  return 1
+}
+
+# Passport token_ids for other AGENT_IDS on this host (cross-agent, not self).
+local_cross_agent_peer_token_ids() {
+  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
+  local id own_tid tid out=""
+  load_env
+  own_tid="$(agent_token_id "$local_deploy_id" 2>/dev/null || true)"
+  for id in $AGENT_IDS; do
+    [[ "$id" == "$local_deploy_id" ]] && continue
+    tid="$(agent_token_id "$id" 2>/dev/null || true)"
+    [[ -n "$tid" ]] || continue
+    [[ "$tid" == "$own_tid" ]] && continue
+    a2a_peer_token_id_excluded_from_tests "$tid" && continue
+    out="${out:+$out }$tid"
+  done
+  echo "$out"
+}
+
+# First running cross-agent on this host with a resolvable ingress base (webhooks 0.1.5 path).
+resolve_local_cross_agent_peer_token_id() {
+  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
+  local tid deploy_id base container
+  for tid in $(local_cross_agent_peer_token_ids "$local_deploy_id"); do
+    deploy_id="$(find_deploy_id_for_token_id "$tid" 2>/dev/null || true)"
+    [[ -n "$deploy_id" ]] || continue
+    container="$(agent_container "$deploy_id" 2>/dev/null || true)"
+    podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || continue
+    base="$(agent_container_ingress_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -z "$base" ]] && base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -z "$base" ]] && base="$(agent_ingress_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -n "$base" ]] || continue
+    echo "$tid"
+    return 0
+  done
+  return 1
+}
+
 # Optional test allowlist: when A2A_TEST_ONLY_PEERS is set, constitution peer
 # suites target exactly these Passport token_ids (still deduped/reachability-probed
 # and with local-host token_ids skipped). Empty means test all discovered peers.
@@ -1163,15 +1213,22 @@ agent_own_gateway_base_url() {
   echo "${bases%% *}"
 }
 
-# First remote peer token_id whose resolved /a2a endpoint responds 401/403.
+# Default peer for smoke tests. Precedence: local cross-agent (same-host webhooks 0.1.5),
+# then first remote candidate whose /a2a is auth-gated. Skips A2A_TEST_EXCLUDE_PEERS.
 resolve_reachable_peer_token_id() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir
+  local resolver_config_dir cross
   local p base
   load_env
   resolver_config_dir="$(agent_home "$local_deploy_id")"
+  cross="$(resolve_local_cross_agent_peer_token_id "$local_deploy_id" 2>/dev/null || true)"
+  if [[ -n "$cross" ]]; then
+    echo "$cross"
+    return 0
+  fi
   for p in $(a2a_discovered_test_candidate_token_ids); do
     is_passport_token_id "$p" || continue
+    a2a_peer_token_id_excluded_from_tests "$p" && continue
     a2a_peer_token_id_on_this_host "$p" && continue
     base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$base" ]] || continue
@@ -1197,11 +1254,25 @@ resolve_reachable_peer_token_id() {
 # peer in cmd_test_constitution_for_agent (webhook/mail may still run).
 resolve_live_peer_token_ids() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir p base seen_bases="" out=""
+  local resolver_config_dir p base seen_bases="" out="" tid deploy_id
   load_env
   resolver_config_dir="$(agent_home "$local_deploy_id")"
+  # Same-host cross-agent peers first — outbound P2P webhooks pass when both run webhooks 0.1.5.
+  for tid in $(local_cross_agent_peer_token_ids "$local_deploy_id"); do
+    deploy_id="$(find_deploy_id_for_token_id "$tid" 2>/dev/null || true)"
+    [[ -n "$deploy_id" ]] || continue
+    base="$(agent_container_ingress_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -z "$base" ]] && base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -z "$base" ]] && base="$(agent_ingress_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -n "$base" ]] || continue
+    base="${base%/}"
+    [[ " $seen_bases " == *" $base "* ]] && continue
+    seen_bases="${seen_bases:+$seen_bases }$base"
+    out="${out:+$out }$tid"
+  done
   for p in $(a2a_discovered_test_candidate_token_ids); do
     is_passport_token_id "$p" || continue
+    a2a_peer_token_id_excluded_from_tests "$p" && continue
     a2a_peer_token_id_on_this_host "$p" && continue
     base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$base" ]] || continue
@@ -1268,6 +1339,20 @@ print_constitution_agent_preflight() {
     fi
   else
     echo "    agent-card:  SKIP no ingress base URL resolved"
+  fi
+
+  local container desired_ver installed_ver
+  container="$(agent_container "$local_id" 2>/dev/null || true)"
+  desired_ver="$(clawhub_plugin_pinned_version "${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN}")"
+  installed_ver="$(webhooks_plugin_installed_version "$config_dir" "$container")"
+  if ! agent_has_near_credentials "$config_dir"; then
+    echo "    webhooks:    SKIP no NEAR credentials (plugin not installed)"
+  elif [[ -z "$installed_ver" ]]; then
+    echo "    webhooks:    FAIL identyclaw-webhooks not installed — run ./identyclaw.sh upgrade-plugins ${local_id}"
+  elif [[ -n "$desired_ver" && "$installed_ver" != "$desired_ver" ]]; then
+    echo "    webhooks:    FAIL installed=${installed_ver} pinned=${desired_ver} — run ./identyclaw.sh upgrade-plugins ${local_id}"
+  else
+    echo "    webhooks:    OK identyclaw-webhooks@${installed_ver} (P2P/API signed ingress; no self-webhook probe)"
   fi
   echo ""
 }

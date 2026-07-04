@@ -490,6 +490,9 @@ cmd_test_mail_hola() {
 
   echo "==> Email HOLA peer probe (local=${id} → peer token_id=${peer_token_id})"
   echo "    from=${email}"
+  if a2a_peer_token_id_on_this_host "$peer_token_id"; then
+    echo "    hint: enable ./identyclaw.sh respond-mail on peer agent for INBOX reply checks"
+  fi
   local -a hola_args=(
     --ext-dir "$ext_dir"
     --creds "$creds"
@@ -900,7 +903,7 @@ cmd_webhook_url() {
 }
 
 cmd_test_webhook() {
-  local id="${1:-}"
+  local id="${1:-}" failed=0
   load_env
   id="${id:-$(resolve_local_agent_id)}"
   local url code creds container
@@ -927,33 +930,27 @@ cmd_test_webhook() {
   creds="$(agent_near_credentials_host_path "$id")"
   if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
     [[ -n "$creds" ]] || {
-      echo "WARN: agent not running and no near-credentials — skipping signed webhook tests" >&2
+      echo "WARN: agent not running and no near-credentials — skipping outbound/testhola webhook suites" >&2
       return 0
     }
   fi
 
-  echo ""
-  echo "==> RODiT self-signed webhook (local ingress auth)"
-  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    local container_creds ext_dir
-    container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
-    [[ -n "$container_creds" ]] || container_creds="$creds"
-    ext_dir="$(agent_a2a_ext_dir_container)"
-    podman_cp_lib_test_report "$container" || return 1
-    podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null
-    podman cp "${IDENTYCLAW_ROOT}/scripts/test-rodit-webhooks.mjs" "$container:/tmp/test-rodit-webhooks.mjs" >/dev/null
-    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-rodit-webhooks.mjs \
-      --ext-dir "$ext_dir" \
-      --creds "$container_creds" \
-      --target "$(agent_container_ingress_base_url "$id")" \
-      --path hooks/wake,hooks/agent
-  fi
-
-  local peer_token_id="" p
+  local peer_token_id="" cross_peer
   peer_token_id="$(resolve_peer_token_id "$id" 2>/dev/null || true)"
   if [[ -n "$peer_token_id" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    local peer_base container_creds
+    local peer_base container_creds deploy_id peer_local_base
+    cross_peer="$(resolve_local_cross_agent_peer_token_id "$id" 2>/dev/null || true)"
+    if [[ -n "$cross_peer" && "$peer_token_id" == "$cross_peer" ]]; then
+      echo "    (outbound smoke peer: same-host cross-agent ${peer_token_id})"
+    fi
     peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$id")")"
+    deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
+    if [[ -n "$deploy_id" ]]; then
+      local peer_local_base
+      peer_local_base="$(agent_container_ingress_base_url "$deploy_id" 2>/dev/null || true)"
+      [[ -z "$peer_local_base" ]] && peer_local_base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
+      [[ -n "$peer_local_base" ]] && peer_base="$peer_local_base"
+    fi
     container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
     if [[ -n "$peer_base" && -n "$container_creds" ]]; then
       echo ""
@@ -973,14 +970,14 @@ cmd_test_webhook() {
         process.stdout.write((r.deliveredOk ? 'passed' : 'not-passed') + '  send_rodit_webhook to peer — ' + r.deliveredDetail + '\n');
         process.stdout.write((r.peerReceivedOk ? 'passed' : 'not-passed') + '  GET peer /hooks/_receipts — ' + r.peerReceivedDetail + '\n');
         process.exit(ok ? 0 : 1);
-      " || true
+      " || failed=1
     fi
   fi
 
   if [[ "${SKIP_TESTHOLA:-0}" == 1 ]]; then
     echo ""
     echo "==> Skip /api/testhola webhook delivery (SKIP_TESTHOLA=1)"
-    return 0
+    return "$failed"
   fi
 
   echo ""
@@ -1001,14 +998,15 @@ cmd_test_webhook() {
       --ext-dir "$ext_dir" \
       --creds "$container_creds" \
       --agent-base "$(agent_container_ingress_base_url "$id")" \
-      "${api_base_args[@]}" || return 1
+      "${api_base_args[@]}" || failed=1
   elif [[ -n "$creds" ]]; then
     NODE_TLS_REJECT_UNAUTHORIZED=0 node "${IDENTYCLAW_ROOT}/scripts/test-webhooks-testhola.mjs" \
       --ext-dir "$(agent_a2a_ext_dir "$(agent_home "$id")")" \
       --creds "$creds" \
       --agent-base "$(agent_ingress_base_url "$id")" \
-      "${api_base_args[@]}" || return 1
+      "${api_base_args[@]}" || failed=1
   fi
+  return "$failed"
 }
 
 cmd_send_rodit_webhook() {
@@ -1060,9 +1058,15 @@ cmd_test_webhook_p2p() {
   require_agent_running "$sender"
 
   local sender_container sender_creds receiver_base local_base peer_creds ext_dir
-  local receiver_deploy_id reverse_via_container=0
+  local receiver_deploy_id reverse_via_container=0 local_receiver_base
   sender_container="$(agent_container "$sender")"
   receiver_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$sender")")"
+  receiver_deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
+  if [[ -n "$receiver_deploy_id" ]]; then
+    local_receiver_base="$(agent_container_ingress_base_url "$receiver_deploy_id" 2>/dev/null || true)"
+    [[ -z "$local_receiver_base" ]] && local_receiver_base="$(agent_a2a_public_base_url "$receiver_deploy_id" 2>/dev/null || true)"
+    [[ -n "$local_receiver_base" ]] && receiver_base="$local_receiver_base"
+  fi
   local_base="$(agent_container_ingress_base_url "$sender")"
   [[ -n "$local_base" ]] || local_base="$(agent_a2a_public_base_url "$sender")"
   [[ -n "$local_base" ]] || local_base="$(agent_ingress_base_url "$sender")"
@@ -1082,7 +1086,6 @@ cmd_test_webhook_p2p() {
   }
 
   peer_creds="$(peer_near_credentials_path "$peer_token_id")"
-  receiver_deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
   local receiver_container
   if [[ -n "$receiver_deploy_id" ]]; then
     receiver_container="$(agent_container "$receiver_deploy_id")"
@@ -1215,6 +1218,9 @@ cmd_test_all_peers() {
       if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
         echo ""
         echo "==> Skip test-mail-hola for peer ${peer_token_id} (SKIP_MAIL_HOLA=1)"
+      elif peer_shares_local_gateway_base "$local_id" "$peer_token_id"; then
+        echo ""
+        echo "==> Skip test-mail-hola for peer ${peer_token_id} (shares gateway with ${local_id}; HOLA peerTokenId binding is ambiguous on shared ingress)"
       else
         echo ""
         cmd_test_mail_hola "$local_id" "$peer_token_id" || failed=1
@@ -1325,10 +1331,11 @@ print(d.get('a2aBase') or '', d.get('peerEmail') or '')
 }
 
 print_test_peer_roster() {
-  local id configured_peers all_peers api_base api_count
+  local id configured_peers all_peers api_base api_count cross_peers
   load_env
   configured_peers="$(a2a_remote_peer_token_ids)"
   all_peers="$(a2a_discovered_test_candidate_token_ids)"
+  cross_peers="$(local_cross_agent_peer_token_ids "$(resolve_local_agent_id)" 2>/dev/null || true)"
   api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
   api_count="$(fetch_identyclaw_api_peer_token_ids 2>/dev/null | python3 -c "
 import json, sys
@@ -1341,6 +1348,10 @@ except Exception:
   echo "==> Test candidates per agent"
   echo "    AGENT_IDS (local):       ${AGENT_IDS}"
   echo "    A2A_PEER_AGENTS:       ${A2A_PEER_AGENTS:-none}"
+  echo "    same-host cross-agent:   ${cross_peers:-none} (preferred for outbound P2P webhooks)"
+  echo "    A2A_TEST_EXCLUDE_PEERS:  ${A2A_TEST_EXCLUDE_PEERS:-none}"
+  echo "    A2A_TEST_ONLY_PEERS:     ${A2A_TEST_ONLY_PEERS:-none}"
+  echo "    webhooks pin (local):    ${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN} (peer receivers must match)"
   echo "    configured remote peers: ${configured_peers:-none}"
   if a2a_discover_peers_from_api_enabled; then
     echo "    API discovery:           GET ${api_base:-api.identyclaw.com}/api/agents (${api_count} token_ids, public; webhook_url needs auth /full)"
@@ -1454,6 +1465,9 @@ print(d.get('a2aBase') or '', d.get('peerEmail') or '')
     if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
       echo ""
       echo "==> Skip test-mail-hola for peer ${peer} (SKIP_MAIL_HOLA=1)"
+    elif peer_shares_local_gateway_base "$local_id" "$peer"; then
+      echo ""
+      echo "==> Skip test-mail-hola for peer ${peer} (shares gateway with ${local_id}; HOLA peerTokenId binding is ambiguous on shared ingress)"
     else
       echo ""
       cmd_test_mail_hola "$local_id" "$peer" || failed=1
