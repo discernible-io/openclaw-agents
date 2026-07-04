@@ -955,22 +955,24 @@ a2a_test_only_peer_token_ids() {
 }
 
 # Constitution / smoke-test peer candidates. Precedence: A2A_TEST_ONLY_PEERS when
-# set; else A2A_PEER_AGENTS when it lists valid token_ids (configured peers only);
-# else A2A_PEER_AGENTS + GET /api/agents (merged, deduped). Peer gateway URLs and
-# contactUri email are always resolved at run time via GET /api/identity/token/
-# {tokenId}/full metadata.webhook_url (+ on-chain fallback) when
-# IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 — independent of this list.
+# set; else A2A_PEER_AGENTS when it lists valid token_ids (reconciled against GET
+# /api/agents so deprecated configured token_ids yield to discovered ones at the
+# same gateway); else A2A_PEER_AGENTS + GET /api/agents (merged, deduped). Peer
+# gateway URLs and contactUri email are always resolved at run time via GET
+# /api/identity/token/{tokenId}/full metadata.webhook_url (+ on-chain fallback)
+# when IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 — independent of this list.
 a2a_discovered_test_candidate_token_ids() {
-  local only configured
+  local only configured local_id
   load_env
+  local_id="$(resolve_local_agent_id)"
   only="$(a2a_test_only_peer_token_ids)"
   if [[ -n "$only" ]]; then
-    echo "$only"
+    a2a_reconcile_peer_token_id_list "$only" "$local_id"
     return 0
   fi
   configured="$(a2a_configured_peer_token_ids)"
   if [[ -n "$configured" ]]; then
-    echo "$configured"
+    a2a_reconcile_peer_token_id_list "$configured" "$local_id"
     return 0
   fi
   a2a_merged_remote_peer_token_ids
@@ -2075,6 +2077,212 @@ a2a_configured_peer_token_ids() {
   done
   [[ "$invalid" -eq 0 ]] || true
   echo "$out"
+}
+
+# Outbound peer registry persisted by the A2A plugin (API discovery + inbound JWT).
+a2a_outbound_peer_registry_json() {
+  local config_dir="$1"
+  local registry="$config_dir/a2a/outbound/peers.json"
+  [[ -f "$registry" ]] || {
+    echo "{}"
+    return 0
+  }
+  python3 - "$registry" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    print(json.dumps(data if isinstance(data, dict) else {}))
+except Exception:
+    print("{}")
+PY
+}
+
+# Replace deprecated A2A_PEER_AGENTS token_ids with GET /api/agents registrations at
+# the same gateway (e.g. Andrew lmsfckzncdbw → cfbkbhzdzflk). Configured ids still
+# win when they appear in the public agent registry.
+a2a_reconcile_peer_token_id_list() {
+  local token_id_list="$1"
+  local local_deploy_id="${2:-$(resolve_local_agent_id)}"
+  local config_dir tid bases_json registry_json api_json
+  [[ -n "$token_id_list" ]] || return 0
+  load_env
+  config_dir="$(agent_home "$local_deploy_id")"
+  registry_json="$(a2a_outbound_peer_registry_json "$config_dir")"
+  api_json="$(fetch_identyclaw_api_peer_token_ids 2>/dev/null || true)"
+  [[ -n "$api_json" && "$api_json" == \{* ]] || api_json='{"tokenIds":[]}'
+
+  local first=1 api_tid
+  bases_json="{"
+  for tid in $token_id_list; do
+    is_passport_token_id "$tid" || continue
+    local base
+    base="$(a2a_peer_public_base_url "$tid" "$config_dir" 2>/dev/null || true)"
+    [[ -n "$base" ]] || continue
+    base="${base%/}"
+    if [[ "$first" -eq 1 ]]; then
+      first=0
+    else
+      bases_json+=","
+    fi
+    bases_json+="\"${tid}\":\"${base}\""
+  done
+  while IFS= read -r api_tid; do
+    [[ -n "$api_tid" ]] || continue
+    is_passport_token_id "$api_tid" || continue
+    base="$(a2a_peer_public_base_url "$api_tid" "$config_dir" 2>/dev/null || true)"
+    [[ -n "$base" ]] || continue
+    base="${base%/}"
+    if [[ "$first" -eq 1 ]]; then
+      first=0
+    else
+      bases_json+=","
+    fi
+    bases_json+="\"${api_tid}\":\"${base}\""
+  done < <(python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+for tid in d.get('tokenIds') or []:
+    print(tid)
+" "$api_json")
+  bases_json+="}"
+
+  A2A_RECONCILE_TIDS="$token_id_list" \
+    A2A_RECONCILE_BASES="$bases_json" \
+    A2A_RECONCILE_REGISTRY="$registry_json" \
+    A2A_RECONCILE_API="$api_json" \
+    A2A_RECONCILE_AGENT="$local_deploy_id" \
+    python3 <<'PY'
+import json, os, sys
+from urllib.parse import urlparse
+
+def norm_base(url):
+    raw = str(url or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if raw.endswith("/.well-known/agent-card.json"):
+        raw = raw[: -len("/.well-known/agent-card.json")].rstrip("/")
+    if "://" in raw:
+        parsed = urlparse(raw)
+        if parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}".rstrip("/").lower()
+    return raw.lower()
+
+def entry_base(entry):
+    if isinstance(entry, dict):
+        return norm_base(entry.get("loginBaseUrl") or entry.get("url") or "")
+    return norm_base(entry)
+
+try:
+    bases = json.loads(os.environ.get("A2A_RECONCILE_BASES") or "{}")
+except Exception:
+    bases = {}
+try:
+    registry = json.loads(os.environ.get("A2A_RECONCILE_REGISTRY") or "{}")
+except Exception:
+    registry = {}
+try:
+    api_data = json.loads(os.environ.get("A2A_RECONCILE_API") or "{}")
+except Exception:
+    api_data = {}
+api_tids = {str(t).lower() for t in (api_data.get("tokenIds") or []) if t}
+agent = os.environ.get("A2A_RECONCILE_AGENT") or "agent"
+
+base_to_api_tid = {}
+for tid, base in bases.items():
+    tid = str(tid).lower()
+    if tid not in api_tids:
+        continue
+    norm = norm_base(base)
+    if norm:
+        base_to_api_tid[norm] = tid
+for tid, entry in registry.items():
+    tid = str(tid).lower()
+    if tid not in api_tids:
+        continue
+    base = entry_base(entry)
+    if base:
+        base_to_api_tid[base] = tid
+
+out = []
+seen_bases = set()
+for configured in os.environ.get("A2A_RECONCILE_TIDS", "").split():
+    configured = str(configured).lower()
+    if not configured:
+        continue
+    base = norm_base(bases.get(configured, ""))
+    if configured in api_tids:
+        canonical = configured
+    elif base and base in base_to_api_tid:
+        canonical = base_to_api_tid[base]
+        if canonical != configured:
+            print(
+                f"    ({agent}: A2A_PEER_AGENTS lists {configured} but GET /api/agents "
+                f"registers {canonical} at the same gateway — using discovered token_id)",
+                file=sys.stderr,
+            )
+    else:
+        canonical = configured
+
+    if base:
+        if base in seen_bases:
+            continue
+        seen_bases.add(base)
+    if canonical not in out:
+        out.append(canonical)
+
+print(" ".join(out))
+PY
+}
+
+# Drop configured outbound.agents entries superseded by API discovery at the same gateway.
+a2a_filter_superseded_configured_peer_map_json() {
+  local api_json="$1"
+  local configured_json="$2"
+  A2A_FILTER_API_JSON="$api_json" A2A_FILTER_CFG_JSON="$configured_json" python3 <<'PY'
+import json, os, sys
+from urllib.parse import urlparse
+
+def norm_base(url):
+    raw = str(url or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if raw.endswith("/.well-known/agent-card.json"):
+        raw = raw[: -len("/.well-known/agent-card.json")].rstrip("/")
+    if "://" in raw:
+        parsed = urlparse(raw)
+        if parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}".rstrip("/").lower()
+    return raw.lower()
+
+def peer_base(entry):
+    if not isinstance(entry, dict):
+        return norm_base(entry)
+    return norm_base(entry.get("loginBaseUrl") or entry.get("url") or "")
+
+try:
+    api_map = json.loads(os.environ.get("A2A_FILTER_API_JSON") or "{}")
+except Exception:
+    api_map = {}
+try:
+    cfg_map = json.loads(os.environ.get("A2A_FILTER_CFG_JSON") or "{}")
+except Exception:
+    cfg_map = {}
+
+api_bases = {peer_base(v): k for k, v in api_map.items() if peer_base(v)}
+filtered = {}
+for tid, entry in cfg_map.items():
+    base = peer_base(entry)
+    api_tid = api_bases.get(base)
+    if api_tid and str(api_tid).lower() != str(tid).lower():
+        continue
+    filtered[tid] = entry
+print(json.dumps(filtered, separators=(",", ":")))
+PY
 }
 
 warn_invalid_a2a_peer_agents() {
@@ -3959,6 +4167,9 @@ build_a2a_peer_map() {
     echo "    (${self_id}: proactive API peer discovery — GET /api/agents + live agent-card probe)" >&2
     api_json="$(discover_live_api_peers_json_for_agent "$self_id")"
     [[ -n "$api_json" && "$api_json" == \{* ]] || api_json="{}"
+    if [[ "$configured_json" != "{}" ]]; then
+      configured_json="$(a2a_filter_superseded_configured_peer_map_json "$api_json" "$configured_json")"
+    fi
   fi
 
   local api_file cfg_file peers_json
