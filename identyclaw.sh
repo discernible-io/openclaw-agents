@@ -15,6 +15,7 @@
 #   start [id|all]       Start one or both containers
 #   stop [id|all]        Stop containers
 #   restart [id|all]     Restart
+#   restore-host-access [id|all]  Stop pod agents and restore host ownership (edit creds/.env)
 #   enable-boot          One-time: linger + podman-restart + recreate agents (survives reboot)
 #   status               Show podman + health URLs
 #   logs <id>            Follow logs
@@ -324,6 +325,17 @@ cmd_stop() {
       done
       ;;
     *) echo "Usage: $0 stop [agent-id|all]" >&2; exit 1 ;;
+  esac
+}
+
+cmd_restore_host_access() {
+  require_podman
+  load_env
+  local target="${1:-all}"
+  case "$target" in
+    agent-[a-z]) restore_host_access_for_agents "$target" ;;
+    all) restore_host_access_for_agents "$AGENT_IDS" ;;
+    *) echo "Usage: $0 restore-host-access [agent-id|all]" >&2; exit 1 ;;
   esac
 }
 
@@ -1935,6 +1947,7 @@ main() {
     start) cmd_start "$@" ;;
     stop) cmd_stop "$@" ;;
     restart) cmd_restart "$@" ;;
+    restore-host-access) cmd_restore_host_access "$@" ;;
     enable-boot) cmd_enable_boot "$@" ;;
     status) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
