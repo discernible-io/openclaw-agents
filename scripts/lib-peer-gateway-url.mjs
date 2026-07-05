@@ -107,6 +107,14 @@ export function tryPeerRoditToGatewayBase(peerRodit) {
   }
 }
 
+/** Log allowed API→chain fallback for operator audit (see allowed-fallback-standard.md). */
+function logChainFallback(tokenId, apiDetail) {
+  const detail = apiDetail ? ` (${apiDetail})` : "";
+  process.stderr.write(
+    `(${tokenId}: peer base from on-chain metadata.webhook_url — API /full had no usable webhook_url${detail})\n`,
+  );
+}
+
 /**
  * API first (GET /api/identity/token/{tokenId}/full), then on-chain rodit_token.
  * @returns {{ base: string, source: "api" | "chain" }}
@@ -146,6 +154,7 @@ export async function resolvePeerGatewayBase(
     const peerRodit = await fetchPeerRoditByTokenId(normalized);
     const fromChain = tryPeerRoditToGatewayBase(peerRodit);
     if (fromChain) {
+      logChainFallback(normalized, apiDetail);
       return { base: fromChain, source: "chain" };
     }
     throw new Error(

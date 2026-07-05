@@ -28,7 +28,7 @@ tier_default_ingress_port() {
 }
 
 tier_port="$(tier_default_ingress_port)"
-tier_comment="$([[ "$tier" == development ]] && echo "Development" || echo "Production")"
+tier_comment="$([[ "$tier" == development ]] && echo "Development" || echo "Main")"
 
 mkdir -p "$(dirname "$out")"
 

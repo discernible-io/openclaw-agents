@@ -51,7 +51,7 @@ const resolver = new TokenPeerResolver({
       resolveSource = "chain";
     }
   },
-  onWarn: (msg) => process.stderr.write(`WARN: ${msg}\n`),
+  onWarn: (msg) => process.stderr.write(`note: ${msg}\n`),
 });
 
 process.stdout.write(`Runtime peer resolution smoke\n  peer token_id: ${peerTokenId}\n\n`);

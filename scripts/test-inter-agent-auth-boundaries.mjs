@@ -6,7 +6,7 @@
  *   node scripts/test-inter-agent-auth-boundaries.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near-credentials.json \
- *     --local https://agent-d.example:7443 \
+ *     --local https://agent-c.example:7443 \
  *     [--peer https://agent-a.example:7443]
  */
 import crypto from "node:crypto";

@@ -151,7 +151,7 @@ const goodRecipient = String(goodHola.split("/")[1] || "").toLowerCase();
 record(
   "good HOLA targets peer token_id (pre-send, no API verify)",
   goodRecipient === canonicalPeerTokenId,
-  `recipient=${goodRecipient || "—"} expected=${canonicalPeerTokenId}`,
+  `recipient=${goodRecipient || "—"} per-spec tokenId=${canonicalPeerTokenId}`,
 );
 
 const badVerify = await verifyHolaViaApi(apiBase, jwt, badHola, peerTokenId);
@@ -366,7 +366,7 @@ if (skipInbound) {
           "inbound HOLA peerTokenId matches peer",
           action.verified &&
             (action.peerTokenId === canonicalPeerTokenId || action.peerTokenId === peerTokenId),
-          `peerTokenId=${action.peerTokenId || "—"} expected=${canonicalPeerTokenId}`,
+          `peerTokenId=${action.peerTokenId || "—"} per-spec tokenId=${canonicalPeerTokenId}`,
         );
         record(
           "our responder replied to peer",

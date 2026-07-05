@@ -18,8 +18,8 @@ const mode = process.argv[2];
 const isFlagMode = mode === "--auto" || mode === "--mediated";
 const peerBase = (
   isFlagMode
-    ? (process.argv[3] || "https://agent-d.dev.identyclaw.com:7443")
-    : (process.argv[2] || "https://agent-d.dev.identyclaw.com:7443")
+    ? (process.argv[3] || "https://agent-c.dev.identyclaw.com:7443")
+    : (process.argv[2] || "https://agent-c.dev.identyclaw.com:7443")
 ).replace(/\/$/, "");
 let a2aUrl = (isFlagMode ? process.argv[4] : process.argv[3]) || `${peerBase}/a2a`;
 

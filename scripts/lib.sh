@@ -339,7 +339,7 @@ identyclaw_api_base_url_for_agent() {
   identyclaw_api_base_url_for_config_dir "$(agent_home "$id")"
 }
 
-# Map deployment slug agent-{letter} → env prefix AGENT_{LETTER} (e.g. agent-d → AGENT_D).
+# Map deployment slug agent-{letter} → env prefix AGENT_{LETTER} (e.g. agent-c → AGENT_C).
 agent_env_prefix() {
   local id="$1"
   if [[ "$id" =~ ^agent-([a-z])$ ]]; then
@@ -1449,34 +1449,34 @@ print_constitution_agent_preflight() {
 
   echo "==> Preflight (${local_id})"
   if [[ -z "$own_token" ]]; then
-    echo "    webhook_url: FAIL cannot resolve own Passport token_id (need readable NEAR creds or a running container)"
+    echo "    webhook_url: not-passed — cannot resolve own Passport token_id (need readable NEAR creds or a running container)"
   elif [[ -z "$registered" ]]; then
     if a2a_resolve_peers_by_token_id_enabled; then
-      echo "    webhook_url: FAIL API /full + on-chain have no metadata.webhook_url for token_id=${own_token}"
+      echo "    webhook_url: not-passed — API /full + on-chain have no metadata.webhook_url for token_id=${own_token}"
     else
-      echo "    webhook_url: SKIP token_id=${own_token} (set IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 to resolve via API /full)"
+      echo "    webhook_url: skipped — token_id=${own_token} (set IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 to resolve via API /full)"
     fi
   elif [[ "$registered" == "$expected" ]]; then
-    echo "    webhook_url: OK ${registered} (API /full token_id=${own_token})"
+    echo "    webhook_url: passed — ${registered} (API /full token_id=${own_token})"
   else
-    echo "    webhook_url: MISMATCH registered=${registered} expected=${expected} (API /full token_id=${own_token})"
+    echo "    webhook_url: not-passed — registered=${registered} agent ingress=${expected} (API /full token_id=${own_token})"
   fi
 
   if [[ -n "$expected" ]]; then
     card_url="${expected}/.well-known/agent-card.json"
     card_code="$(a2a_probe_agent_card_status "$expected" 2>/dev/null || echo "000")"
     if [[ "$card_code" == "200" ]]; then
-      echo "    agent-card:  OK HTTP ${card_code} ${card_url}"
+      echo "    agent-card:  passed — HTTP ${card_code} ${card_url}"
     else
-      echo "    agent-card:  FAIL HTTP ${card_code} ${card_url}"
+      echo "    agent-card:  not-passed — HTTP ${card_code} ${card_url}"
     fi
     if a2a_probe_endpoint_reachable "$expected"; then
-      echo "    POST /a2a:   OK auth-gated (401/403 without JWT)"
+      echo "    POST /a2a:   passed — auth-gated (401/403 without JWT)"
     else
-      echo "    POST /a2a:   FAIL not auth-gated or unreachable ${expected}/a2a"
+      echo "    POST /a2a:   not-passed — not auth-gated or unreachable ${expected}/a2a"
     fi
   else
-    echo "    agent-card:  SKIP no ingress base URL resolved"
+    echo "    agent-card:  skipped — no ingress base URL resolved"
   fi
 
   local container desired_ver installed_ver
@@ -1484,13 +1484,13 @@ print_constitution_agent_preflight() {
   desired_ver="$(clawhub_plugin_pinned_version "${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN}")"
   installed_ver="$(webhooks_plugin_installed_version "$config_dir" "$container")"
   if ! agent_has_near_credentials "$config_dir"; then
-    echo "    webhooks:    SKIP no NEAR credentials (plugin not installed)"
+    echo "    webhooks:    skipped — no NEAR credentials (plugin not installed)"
   elif [[ -z "$installed_ver" ]]; then
-    echo "    webhooks:    FAIL identyclaw-webhooks not installed — run ./identyclaw.sh upgrade-plugins ${local_id}"
+    echo "    webhooks:    not-passed — identyclaw-webhooks not installed — run ./identyclaw.sh upgrade-plugins ${local_id}"
   elif [[ -n "$desired_ver" && "$installed_ver" != "$desired_ver" ]]; then
-    echo "    webhooks:    FAIL installed=${installed_ver} pinned=${desired_ver} — run ./identyclaw.sh upgrade-plugins ${local_id}"
+    echo "    webhooks:    not-passed — installed=${installed_ver} pinned=${desired_ver} — run ./identyclaw.sh upgrade-plugins ${local_id}"
   else
-    echo "    webhooks:    OK identyclaw-webhooks@${installed_ver} (P2P/API signed ingress; no self-webhook probe)"
+    echo "    webhooks:    passed — identyclaw-webhooks@${installed_ver} (P2P/API signed ingress; no self-webhook probe)"
   fi
   echo ""
 }
@@ -3168,7 +3168,7 @@ agent_ingress_base_url() {
 }
 
 # Pod agents resolve their public ingress host to loopback so self-tests hit nginx in-pod
-# (container DNS may differ from the host; e.g. agent-d.dev.identyclaw.com:7443).
+# (container DNS may differ from the host; e.g. agent-c.dev.identyclaw.com:7443).
 pod_agent_ingress_host_args() {
   local id="$1" host
   load_env
@@ -6420,7 +6420,7 @@ if changed:
 PY
 }
 
-ensure_production_ingress_config() {
+ensure_main_ingress_config() {
   local id="$1"
   local config_dir="$2"
   local config="$config_dir/openclaw.json"

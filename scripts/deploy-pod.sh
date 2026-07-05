@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Production deploy: Podman pod with nginx TLS sidecar + three OpenClaw agent containers.
+# Main-tier pod deploy: Podman pod with nginx TLS sidecar + OpenClaw agent containers.
 # Mirrors .github/workflows/deploy.yml host steps. Run on the deployment host.
 #
 # Required env:
@@ -112,7 +112,7 @@ ensure_agent_runtime() {
 
   load_env
 
-  ensure_production_ingress_config "$id" "$dir"
+  ensure_main_ingress_config "$id" "$dir"
   ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"

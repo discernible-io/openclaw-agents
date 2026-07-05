@@ -7,7 +7,7 @@
  *
  * Env overrides:
  *   PEER_A_BASE  default https://agent-a.dev.identyclaw.com:7443  (agent-a)
- *   PEER_D_BASE  default https://agent-d.dev.identyclaw.com:7443  (agent-d)
+ *   PEER_C_BASE  default https://agent-c.dev.identyclaw.com:7443  (agent-c)
  */
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -17,7 +17,7 @@ import https from "node:https";
 import { createTally, runProbe } from "./lib-test-report.mjs";
 
 const PEER_A = (process.env.PEER_A_BASE || "https://agent-a.dev.identyclaw.com:7443").replace(/\/$/, "");
-const PEER_D = (process.env.PEER_D_BASE || "https://agent-d.dev.identyclaw.com:7443").replace(/\/$/, "");
+const PEER_C = (process.env.PEER_C_BASE || process.env.PEER_D_BASE || "https://agent-c.dev.identyclaw.com:7443").replace(/\/$/, "");
 
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
 process.env.SUPPRESS_NO_CONFIG_WARNING = "true";
@@ -131,9 +131,9 @@ async function autoLogin() {
     { ...outboundCfg.auth, mode: "auto" },
     outboundCfg.agents,
   );
-  const peer = outboundCfg.agents?.["agent-d"];
+  const peer = outboundCfg.agents?.["agent-c"];
   const hdr = await auto.getAuthorizationHeader({
-    agentId: "agent-d",
+    agentId: "agent-c",
     agentCardUrl: peer.url,
   });
   return hdr.replace(/^Bearer /, "");
@@ -150,7 +150,7 @@ const tally = createTally();
 
 console.log("P2P / dual-mode A2A test suite");
 console.log(`  Local (agent-a):  ${PEER_A}`);
-console.log(`  Peer  (agent-d): ${PEER_D}`);
+console.log(`  Peer  (agent-c): ${PEER_C}`);
 console.log(`  Inbound mode: ${inbound.mode}, p2pAudience: ${inbound.p2pAudience?.slice(0, 16)}…`);
 console.log("");
 
@@ -159,7 +159,7 @@ let jwtMediated;
 let jwtP2pA;
 
 try {
-  jwtP2pB = await p2pLogin(PEER_D);
+  jwtP2pB = await p2pLogin(PEER_C);
   jwtMediated = await mediatedLogin();
   jwtP2pA = await p2pLogin(PEER_A);
 } catch (e) {
@@ -179,7 +179,7 @@ console.log("");
 process.stdout.write("--- Auth probes ---\n");
 
 await runProbe(tally, "POST /a2a on peer-b with P2P JWT", async () => {
-  const r = await postA2a(`${PEER_D}/a2a`, jwtP2pB, "p2p-to-b");
+  const r = await postA2a(`${PEER_C}/a2a`, jwtP2pB, "p2p-to-b");
   return {
     matchesContract: r.status >= 200 && r.status < 300,
     detail: `HTTP ${r.status}`,
@@ -187,7 +187,7 @@ await runProbe(tally, "POST /a2a on peer-b with P2P JWT", async () => {
 });
 
 await runProbe(tally, "POST /a2a on peer-b with central API JWT", async () => {
-  const r = await postA2a(`${PEER_D}/a2a`, jwtMediated, "mediated-to-b");
+  const r = await postA2a(`${PEER_C}/a2a`, jwtMediated, "mediated-to-b");
   return {
     matchesContract: r.status >= 200 && r.status < 300,
     detail: `HTTP ${r.status}`,
@@ -196,7 +196,7 @@ await runProbe(tally, "POST /a2a on peer-b with central API JWT", async () => {
 
 await runProbe(tally, "POST /a2a on peer-b with auto outbound JWT", async () => {
   const jwt = await autoLogin();
-  const r = await postA2a(`${PEER_D}/a2a`, jwt, "auto-to-b");
+  const r = await postA2a(`${PEER_C}/a2a`, jwt, "auto-to-b");
   return {
     matchesContract: r.status >= 200 && r.status < 300,
     detail: `HTTP ${r.status}`,
@@ -220,7 +220,7 @@ await runProbe(tally, "POST /a2a on local with central API JWT", async () => {
 });
 
 await runProbe(tally, "POST /a2a on peer-b without Authorization", async () => {
-  const r = await postA2a(`${PEER_D}/a2a`, undefined, "no-auth-b");
+  const r = await postA2a(`${PEER_C}/a2a`, undefined, "no-auth-b");
   return {
     matchesContract: r.status === 401,
     detail: `HTTP ${r.status}`,
@@ -228,7 +228,7 @@ await runProbe(tally, "POST /a2a on peer-b without Authorization", async () => {
 });
 
 await runProbe(tally, "POST /a2a on peer-b with malformed Bearer token", async () => {
-  const r = await postA2a(`${PEER_D}/a2a`, "not.a.valid.jwt", "bad-jwt-b");
+  const r = await postA2a(`${PEER_C}/a2a`, "not.a.valid.jwt", "bad-jwt-b");
   return {
     matchesContract: r.status === 401,
     detail: `HTTP ${r.status}`,
@@ -236,7 +236,7 @@ await runProbe(tally, "POST /a2a on peer-b with malformed Bearer token", async (
 });
 
 await runProbe(tally, "POST /a2a on peer-b with tampered P2P JWT", async () => {
-  const r = await postA2a(`${PEER_D}/a2a`, tamperJwt(jwtP2pB), "tampered-b");
+  const r = await postA2a(`${PEER_C}/a2a`, tamperJwt(jwtP2pB), "tampered-b");
   return {
     matchesContract: r.status === 401,
     detail: `HTTP ${r.status}`,
@@ -258,7 +258,7 @@ await runProbe(tally, "POST /a2a on peer-b with local P2P JWT", async () => {
   if (audP2pB === audP2pA) {
     throw new Error("skip: P2P audiences identical — cannot test cross-audience");
   }
-  const r = await postA2a(`${PEER_D}/a2a`, jwtP2pA, "wrong-aud-b");
+  const r = await postA2a(`${PEER_C}/a2a`, jwtP2pA, "wrong-aud-b");
   return {
     matchesContract: r.status === 401,
     detail: `HTTP ${r.status}`,

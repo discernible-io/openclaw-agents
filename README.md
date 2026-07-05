@@ -4,16 +4,27 @@ Deploy isolated [OpenClaw](https://docs.openclaw.ai) AI agent gateways with Podm
 
 ## Overview
 
-This repository is an **operations toolkit** for running OpenClaw agents in production or development. Each agent gets its own Podman container, config directory, workspace, and secrets. The repo itself is **code-only** (safe to clone publicly); runtime state lives in a sibling app directory.
+This repository is an **operations toolkit** for running OpenClaw agents on **main** or **development** tiers. Each agent gets its own Podman container, config directory, workspace, and secrets. The repo itself is **code-only** (safe to clone publicly); runtime state lives in a sibling app directory.
 
 **Typical use cases:**
 
 - **Email-capable agents** — customer support or triage via Migadu/IMAP (Himalaya skill)
 - **IdentyClaw integrations** — HOLA/Passport verification, A2A peer messaging, RODiT-signed webhooks
 - **Multi-agent deployments** — one or more agents per host, with optional cross-host A2A
-- **Production ingress** — nginx TLS sidecar, GitHub Actions deploy, health checks
+- **Main-tier ingress** — nginx TLS sidecar, GitHub Actions deploy, health checks
 
-**You choose how many agents run on each host** via `AGENT_IDS` in `env.local` (see [Choosing agents on this host](#choosing-agents-on-this-host)). The defaults in `env.example` illustrate a three-agent layout (`agent-a`, `agent-d`, `agent-e`); trim or extend that list to match your deployment.
+**You choose how many agents run on each host** via `AGENT_IDS` in `env.local` (see [Choosing agents on this host](#choosing-agents-on-this-host)). The defaults in `env.example` illustrate a three-agent layout (`agent-a`, `agent-c`, `agent-e`); trim or extend that list to match your deployment.
+
+## Standards
+
+This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/docs/). Key references:
+
+| Topic | Document |
+| --- | --- |
+| Deployment tiers (`main` / `development`) | [`vocabulary-standard.md`](../docs/docs/vocabulary-standard.md) |
+| Integration test outcomes (`passed` / `not-passed`) | [`test-constitution.md`](../docs/docs/test-constitution.md) |
+| CI/CD and Podman deploy | [`cicd-deployment-standard.md`](../docs/docs/cicd-deployment-standard.md) |
+| API→chain peer URL fallback (logged) | [`allowed-fallback-standard.md`](../docs/docs/allowed-fallback-standard.md) |
 
 ## Prerequisites
 
@@ -39,7 +50,7 @@ The **git checkout** holds scripts and image definitions only. **Config, TLS, an
 | `identyclaw-agents/` | Clone of this repo — run `./identyclaw.sh` from here |
 | `../identyclaw-agents-app/env.local` | Runtime settings (chmod 600; created by `./identyclaw.sh init`) |
 | `../identyclaw-agents-app/agents/<agent-id>/` | Per-agent state (`openclaw.json`, `secrets/near-credentials/`, workspace) |
-| `../identyclaw-agents-app/certs/` | TLS for production pod (not used in standalone dev) |
+| `../identyclaw-agents-app/certs/` | TLS for main-tier pod (not used in standalone dev) |
 
 Override the app root: `export IDENTYCLAW_APP_DIR=/custom/path` (default: `../identyclaw-agents-app` next to the clone).
 
@@ -55,7 +66,7 @@ How many gateways run on a machine is controlled in `~/identyclaw-agents-app/env
 
 Peer gateway bases are resolved from IdentyClaw API **`GET /api/identity/token/{tokenId}/full`** → **`metadata.webhook_url`**, with on-chain NEAR `rodit_token` fallback, when `IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1` or `IDENTYCLAW_A2A_OPEN_P2P=1` is set. Optional static override: `A2A_PEER_URLS` JSON map (`token_id` → `https://peer-host:port`).
 
-Default (if unset): `AGENT_IDS=agent-a agent-d agent-e`.
+Default (if unset): `AGENT_IDS=agent-a agent-c agent-e`.
 
 **Examples:**
 
@@ -64,20 +75,20 @@ Default (if unset): `AGENT_IDS=agent-a agent-d agent-e`.
 AGENT_IDS=agent-a
 
 # Two agents on one host
-AGENT_IDS=agent-a agent-d agent-e
+AGENT_IDS=agent-a agent-c agent-e
 
 # Split across hosts — peers identified by Passport token_id; URLs from API
 # Host 1 env.local:
 #   AGENT_IDS=agent-a
 #   IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1
-#   A2A_PEER_AGENTS=<agent-d-token-id>
+#   A2A_PEER_AGENTS=<agent-c-token-id>
 # Host 2 env.local:
-#   AGENT_IDS=agent-d
+#   AGENT_IDS=agent-c
 #   IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1
 #   A2A_PEER_AGENTS=<agent-a-token-id>
 ```
 
-`./identyclaw.sh init` seeds state directories for **agent-a, agent-d, and agent-e** from `env.example`. Agents not listed in `AGENT_IDS` are simply not started — you can leave their mailbox passwords and API keys unset until you need them.
+`./identyclaw.sh init` seeds state directories for **agent-a, agent-c, and agent-e** from `env.example`. Agents not listed in `AGENT_IDS` are simply not started — you can leave their mailbox passwords and API keys unset until you need them.
 
 Per-agent settings in `env.local` use the `AGENT_<LETTER>_` prefix matching the id suffix (`agent-a` → `AGENT_A_EMAIL`, `AGENT_A_GATEWAY_PORT`, etc.). The stock template covers `a`, `d`, and `e`; add matching blocks if you introduce custom ids.
 
@@ -101,7 +112,7 @@ When Migadu passwords are ready, configure **each agent in `AGENT_IDS`**:
 
 ```bash
 ./identyclaw.sh set-password agent-a
-# ./identyclaw.sh set-password agent-d   # if agent-d is in AGENT_IDS
+# ./identyclaw.sh set-password agent-c   # if agent-c is in AGENT_IDS
 ./identyclaw.sh restart all
 ./identyclaw.sh test-mail agent-a
 ./identyclaw.sh set-api-key agent-a    # OpenRouter sk-or-... (validated)
@@ -120,7 +131,7 @@ When Migadu passwords are ready, configure **each agent in `AGENT_IDS`**:
 The local image pins `ghcr.io/openclaw/openclaw:2026.5.27-slim` and pre-installs `@openclaw/discord` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
 - **Pod mode** (per agent): `https://<AGENT_*_PUBLIC_HOST>:<ingress-port>/` — token: `./identyclaw.sh token <agent-id>`
-- **Standalone dev** (default ports from `env.local`): agent-a → `http://127.0.0.1:18789/`, agent-d → `http://127.0.0.1:18795/`, agent-e → `http://127.0.0.1:18797/`
+- **Standalone dev** (default ports from `env.local`): agent-a → `http://127.0.0.1:18789/`, agent-c → `http://127.0.0.1:18793/`, agent-e → `http://127.0.0.1:18797/`
 
 See [Accessing agents (CLI and browser)](#accessing-agents-cli-and-browser) for terminal chat and remote laptop access.
 
@@ -137,7 +148,7 @@ Interactive terminal chat on the **server** (SSH session as your normal user). N
 ```bash
 cd ~/identyclaw-agents
 ./identyclaw.sh chat agent-a
-# ./identyclaw.sh chat agent-d   # when agent-d is in AGENT_IDS
+# ./identyclaw.sh chat agent-c   # when agent-c is in AGENT_IDS
 ```
 
 Exit with **Ctrl+C** or the TUI quit command.
@@ -146,7 +157,7 @@ Exit with **Ctrl+C** or the TUI quit command.
 
 ```bash
 ./identyclaw.sh ask agent-a "Summarize what you can help with for customer support."
-./identyclaw.sh ask agent-d "Draft a short reply to a shipping delay inquiry."
+./identyclaw.sh ask agent-c "Draft a short reply to a shipping delay inquiry."
 ```
 
 **Gateway-backed TUI** (same session as Control UI — advanced):
@@ -179,10 +190,10 @@ cd ~/identyclaw-agents
 
 ### Remote browser — SSH tunnel (recommended)
 
-No need to expose OpenClaw ports on the public internet. On your **laptop**, forward each `AGENT_*_GATEWAY_PORT` from `env.local` (defaults: 18789, 18795, 18797):
+No need to expose OpenClaw ports on the public internet. On your **laptop**, forward each `AGENT_*_GATEWAY_PORT` from `env.local` (defaults: 18789, 18793, 18797):
 
 ```bash
-ssh -L 18789:127.0.0.1:18789 -L 18795:127.0.0.1:18795 user@YOUR_SERVER_IP
+ssh -L 18789:127.0.0.1:18789 -L 18793:127.0.0.1:18793 user@YOUR_SERVER_IP
 ```
 
 Keep that SSH session open. In the laptop browser (one row per agent you tunnel):
@@ -190,7 +201,7 @@ Keep that SSH session open. In the laptop browser (one row per agent you tunnel)
 | Agent | URL (example) |
 |-------|----------------|
 | agent-a | `http://127.0.0.1:18789/#token=TOKEN` |
-| agent-d | `http://127.0.0.1:18795/#token=TOKEN` |
+| agent-c | `http://127.0.0.1:18793/#token=TOKEN` |
 | agent-e | `http://127.0.0.1:18797/#token=TOKEN` |
 
 Get tokens on the server: `./identyclaw.sh token <agent-id>` (e.g. `agent-a`).
@@ -205,7 +216,7 @@ cd ~/identyclaw-agents
 
 ### Remote browser — public IP (optional)
 
-Only if you intentionally want the Control UI on the internet. Prefer HTTPS via a reverse proxy in production; raw HTTP + token is risky.
+Only if you intentionally want the Control UI on the internet. Prefer HTTPS via a reverse proxy on main; raw HTTP + token is risky.
 
 **1. Publish on all interfaces** — in `env.local`:
 
@@ -213,7 +224,7 @@ Only if you intentionally want the Control UI on the internet. Prefer HTTPS via 
 PUBLISH_HOST=0.0.0.0
 ```
 
-**2. Allow your origin** — in `~/identyclaw-agents-app/agents/agent-a/openclaw.json` (and agent D on 18795):
+**2. Allow your origin** — in `~/identyclaw-agents-app/agents/agent-a/openclaw.json` (and agent C on 18793):
 
 ```json
 "controlUi": {
@@ -232,7 +243,7 @@ Replace `YOUR_SERVER_IP` with your server’s public IP or hostname.
 
 ```bash
 sudo firewall-cmd --permanent --add-port=18789/tcp
-sudo firewall-cmd --permanent --add-port=18795/tcp
+sudo firewall-cmd --permanent --add-port=18793/tcp
 sudo firewall-cmd --reload
 ```
 
@@ -241,7 +252,7 @@ sudo firewall-cmd --reload
 ```bash
 cd ~/identyclaw-agents
 ./identyclaw.sh restart all
-ss -tlnp | grep -E '18789|18795'   # expect 0.0.0.0:...
+ss -tlnp | grep -E '18789|18793'   # expect 0.0.0.0:...
 ```
 
 **5. Laptop browser:**
@@ -260,7 +271,7 @@ You can bring agents up before mail is configured. Himalaya reads credentials fr
 
 ```bash
 ./identyclaw.sh set-password agent-a
-# ./identyclaw.sh set-password agent-d   # repeat for each agent in AGENT_IDS
+# ./identyclaw.sh set-password agent-c   # repeat for each agent in AGENT_IDS
 ./identyclaw.sh restart all
 ./identyclaw.sh test-mail agent-a
 ```
@@ -384,14 +395,14 @@ Containers for agents in `AGENT_IDS` should show **Up** without running `./ident
 
 ### Optional: Quadlet units
 
-For production, you can replace manual starts with Podman Quadlet units under `~/.config/containers/systemd/` (see [OpenClaw Podman docs](https://docs.openclaw.ai/install/podman)).
+On main-tier hosts, you can replace manual starts with Podman Quadlet units under `~/.config/containers/systemd/` (see [OpenClaw Podman docs](https://docs.openclaw.ai/install/podman)).
 
 ### Cleanup stray onboard containers
 
 If onboarding was interrupted, remove one-off containers (they are not restarted on boot):
 
 ```bash
-podman rm -f openclaw-agent-a-onboard openclaw-agent-d-onboard 2>/dev/null || true
+podman rm -f openclaw-agent-a-onboard openclaw-agent-c-onboard 2>/dev/null || true
 ```
 
 ## Configuration
@@ -435,12 +446,12 @@ Each agent’s own public base can come from Passport `metadata.webhook_url` whe
 ./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.2+ (API /full + chain fallback for resolvePeersByTokenId)
 ./identyclaw.sh restart all
 ./identyclaw.sh test-a2a              # resolves peer URL via API; token_id from A2A_PEER_AGENTS
-./identyclaw.sh test                  # full suite (see local test-constitution.md if present)
+./identyclaw.sh test                  # full suite (see ../docs/docs/test-constitution.md)
 # Optional: backfill discovered URLs into env.local for ops visibility
 ./identyclaw.sh sync-a2a-peers all
 ```
 
-RODiT JWT details, production ingress, and cross-machine A2A (Option A — public HTTPS on **9443**) are documented in local operator docs (`security-compliance-improvements.md`, not in this repo).
+RODiT JWT details, main-tier ingress, and cross-machine A2A (Option A — public HTTPS on **9443**) are documented in local operator docs (`security-compliance-improvements.md`, not in this repo).
 
 #### Where the contract is defined
 
@@ -451,7 +462,7 @@ Unlike the IdentyClaw API (authoritative OpenAPI in `api-docs/swagger.json` / [`
 | Wire protocol | [A2A Protocol Specification](https://a2a-protocol.org/latest/specification/) | JSON-RPC on `POST /a2a`, Agent Card at `GET /.well-known/agent-card.json`, tasks/messages/artifacts |
 | Implementation | `identyclaw-a2a` plugin (`openclaw.plugin.json`, `a2afork.md`) | RODiT JWT auth, P2P `/api/login`, outbound peer map, plugin tools |
 | Webhooks | `identyclaw-webhooks` plugin | Signed `POST /hooks/*`, outbound `send_rodit_webhook` |
-| Deployment | local `test-constitution.md` | Expected behavior on this host (401 without auth, signed webhook rejection, receipts, etc.) |
+| Deployment | [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md) | Expected behavior on this host (401 without auth, signed webhook rejection, receipts, etc.) |
 | Runtime | `~/identyclaw-agents-app/agents/<id>/openclaw.json` | Per-agent inbound/outbound auth modes, peer URLs, audiences |
 
 Deployed Agent Cards advertise **`protocolVersion: "0.3.0"`** (OpenClaw A2A plugin binding). Validate deployments with `./identyclaw.sh test` — not against IdentyClaw API swagger.
@@ -560,11 +571,11 @@ Rotating one credential does not automatically revoke the others. See trust-boun
 
 **Typical flow:** (1) public Agent Card discovery → (2) optional HOLA trust via `identyclaw-tools` → (3) ongoing work via **`a2a_send_message`** → (4) optional **`send_rodit_webhook`** wake when a lightweight signed ping is enough.
 
-**Verify:** `./identyclaw.sh test` — A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail (suites defined in local `test-constitution.md` when present).
+**Verify:** `./identyclaw.sh test` — A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail (suites per [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)).
 
-### Agent A (example production pod setup)
+### Agent A (example main-tier pod setup)
 
-Reference configuration for a customer-support oriented agent with email + OpenRouter + DuckDuckGo. **Production pod** uses `IDENTYCLAW_DEPLOY_MODE=pod` in `env.local`.
+Reference configuration for a customer-support oriented agent with email + OpenRouter + DuckDuckGo. **Main-tier pod** uses `IDENTYCLAW_DEPLOY_MODE=pod` in `env.local`.
 
 | Setting | Value |
 |---------|--------|
@@ -657,30 +668,30 @@ Webhooks use the same ingress hostname — no extra port. In pod mode: `POST htt
 ./identyclaw.sh restart agent-a
 ```
 
-### Agent D
+### Agent C
 
-Mirrors agent A’s setup (OpenRouter, DuckDuckGo `es-es`, himalaya, session-memory) on ports **18795/18796**.
+Mirrors agent A’s setup (OpenRouter, DuckDuckGo `es-es`, himalaya, session-memory) on ports **18793/18794**.
 
 | Setting | Value |
 |---------|--------|
-| State dir | `~/identyclaw-agents-app/agents/agent-d` |
-| Container | `openclaw-agent-d` |
-| Mailbox | `agent-d@identyclaw.com` (Migadu) |
-| Gateway ports (host) | **18795** (UI/API), **18796** (bridge) |
-| Control UI | http://127.0.0.1:18795/ |
-| Token | `./identyclaw.sh token agent-d` |
+| State dir | `~/identyclaw-agents-app/agents/agent-c` |
+| Container | `openclaw-agent-c` |
+| Mailbox | `agent-c@identyclaw.com` (Migadu) |
+| Gateway ports (host) | **18793** (UI/API), **18794** (bridge) |
+| Control UI | http://127.0.0.1:18793/ |
+| Token | `./identyclaw.sh token agent-c` |
 
 **Fast setup (copy from agent A — no interactive onboard):**
 
 ```bash
 cd ~/identyclaw-agents
-./identyclaw.sh mirror agent-d agent-a
-./identyclaw.sh restart agent-d
-./identyclaw.sh set-password agent-d   # when Migadu password is ready
-./identyclaw.sh test-mail agent-d
+./identyclaw.sh mirror agent-c agent-a
+./identyclaw.sh restart agent-c
+./identyclaw.sh set-password agent-c   # when Migadu password is ready
+./identyclaw.sh test-mail agent-c
 ```
 
-**CLI chat:** `./identyclaw.sh chat agent-d`
+**CLI chat:** `./identyclaw.sh chat agent-c`
 
 ### Agent E
 
@@ -753,7 +764,7 @@ Also ensure:
 
 Quick check: `./identyclaw.sh test-mail agent-a` (IMAP) then send with `sh scripts/himalaya-send.sh …` inside the container.
 
-### `onboard`: Address already in use (port 18789 / 18795)
+### `onboard`: Address already in use (port 18789 / 18793)
 
 The running gateway already binds that agent’s port. Onboarding is a **CLI-only** wizard and does not need its own port mapping (fixed in current `identyclaw.sh`). Pull the latest script, or stop the agent first:
 
@@ -767,7 +778,7 @@ With the fixed script you can run `onboard` while `start all` is up.
 
 ### `onboard`: Too many arguments
 
-`agent-a` / `agent-d` is for **this script** (which config dir to mount), not for `openclaw onboard`. Do not run `openclaw onboard agent-a` manually. Use:
+`agent-a` / `agent-c` is for **this script** (which config dir to mount), not for `openclaw onboard`. Do not run `openclaw onboard agent-a` manually. Use:
 
 ```bash
 ./identyclaw.sh onboard agent-a
@@ -815,14 +826,14 @@ After onboarding:
 
 ### Webhooks and port conflicts (two agents)
 
-Each agent’s webhooks are HTTP paths on **that agent’s gateway** — they do not need separate ports. In **production pod** mode, external senders use HTTPS on the agent subdomain (not host ports 18789/18795/18797).
+Each agent’s webhooks are HTTP paths on **that agent’s gateway** — they do not need separate ports. In **main-tier pod** mode, external senders use HTTPS on the agent subdomain (not host ports 18789/18793/18797).
 
 | Mode | agent-a webhook wake (example) |
 |------|--------------------------------|
 | Standalone dev | `http://127.0.0.1:18789/hooks/wake` |
-| Production pod (main) | `https://agent-a.identyclaw.com:9443/hooks/wake` |
+| Main-tier pod | `https://agent-a.identyclaw.com:9443/hooks/wake` |
 
-Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at origin** with RODiT/Passport credentials (`x-signature` + `x-timestamp`) — not the Control UI gateway token. External services must call the correct subdomain. See [Production ingress](#production-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
+Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at origin** with RODiT/Passport credentials (`x-signature` + `x-timestamp`) — not the Control UI gateway token. External services must call the correct subdomain. See [Main-tier ingress](#main-tier-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
 
 ### Run as `dedalo46`, not `root`
 
@@ -833,11 +844,11 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | Command | Description |
 |---------|-------------|
 | `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.5.27+ + Himalaya + Discord plugin layer |
-| `./identyclaw.sh init` | Create agent state dirs (`agent-a`, `agent-d`, `agent-e` from `env.example`) and `env.local` |
+| `./identyclaw.sh init` | Create agent state dirs (`agent-a`, `agent-c`, `agent-e` from `env.example`) and `env.local` |
 | `./identyclaw.sh set-password agent-a` | Store Migadu password locally |
 | `./identyclaw.sh set-discord-token agent-a` | Store Discord bot token in `secrets/` (synced to `.env` on start) |
 | `./identyclaw.sh set-api-key agent-a` | Store OpenRouter API key (`sk-or-...`) with validation |
-| `./identyclaw.sh mirror agent-d` | Copy config + OpenRouter auth from another agent (e.g. agent-a → agent-d) |
+| `./identyclaw.sh mirror agent-c` | Copy config + OpenRouter auth from another agent (e.g. agent-a → agent-c) |
 | `./identyclaw.sh configure agent-a` | Run `openclaw configure` in the gateway container |
 | `./identyclaw.sh start all` | Start every agent in `AGENT_IDS` |
 | `./identyclaw.sh stop all` | Stop every agent in `AGENT_IDS` |
@@ -851,7 +862,7 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh chat agent-a` | Interactive terminal chat |
 | `./identyclaw.sh ask agent-a "..."` | One-shot message to an agent |
 | `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks) |
-| `./identyclaw.sh test` | Full gateway suite (A2A, webhooks, mail — see local `test-constitution.md`) |
+| `./identyclaw.sh test` | Full gateway suite (A2A, webhooks, mail — see [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)) |
 | `./identyclaw.sh test-mail-hola [id] [peer-token-id]` | Reciprocal email HOLA: we probe the peer **and** drive the peer to probe us; `REQUIRE_MAIL_HOLA=1` makes missing replies a failure |
 | `./identyclaw.sh test-a2a [from] [peer-token-id]` | Agent Card discovery (peer URL via API when dynamic mode on) + unauthenticated `/a2a` → 401 |
 | `./identyclaw.sh test-a2a-auth` | P2P JWT on `/a2a` (peer via API/registry, then local inbound) |
@@ -862,25 +873,25 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh test-webhook-p2p [from] [to]` | Bidirectional P2P webhook receipts |
 | `./identyclaw.sh webhook-url agent-a [path]` | Print public HTTPS webhook URL |
 
-## Production ingress (CI/CD + nginx TLS sidecar)
+## Main-tier ingress (CI/CD + nginx TLS sidecar)
 
-Production HTTPS ingress exists primarily for **A2A** (`POST /a2a`, agent-card discovery) and **OpenClaw webhooks** (`POST /hooks/wake`, `/hooks/agent`, custom `/hooks/<name>`). Control UI over the same hostname is optional for operators. Pattern matches [`clienttest-idc`](../clienttest-idc) (nginx TLS sidecar → HTTP upstream), with per-agent subdomains instead of one `webhook.*` host.
+Main-tier HTTPS ingress exists primarily for **A2A** (`POST /a2a`, agent-card discovery) and **OpenClaw webhooks** (`POST /hooks/wake`, `/hooks/agent`, custom `/hooks/<name>`). Control UI over the same hostname is optional for operators. Pattern matches [`clienttest-idc`](../clienttest-idc) (nginx TLS sidecar → HTTP upstream), with per-agent subdomains instead of one `webhook.*` host.
 
 | Branch | Primary health host | Agent hosts |
 |--------|---------------------|-------------|
-| `development` | `agent-a.dev.identyclaw.com:7443` | `agent-d.dev.identyclaw.com`, `agent-e.dev.identyclaw.com` |
-| `main` | `agent-a.identyclaw.com:9443` | `agent-d.identyclaw.com`, `agent-e.identyclaw.com` |
+| `development` | `agent-a.dev.identyclaw.com:7443` | `agent-c.dev.identyclaw.com`, `agent-e.dev.identyclaw.com` |
+| `main` | `agent-a.identyclaw.com:9443` | `agent-c.identyclaw.com`, `agent-e.identyclaw.com` |
 
-Deploy layout: **nginx sidecar** on **9443** (main) or **7443** (development) — TLS, subdomain → gateway upstream — plus one OpenClaw container per id in `AGENT_IDS` (pod-local ports from `AGENT_*_GATEWAY_PORT`, default 18789 / 18795 / 18797). A single-agent host sets `AGENT_IDS=agent-a` and nginx routes only that subdomain. A2A/webhook URL tables are in local `security-compliance-improvements.md`; see [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
+Deploy layout: **nginx sidecar** on **9443** (main) or **7443** (development) — TLS, subdomain → gateway upstream — plus one OpenClaw container per id in `AGENT_IDS` (pod-local ports from `AGENT_*_GATEWAY_PORT`, default 18789 / 18793 / 18797). A single-agent host sets `AGENT_IDS=agent-a` and nginx routes only that subdomain. A2A/webhook URL tables are in local `security-compliance-improvements.md`; see [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
 
-### Webhook URLs (production)
+### Webhook URLs (main tier)
 
 Each agent has its own HTTPS base. External senders must hit the **correct subdomain** and include a **RODiT origin signature** (`x-signature` + `x-timestamp`):
 
 | Agent (main) | Webhook wake | Webhook agent |
 |--------------|--------------|---------------|
 | agent-a | `https://agent-a.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
-| agent-d | `https://agent-d.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
+| agent-c | `https://agent-c.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
 | agent-e | `https://agent-e.identyclaw.com:9443/hooks/wake` | `…/hooks/agent` |
 
 Use `agent-*.dev.identyclaw.com` on the development branch. Register the base URL in RODiT token metadata `webhook_url` (same field pattern as a single-host webhook service on `https://webhook.example.com:7443`).
@@ -950,7 +961,7 @@ Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tu
   secrets/imap.pass       # never commit
   secrets/imap.sh         # auth helper for Himalaya
 
-~/identyclaw-agents-app/agents/agent-d/      # same structure
+~/identyclaw-agents-app/agents/agent-c/      # same structure
 
 ~/identyclaw-agents-app/agents/agent-e/      # same structure
 ```

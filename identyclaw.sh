@@ -407,7 +407,7 @@ cmd_status() {
     local first_id ingress_port
     first_id="${AGENT_IDS%% *}"
     ingress_port="$(agent_ingress_port "${first_id}")"
-    echo "Production ingress (A2A + webhooks — port ${ingress_port}):"
+    echo "Main-tier ingress (A2A + webhooks — port ${ingress_port}):"
     for id in $AGENT_IDS; do
       print_agent_ingress_urls "$id"
     done
@@ -1010,7 +1010,7 @@ cmd_test_webhook() {
   creds="$(agent_near_credentials_for_tests "$id")"
   if ! _agent_container_name_running "$container"; then
     [[ -n "$creds" ]] || {
-      echo "WARN: agent not running and no near-credentials — skipping outbound/testhola webhook suites" >&2
+      echo "skipped: agent not running and no near-credentials — skipping outbound/testhola webhook suites" >&2
       return 1
     }
   fi
@@ -1090,8 +1090,8 @@ cmd_test_webhook() {
 }
 
 cmd_send_rodit_webhook() {
-  local id="${1:?Usage: $0 send-rodit-webhook agent-d <peer-token-id> [message]}"
-  local peer_token_id="${2:?Usage: $0 send-rodit-webhook agent-d <peer-token-id> [message]}"
+  local id="${1:?Usage: $0 send-rodit-webhook agent-c <peer-token-id> [message]}"
+  local peer_token_id="${2:?Usage: $0 send-rodit-webhook agent-c <peer-token-id> [message]}"
   local text="${3:-}"
   local delay="${SEND_RODIT_WEBHOOK_DELAY:-10}"
   require_podman
@@ -1632,7 +1632,7 @@ cmd_test_all_agents() {
   local missing_mail_pw
   missing_mail_pw="$(constitution_agents_missing_mail_password)"
   if [[ -n "$missing_mail_pw" ]]; then
-    echo "==> Preflight FAIL: missing Migadu mailbox password for:${missing_mail_pw}" >&2
+    echo "==> Preflight not-passed: missing Migadu mailbox password for:${missing_mail_pw}" >&2
     echo "    Run: ./identyclaw.sh set-password <agent-id> for each, then re-run test-all-agents" >&2
     return 1
   fi

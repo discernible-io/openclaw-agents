@@ -65,10 +65,4 @@ try {
   process.exit(1);
 }
 
-if (result.source === "chain") {
-  process.stderr.write(
-    `(${peerTokenId}: peer base from on-chain metadata.webhook_url — API /full had no usable webhook_url)\n`,
-  );
-}
-
 process.stdout.write(result.base);

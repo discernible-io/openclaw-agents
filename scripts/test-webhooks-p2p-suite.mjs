@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Bidirectional P2P webhook suite via send_rodit_webhook (same path peers use in production).
+ * Bidirectional P2P webhook suite via send_rodit_webhook (same path peers use on main tier).
  *
  * Outbound — we deliver webhooks to the peer; verify peer /hooks/_receipts.
  * Inbound  — peer delivers webhooks to us; verify our /hooks/_receipts.
@@ -9,7 +9,7 @@
  *   node scripts/test-webhooks-p2p-suite.mjs \
  *     --local <local-passport-token-id> --peer <peer-passport-token-id> \
  *     --local-creds /path/to/local-near.json \
- *     --local-base https://agent-d.dev.identyclaw.com:7443 \
+ *     --local-base https://agent-c.dev.identyclaw.com:7443 \
  *     --peer-base https://agent-a.dev.identyclaw.com:7443 \
  *     [--peer-creds /path/to/peer-near.json] \
  *     [--skip-inbound] [--require-inbound]

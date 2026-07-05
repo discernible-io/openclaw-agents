@@ -7,7 +7,7 @@
  *   node scripts/test-webhooks-testhola.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near-credentials.json \
- *     --agent-base https://agent-d.dev.identyclaw.com:7443 \
+ *     --agent-base https://agent-c.dev.identyclaw.com:7443 \
  *     [--api-base <url>]  # default: Passport subjectuniqueidentifier_url via RoditClient
  */
 import { createRequire } from "node:module";
@@ -29,7 +29,7 @@ function arg(name, fallback = "") {
 
 const extDir = resolve(arg("--ext-dir", ""));
 let credPath = resolve(arg("--creds", ""));
-const agentBase = (arg("--agent-base", "") || arg("--agent-dase", "")).replace(/\/$/, "");
+const agentBase = arg("--agent-base", "").replace(/\/$/, "");
 const apiBaseArg = arg("--api-base", "");
 
 if (!extDir || !agentBase) {
@@ -151,41 +151,27 @@ async function fetchReceipts() {
   return Array.isArray(body.receipts) ? body.receipts : [];
 }
 
-console.log(`Webhook testhola flow`);
-console.log(`  API:   POST ${apiBase}/api/testhola`);
-console.log(`  Agent: ${agentBase} (webhook_url must point here)`);
-console.log("");
+process.stdout.write(`Webhook testhola flow\n`);
+process.stdout.write(`  API:   POST ${apiBase}/api/testhola\n`);
+process.stdout.write(`  Agent: ${agentBase} (webhook_url must point here)\n\n`);
 
 const client = await RoditClient.create({ role: "client" });
 const ownConfig = await client.getConfigOwnRodit();
 const registeredWebhook = (ownConfig?.own_rodit?.metadata?.webhook_url || "").replace(/\/$/, "");
-const expectedWebhook = agentBase.replace(/\/$/, "");
+const agentIngressUrl = agentBase.replace(/\/$/, "");
 const pollAttempts = Math.min(Math.max(Number(process.env.TESTHOLA_POLL_ATTEMPTS || "90") || 90, 10), 300);
 const pollIntervalMs = Math.min(Math.max(Number(process.env.TESTHOLA_POLL_MS || "500") || 500, 100), 5000);
 
 if (!registeredWebhook) {
-  console.log(`FAIL  Passport metadata.webhook_url is empty`);
-  console.log(`      /api/testhola cannot deliver webhooks without a registered ingress URL`);
-  console.log(`      expected: ${expectedWebhook}`);
-  console.log("");
   tally.add(
     record(
       "Passport metadata.webhook_url",
       false,
-      "empty — register webhook_url in Passport metadata (on-chain)",
+      `empty — register webhook_url in Passport metadata (on-chain); agent ingress ${agentIngressUrl}`,
     ),
   );
-  const { passed, notPassed } = tally.counts();
-  console.log(`Results: ${passed} passed, ${notPassed} not-passed`);
+  tally.printSummary("Results");
   process.exit(tally.exitCode());
-}
-
-if (registeredWebhook !== expectedWebhook) {
-  console.log(`WARN  Passport webhook_url mismatch`);
-  console.log(`      registered: ${registeredWebhook}`);
-  console.log(`      expected:   ${expectedWebhook}`);
-  console.log(`      /api/testhola will deliver to registered URL, not this agent`);
-  console.log("");
 }
 
 const login = await client.login_server();
@@ -234,13 +220,13 @@ const wake = receipts.find((r) => r.path === "/hooks/wake");
 const agentHook = receipts.find((r) => r.path === "/hooks/agent");
 const testholaReceipts = receipts.filter((r) => TESTHOLA_EVENTS.has(r.event || ""));
 
-const webhookUrlOk = registeredWebhook === expectedWebhook;
+const webhookUrlOk = registeredWebhook === agentIngressUrl;
 if (!webhookUrlOk) {
   tally.add(
     record(
       "Passport metadata.webhook_url",
       false,
-      `registered ${registeredWebhook}, agent ingress ${expectedWebhook}`,
+      `registered ${registeredWebhook}, agent ingress ${agentIngressUrl} — /api/testhola delivers to registered URL`,
     ),
   );
 } else {
@@ -264,15 +250,15 @@ if (!webhookUrlOk) {
 }
 
 if (!wake && testholaBody.valid && webhookUrlOk) {
-  console.log("");
-  console.log(`Hint: testhola returned valid but no receipts — check ingress reachability from ${apiBase}`);
+  process.stdout.write(
+    `\nHint: testhola returned valid but no receipts — check ingress reachability from ${apiBase}\n`,
+  );
 }
 if (!webhookUrlOk) {
-  console.log("");
-  console.log("Update Passport metadata webhook_url (on-chain) to:");
-  console.log(`  ${expectedWebhook}`);
+  process.stdout.write(
+    `\nHint: update Passport metadata webhook_url (on-chain) to agent ingress ${agentIngressUrl}\n`,
+  );
 }
 
-const { passed, notPassed } = tally.counts();
-console.log(`Results: ${passed} passed, ${notPassed} not-passed`);
+tally.printSummary("Results");
 process.exit(tally.exitCode());
