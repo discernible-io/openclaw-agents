@@ -864,9 +864,9 @@ cmd_test_a2a_auth() {
   require_agent_running "$local_id"
 
   container="$(agent_container "$local_id")"
-  creds="$(agent_near_credentials_in_container "$local_id")"
+  creds="$(agent_near_credentials_for_tests "$local_id")"
   [[ -n "$creds" ]] || {
-    echo "No NEAR credentials in ${local_id} container (secrets/near-credentials/*.json)" >&2
+    echo "No NEAR credentials for ${local_id} (secrets/near-credentials/*.json; host unreadable — check container mount)" >&2
     return 1
   }
   ext_dir="$(agent_a2a_ext_dir_container)"
@@ -931,9 +931,9 @@ cmd_test_auth_boundaries() {
   require_agent_running "$local_id"
 
   container="$(agent_container "$local_id")"
-  creds="$(agent_near_credentials_in_container "$local_id")"
+  creds="$(agent_near_credentials_for_tests "$local_id")"
   [[ -n "$creds" ]] || {
-    echo "No NEAR credentials in ${local_id} container (secrets/near-credentials/*.json)" >&2
+    echo "No NEAR credentials for ${local_id} (secrets/near-credentials/*.json; host unreadable — check container mount)" >&2
     return 1
   }
   ext_dir="$(agent_a2a_ext_dir_container)"
@@ -1007,17 +1007,17 @@ cmd_test_webhook() {
       ;;
   esac
 
-  creds="$(agent_near_credentials_host_path "$id")"
-  if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
+  creds="$(agent_near_credentials_for_tests "$id")"
+  if ! _agent_container_name_running "$container"; then
     [[ -n "$creds" ]] || {
       echo "WARN: agent not running and no near-credentials — skipping outbound/testhola webhook suites" >&2
-      return 0
+      return 1
     }
   fi
 
   local peer_token_id="" cross_peer
   peer_token_id="$(resolve_peer_token_id "$id" 2>/dev/null || true)"
-  if [[ -n "$peer_token_id" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+  if [[ -n "$peer_token_id" ]] && _agent_container_name_running "$container"; then
     local peer_base container_creds deploy_id peer_local_base
     cross_peer="$(resolve_local_cross_agent_peer_token_id "$id" 2>/dev/null || true)"
     if [[ -n "$cross_peer" && "$peer_token_id" == "$cross_peer" ]]; then
@@ -1031,7 +1031,7 @@ cmd_test_webhook() {
       [[ -z "$peer_local_base" ]] && peer_local_base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
       [[ -n "$peer_local_base" ]] && peer_base="$peer_local_base"
     fi
-    container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
+    container_creds="$(agent_near_credentials_for_tests "$id")"
     if [[ -n "$peer_base" && -n "$container_creds" ]]; then
       echo ""
       echo "==> Outbound: send_rodit_webhook smoke (${id} → ${peer_token_id})"
@@ -1066,9 +1066,9 @@ cmd_test_webhook() {
   local api_base_args=() api_base
   api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
   [[ -n "$api_base" ]] && api_base_args=(--api-base "$api_base")
-  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+  if _agent_container_name_running "$container"; then
     local container_creds ext_dir
-    container_creds="$(podman exec "$container" find /home/node/.openclaw/secrets/near-credentials -name '*.json' 2>/dev/null | head -1)"
+    container_creds="$(agent_near_credentials_for_tests "$id")"
     [[ -n "$container_creds" ]] || container_creds="$creds"
     ext_dir="$(agent_a2a_ext_dir_container)"
     podman_cp_lib_rodit_env "$container" || return 1
@@ -1159,9 +1159,9 @@ cmd_test_webhook_p2p() {
     exit 1
   }
 
-  sender_creds="$(agent_near_credentials_in_container "$sender")"
+  sender_creds="$(agent_near_credentials_for_tests "$sender")"
   [[ -n "$sender_creds" ]] || {
-    echo "No NEAR credentials in ${sender} container (secrets/near-credentials/*.json)" >&2
+    echo "No NEAR credentials for ${sender} (secrets/near-credentials/*.json; host unreadable — check container mount)" >&2
     exit 1
   }
 

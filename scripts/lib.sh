@@ -389,14 +389,14 @@ a2a_tls_skip_verify_enabled() {
 sync_a2a_tls_env() {
   local config_dir="$1"
   local container="${2:-}"
-  local env_file key="NODE_TLS_REJECT_UNAUTHORIZED" value="0"
+  local env_file use_container_env key="NODE_TLS_REJECT_UNAUTHORIZED" value="0"
   container="$(agent_container_for_config_dir "$config_dir" "$container")"
-  env_file="$(agent_env_file_path "$config_dir" "$container")"
-  if ! agent_env_use_container "$config_dir" "$container"; then
-    [[ -f "$config_dir/.env" ]] || return 0
+  read -r use_container_env env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
+  if [[ "$use_container_env" != "1" ]]; then
+    [[ -f "$env_file" ]] || return 0
   fi
   if a2a_tls_skip_verify_enabled; then
-    _agent_env_python "$config_dir" "$container" "$env_file" "$key" "$value" <<'PY'
+    _agent_env_python "$config_dir" "$container" "$use_container_env" "$env_file" "$key" "$value" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -413,7 +413,7 @@ with open(env_file, "w", encoding="utf-8") as f:
 os.chmod(env_file, 0o600)
 PY
   else
-    _agent_env_python "$config_dir" "$container" "$env_file" "$key" <<'PY'
+    _agent_env_python "$config_dir" "$container" "$use_container_env" "$env_file" "$key" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -622,6 +622,7 @@ agent_env_use_container() {
 agent_env_file_path() {
   local config_dir="$1"
   local container="${2:-}"
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
   if agent_env_use_container "$config_dir" "$container"; then
     echo "/home/node/.openclaw/.env"
   else
@@ -629,11 +630,32 @@ agent_env_file_path() {
   fi
 }
 
+# Single podman-vs-host decision for .env writes (avoid re-probing podman ps mid-function).
+agent_env_write_context() {
+  local config_dir="$1"
+  local container="${2:-}"
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if agent_env_use_container "$config_dir" "$container"; then
+    printf '%s\t%s\n' "1" "/home/node/.openclaw/.env"
+  else
+    printf '%s\t%s\n' "0" "$config_dir/.env"
+  fi
+}
+
 _agent_env_python() {
   local config_dir="$1"
   local container="$2"
-  shift 2
-  if agent_env_use_container "$config_dir" "$container"; then
+  local use_container="${3:-}"
+  shift 3
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -z "$use_container" ]]; then
+    if agent_env_use_container "$config_dir" "$container"; then
+      use_container=1
+    else
+      use_container=0
+    fi
+  fi
+  if [[ "$use_container" == "1" ]]; then
     podman exec -i "$container" python3 - "$@"
   else
     python3 - "$@"
@@ -783,10 +805,18 @@ agent_is_local() {
   return 1
 }
 
+# podman ps can miss a running container briefly; inspect is the fallback (see require_agent_running).
+_agent_container_name_running() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" && return 0
+  podman container inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true
+}
+
 agent_container_running() {
   local id="$1" container
   container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"
+  _agent_container_name_running "$container"
 }
 
 # First agent in AGENT_IDS — local origin/destination for constitution suites.
@@ -2357,12 +2387,12 @@ warn_invalid_a2a_peer_agents() {
 sync_rodit_token_id_env() {
   local config_dir="$1"
   local container="${2:-}"
-  local env_file token_id
+  local env_file use_container_env token_id
   token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
   [[ -n "$token_id" ]] || return 0
   [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
-  env_file="$(agent_env_file_path "$config_dir" "$container")"
-  _agent_env_python "$config_dir" "$container" "$env_file" "$token_id" <<'PY'
+  read -r use_container_env env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
+  _agent_env_python "$config_dir" "$container" "$use_container_env" "$env_file" "$token_id" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -2866,10 +2896,24 @@ agent_near_credentials_in_container() {
 _agent_near_cred_path_in_container() {
   local container="$1"
   [[ -n "$container" ]] || return 0
-  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  _agent_container_name_running "$container" || return 0
   podman exec "$container" sh -c \
     'find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name "*.json" -type f 2>/dev/null | head -1' \
     2>/dev/null || true
+}
+
+# Constitution/test harness: in-container path when the agent is up, else readable host path.
+agent_near_credentials_for_tests() {
+  local id="$1"
+  local config_dir container cred=""
+  config_dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  if _agent_container_name_running "$container"; then
+    cred="$(_agent_near_cred_path_in_container "$container")"
+    [[ -n "$cred" ]] && { printf '%s\n' "$cred"; return 0; }
+  fi
+  cred="$(resolve_near_credentials_file "$config_dir" "$container" 2>/dev/null || true)"
+  [[ -n "$cred" ]] && printf '%s\n' "$cred"
 }
 
 # Resolve NEAR passport JSON for an agent (canonical: agents/<id>/secrets/near-credentials/).
@@ -3830,7 +3874,7 @@ PY
 sync_identyclaw_env() {
   local config_dir="$1"
   local container="${2:-}"
-  local env_file cred_file contract_id api_base near_rpc_url
+  local env_file cred_file contract_id api_base near_rpc_url use_container_env
   load_env
   contract_id="${IDENTYCLAW_NEAR_CONTRACT_ID}"
   near_rpc_url="${NEAR_RPC_URL:-}"
@@ -3838,13 +3882,13 @@ sync_identyclaw_env() {
   ensure_near_credentials_in_agent "$config_dir" "$container" || return 0
   cred_file="$(agent_near_cred_path_for_config_sync "$config_dir" "$container")" || return 0
   [[ -n "$cred_file" ]] || return 0
-  env_file="$(agent_env_file_path "$config_dir" "$container")"
+  read -r use_container_env env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
   api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
   [[ -n "$api_base" ]] || {
     echo "    (${config_dir##*/}: skip .env sync — no Passport api_base; set IDENTYCLAW_API_BASE_URL to override)" >&2
     return 0
   }
-  _agent_env_python "$config_dir" "$container" "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" <<'PY'
+  _agent_env_python "$config_dir" "$container" "$use_container_env" "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" <<'PY'
 import json, os, sys
 from pathlib import Path
 
@@ -3895,17 +3939,16 @@ PY
 sync_quiet_plugin_env() {
   local config_dir="$1"
   local container="${2:-}"
-  local env_file
+  local env_file use_container_env
   load_env
   local fallback_ms="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-1000}"
   local near_rpc_url="${NEAR_RPC_URL:-}"
   container="$(agent_container_for_config_dir "$config_dir" "$container")"
-  env_file="$(agent_env_file_path "$config_dir" "$container")"
-  agent_env_use_container "$config_dir" "$container" || {
-    [[ -w "$config_dir" ]] 2>/dev/null || return 0
-    [[ -f "$config_dir/.env" ]] 2>/dev/null || [[ -w "$config_dir" ]] 2>/dev/null || return 0
-  }
-  _agent_env_python "$config_dir" "$container" "$env_file" \
+  read -r use_container_env env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
+  if [[ "$use_container_env" != "1" ]] && [[ ! -f "$env_file" ]] 2>/dev/null && [[ ! -w "$config_dir" ]] 2>/dev/null; then
+    return 0
+  fi
+  _agent_env_python "$config_dir" "$container" "$use_container_env" "$env_file" \
     "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url" <<'PY'
 import os, sys
 from pathlib import Path
@@ -4278,7 +4321,9 @@ ensure_a2a_config() {
   peers_file="$(mktemp)"
   printf '%s' "$peers_json" > "$peers_file"
   peers_arg="$peers_file"
-  if agent_config_use_container "$config_dir" "$container"; then
+  # Match _agent_openclaw_json_python: host openclaw.json vs in-container update.
+  if ! [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]] \
+    && agent_config_use_container "$config_dir" "$container"; then
     peers_arg="/tmp/a2a-peers-$$.json"
     podman cp "$peers_file" "${container}:${peers_arg}" >/dev/null
   fi
