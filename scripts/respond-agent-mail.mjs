@@ -14,7 +14,7 @@
  *   node scripts/respond-agent-mail.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /home/node/.openclaw/secrets/near-credentials/<id>.json \
- *     --from-email agent-a@identyclaw.com --from-name "Agent A" \
+ *     --from-email agent@agent-domain-not-set.example.com --from-name "Agent Name Not Set" \
  *     [--api-base <url>] [--probe-id <id>] [--state <path>] [--dry-run]
  */
 import { resolve } from "node:path";

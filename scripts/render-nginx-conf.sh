@@ -1,45 +1,24 @@
 #!/usr/bin/env bash
-# Render nginx.conf for agents in AGENT_IDS (any agent-{a-z} slug).
-# Usage: render-nginx-conf.sh <development|main> <output-path>
+# Render nginx.conf for agents in AGENT_IDS (agent-{slug}, e.g. agent-name-not-set).
+# Usage: render-nginx-conf.sh <output-path>
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck source=lib.sh
 source "$REPO_ROOT/scripts/lib.sh"
 
-tier="${1:?tier required (development|main)}"
-out="${2:?output path required}"
-
-case "$tier" in
-  development|main) ;;
-  *)
-    echo "tier must be development or main (got: $tier)" >&2
-    exit 1
-    ;;
-esac
+out="${1:?output path required}"
+tier=main
+tier_port=9443
 
 load_env
-
-tier_default_ingress_port() {
-  case "$tier" in
-    development) echo "7443" ;;
-    main) echo "9443" ;;
-  esac
-}
-
-tier_port="$(tier_default_ingress_port)"
-tier_comment="$([[ "$tier" == development ]] && echo "Development" || echo "Main")"
 
 mkdir -p "$(dirname "$out")"
 
 {
   cat <<HEADER
-# TLS sidecar for OpenClaw gateways — primary surfaces:
-#   A2A: POST /a2a, GET /.well-known/agent-card.json (RODiT JWT on POST)
-#   Webhooks: POST /hooks/wake, POST /hooks/agent, POST /hooks/<name> (RODiT x-signature + x-timestamp)
-# nginx terminates TLS and reverse-proxies; gateway enforces auth (not nginx).
-#
-# ${tier_comment} ingress — per-agent hosts (AGENT_*_PUBLIC_HOST from env.local).
+# TLS sidecar for OpenClaw gateways — A2A + RODiT-signed webhooks.
+# Rendered from AGENT_*_PUBLIC_HOST in env.local (deploy-pod.sh mounts over nginx image stub).
 user nginx;
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
@@ -81,7 +60,7 @@ UPSTREAM
     [[ -n "$ingress_port" ]] || ingress_port="$tier_port"
     upstream_name="openclaw_${id//-/_}"
     cat <<SERVER
-    # ${id} — A2A + webhooks @ ${host}:${ingress_port}
+    # ${id} — ${host}:${ingress_port}
     server {
         listen ${ingress_port} ssl;
         http2 on;
@@ -116,4 +95,4 @@ SERVER
   echo "}"
 } >"$out"
 
-echo "Rendered ${out} (tier=${tier}, AGENT_IDS=${AGENT_IDS})"
+echo "Rendered ${out} (AGENT_IDS=${AGENT_IDS})"

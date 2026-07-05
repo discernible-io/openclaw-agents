@@ -146,15 +146,9 @@ ensure_tls_certs() {
 load_env() {
   local f
   local _peer_token_from_process=0 _peer_token_process_value=""
-  local _constitution_skip_from_process=0 _constitution_skip_process_value=""
-  # Process environment overrides env.local (multi-peer test loops: export IDENTYCLAW_PEER_TOKEN_ID=…).
   if [[ -n "${IDENTYCLAW_PEER_TOKEN_ID+x}" ]]; then
     _peer_token_from_process=1
     _peer_token_process_value="$IDENTYCLAW_PEER_TOKEN_ID"
-  fi
-  if [[ -n "${CONSTITUTION_SKIP_SUITES+x}" ]]; then
-    _constitution_skip_from_process=1
-    _constitution_skip_process_value="$CONSTITUTION_SKIP_SUITES"
   fi
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   f="${IDENTYCLAW_APP_DIR}/env.local"
@@ -172,7 +166,7 @@ load_env() {
         value="${value:1:${#value}-2}"
       fi
       case "$key" in
-        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|CONSTITUTION_*|SKIP_*|DEPLOY_*|NEAR_RPC_*) printf -v "$key" '%s' "$value" ;;
+        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|SKIP_*|DEPLOY_*|NEAR_RPC_*) printf -v "$key" '%s' "$value" ;;
       esac
     done <"$f"
   fi
@@ -182,18 +176,8 @@ load_env() {
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
   HIMALAYA_VERSION="${HIMALAYA_VERSION:-v1.2.0}"
   PUBLISH_HOST="${PUBLISH_HOST:-127.0.0.1}"
-  AGENT_A_EMAIL="${AGENT_A_EMAIL:-agent-a@identyclaw.com}"
-  AGENT_A_DISPLAY_NAME="${AGENT_A_DISPLAY_NAME:-Identyclaw Agent A}"
-  AGENT_A_GATEWAY_PORT="${AGENT_A_GATEWAY_PORT:-18789}"
-  AGENT_A_BRIDGE_PORT="${AGENT_A_BRIDGE_PORT:-18790}"
-  AGENT_C_EMAIL="${AGENT_C_EMAIL:-agent-c@identyclaw.com}"
-  AGENT_C_DISPLAY_NAME="${AGENT_C_DISPLAY_NAME:-Identyclaw Agent C}"
-  AGENT_C_GATEWAY_PORT="${AGENT_C_GATEWAY_PORT:-18793}"
-  AGENT_C_BRIDGE_PORT="${AGENT_C_BRIDGE_PORT:-18794}"
-  AGENT_E_EMAIL="${AGENT_E_EMAIL:-agent-e@identyclaw.com}"
-  AGENT_E_DISPLAY_NAME="${AGENT_E_DISPLAY_NAME:-Identyclaw Agent E}"
-  AGENT_E_GATEWAY_PORT="${AGENT_E_GATEWAY_PORT:-18797}"
-  AGENT_E_BRIDGE_PORT="${AGENT_E_BRIDGE_PORT:-18798}"
+  AGENT_NAME_NOT_SET_GATEWAY_PORT="${AGENT_NAME_NOT_SET_GATEWAY_PORT:-18789}"
+  AGENT_NAME_NOT_SET_BRIDGE_PORT="${AGENT_NAME_NOT_SET_BRIDGE_PORT:-18790}"
   # Gateway always listens on this port inside the container (see identyclaw.sh start_one).
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   resolve_openclaw_model_defaults
@@ -206,11 +190,6 @@ load_env() {
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
   IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
-  A2A_TEST_EXCLUDE_PEERS="${A2A_TEST_EXCLUDE_PEERS:-}"
-  A2A_TEST_ONLY_PEERS="${A2A_TEST_ONLY_PEERS:-}"
-  CONSTITUTION_SKIP_SUITES="${CONSTITUTION_SKIP_SUITES:-}"
-  # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
-  # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.3}"
   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.6}"
@@ -225,19 +204,13 @@ load_env() {
   IDENTYCLAW_CLAWHUB_TWITTER_SKILL="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
   IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-linkedin-social}"
   IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
-  IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
+  IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-pod}"
   IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
-  AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
-  AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
-  AGENT_E_PUBLIC_HOST="${AGENT_E_PUBLIC_HOST:-agent-e.identyclaw.com}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   IDENTYCLAW_AGENT_STATE_ROOT="${IDENTYCLAW_AGENT_STATE_ROOT:-${IDENTYCLAW_APP_DIR}/agents}"
-  AGENT_IDS="${AGENT_IDS:-}"
+  AGENT_IDS="${AGENT_IDS:-agent-name-not-set}"
   if [[ "$_peer_token_from_process" -eq 1 ]]; then
     IDENTYCLAW_PEER_TOKEN_ID="$_peer_token_process_value"
-  fi
-  if [[ "$_constitution_skip_from_process" -eq 1 ]]; then
-    CONSTITUTION_SKIP_SUITES="$_constitution_skip_process_value"
   fi
 }
 
@@ -303,7 +276,7 @@ configured_agent_ids() {
   fi
   app_agents="$(identyclaw_app_dir)/agents"
   if [[ -d "$app_agents" ]]; then
-    for id in "$app_agents"/agent-?; do
+    for id in "$app_agents"/agent-*; do
       [[ -d "$id" ]] || continue
       id="$(basename "$id")"
       is_valid_agent_id "$id" || continue
@@ -314,7 +287,7 @@ configured_agent_ids() {
       fi
     done
   fi
-  echo "${ids:-agent-a agent-c agent-e}"
+  echo "${ids:-agent-name-not-set}"
 }
 
 # Optional env override; default is Passport metadata.subjectuniqueidentifier_url (RoditClient).
@@ -348,18 +321,20 @@ identyclaw_api_base_url_for_agent() {
   identyclaw_api_base_url_for_config_dir "$(agent_home "$id")"
 }
 
-# Map deployment slug agent-{letter} → env prefix AGENT_{LETTER} (e.g. agent-c → AGENT_C).
+# Map deployment slug agent-{slug} → env prefix AGENT_{SLUG} (hyphens → underscores).
+# e.g. agent-a → AGENT_A; agent-name-not-set → AGENT_NAME_NOT_SET.
 agent_env_prefix() {
-  local id="$1"
-  if [[ "$id" =~ ^agent-([a-z])$ ]]; then
-    printf 'AGENT_%s' "$(echo "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')"
+  local id="$1" slug
+  if [[ "$id" =~ ^agent-([a-z0-9-]+)$ ]]; then
+    slug="${BASH_REMATCH[1]//-/_}"
+    printf 'AGENT_%s' "$(echo "$slug" | tr '[:lower:]' '[:upper:]')"
     return 0
   fi
   return 1
 }
 
 is_valid_agent_id() {
-  [[ "$1" =~ ^agent-[a-z]$ ]]
+  [[ "$1" =~ ^agent-[a-z][a-z0-9-]*$ ]]
 }
 
 agent_env_value() {
@@ -834,7 +809,7 @@ resolve_local_agent_id() {
   for id in $(configured_agent_ids); do
     [[ -n "$id" ]] && { echo "$id"; return 0; }
   done
-  echo "agent-a"
+  echo "agent-name-not-set"
 }
 
 # Passport token_ids for agents in AGENT_IDS on this host (container probe when host cannot read secrets).
@@ -882,7 +857,7 @@ a2a_remote_peer_token_ids() {
 # Public agent registry at GET /api/agents (same as identyclaw_list_agents tool).
 a2a_discover_peers_from_api_enabled() {
   load_env
-  [[ "${IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API:-1}" != "0" ]]
+  [[ "${IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API:-0}" != "0" ]]
 }
 
 # JSON line: {"tokenIds":[...],"apiBase":"...","pages":N} — excludes local AGENT_IDS token_ids.
@@ -938,109 +913,6 @@ for tid in d.get('tokenIds') or []:
     fi
   fi
   echo "$out"
-}
-
-# True when a constitution suite name is listed in CONSTITUTION_SKIP_SUITES (space-separated).
-# Suite tokens: a2a, a2a-auth, auth-boundaries, webhook, webhook-all, webhook-p2p, mail, mail-hola.
-# Legacy: SKIP_MAIL_HOLA=1 also skips mail-hola.
-constitution_suite_skipped() {
-  local suite="$1" ref
-  [[ -n "$suite" ]] || return 1
-  load_env
-  if [[ "$suite" == mail-hola && "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
-    return 0
-  fi
-  for ref in ${CONSTITUTION_SKIP_SUITES:-}; do
-    [[ "$ref" == "$suite" ]] && return 0
-  done
-  return 1
-}
-
-# True when token_id is listed in A2A_TEST_EXCLUDE_PEERS (still usable for discovery/bootstrap).
-a2a_peer_token_id_excluded_from_tests() {
-  local token_id="$1" ref
-  [[ -n "$token_id" ]] || return 1
-  load_env
-  for ref in ${A2A_TEST_EXCLUDE_PEERS:-}; do
-    is_passport_token_id "$ref" || continue
-    [[ "$ref" == "$token_id" ]] && return 0
-  done
-  return 1
-}
-
-# Passport token_ids for other AGENT_IDS on this host (cross-agent, not self).
-local_cross_agent_peer_token_ids() {
-  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local id own_tid tid out=""
-  load_env
-  own_tid="$(agent_token_id "$local_deploy_id" 2>/dev/null || true)"
-  for id in $AGENT_IDS; do
-    [[ "$id" == "$local_deploy_id" ]] && continue
-    tid="$(agent_token_id "$id" 2>/dev/null || true)"
-    [[ -n "$tid" ]] || continue
-    [[ "$tid" == "$own_tid" ]] && continue
-    a2a_peer_token_id_excluded_from_tests "$tid" && continue
-    out="${out:+$out }$tid"
-  done
-  echo "$out"
-}
-
-# First running cross-agent on this host with a resolvable ingress base (webhooks 0.1.5 path).
-resolve_local_cross_agent_peer_token_id() {
-  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local tid deploy_id base container
-  for tid in $(local_cross_agent_peer_token_ids "$local_deploy_id"); do
-    deploy_id="$(find_deploy_id_for_token_id "$tid" 2>/dev/null || true)"
-    [[ -n "$deploy_id" ]] || continue
-    container="$(agent_container "$deploy_id" 2>/dev/null || true)"
-    podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || continue
-    base="$(agent_container_ingress_base_url "$deploy_id" 2>/dev/null || true)"
-    [[ -z "$base" ]] && base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
-    [[ -z "$base" ]] && base="$(agent_ingress_base_url "$deploy_id" 2>/dev/null || true)"
-    [[ -n "$base" ]] || continue
-    echo "$tid"
-    return 0
-  done
-  return 1
-}
-
-# Optional test allowlist: when A2A_TEST_ONLY_PEERS is set, constitution peer
-# suites target exactly these Passport token_ids (still deduped/reachability-probed
-# and with local-host token_ids skipped). Empty means test all discovered peers.
-a2a_test_only_peer_token_ids() {
-  local ref out=""
-  load_env
-  for ref in ${A2A_TEST_ONLY_PEERS:-}; do
-    is_passport_token_id "$ref" || continue
-    if [[ " $out " != *" $ref "* ]]; then
-      out="${out:+$out }$ref"
-    fi
-  done
-  echo "$out"
-}
-
-# Constitution / smoke-test peer candidates. Precedence: A2A_TEST_ONLY_PEERS when
-# set; else A2A_PEER_AGENTS when it lists valid token_ids (reconciled against GET
-# /api/agents so deprecated configured token_ids yield to discovered ones at the
-# same gateway); else A2A_PEER_AGENTS + GET /api/agents (merged, deduped). Peer
-# gateway URLs and contactUri email are always resolved at run time via GET
-# /api/identity/token/{tokenId}/full metadata.webhook_url (+ on-chain fallback)
-# when IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 — independent of this list.
-a2a_discovered_test_candidate_token_ids() {
-  local only configured local_id
-  load_env
-  local_id="$(resolve_local_agent_id)"
-  only="$(a2a_test_only_peer_token_ids)"
-  if [[ -n "$only" ]]; then
-    a2a_reconcile_peer_token_id_list "$only" "$local_id"
-    return 0
-  fi
-  configured="$(a2a_configured_peer_token_ids)"
-  if [[ -n "$configured" ]]; then
-    a2a_reconcile_peer_token_id_list "$configured" "$local_id"
-    return 0
-  fi
-  a2a_merged_remote_peer_token_ids
 }
 
 # Probe GET /api/agents, resolve /full + chain URLs, keep peers with live agent-card.
@@ -1177,7 +1049,7 @@ resolve_peer_token_id() {
       return 1
     }
     if a2a_peer_token_id_on_this_host "$cli_peer"; then
-      echo "Peer token_id ${cli_peer} runs on this host (AGENT_IDS) — constitution peers must be remote A2A agents" >&2
+      echo "Peer token_id ${cli_peer} runs on this host (AGENT_IDS) — remote peers only" >&2
       return 1
     fi
     echo "$cli_peer"
@@ -1317,271 +1189,25 @@ gateway_host_on_same_pod_ingress() {
   return 1
 }
 
-# Email HOLA peerTokenId binding is unreliable when the peer shares this host's pod ingress
-# (exact URL match, co-located Passport, or parent/alt hostname on the same listen port).
-peer_mail_hola_ambiguous() {
-  local local_id="$1" peer_token_id="$2"
-  local config_dir peer_base peer_hp id b local_hp deploy_id
-  [[ -n "$local_id" && -n "$peer_token_id" ]] || return 1
-  load_env
-  a2a_peer_token_id_on_this_host "$peer_token_id" && return 0
-  deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
-  [[ -n "$deploy_id" ]] && return 0
-  config_dir="$(agent_home "$local_id")"
-  for id in $AGENT_IDS; do
-    peer_shares_local_gateway_base "$id" "$peer_token_id" && return 0
-  done
-  peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$config_dir" 2>/dev/null || true)"
-  [[ -n "$peer_base" ]] || return 1
-  peer_hp="$(gateway_base_host_port "${peer_base%/}")"
-  [[ -n "$peer_hp" ]] || return 1
-  for id in $AGENT_IDS; do
-    for b in $(local_agent_gateway_bases "$id"); do
-      local_hp="$(gateway_base_host_port "$b")"
-      [[ -n "$local_hp" ]] || continue
-      gateway_host_on_same_pod_ingress "$peer_hp" "$local_hp" && return 0
-    done
-  done
-  return 1
-}
-
-# Agents in AGENT_IDS missing secrets/imap.pass (blocks test-mail and email HOLA).
-constitution_agents_missing_mail_password() {
-  local id out="" dir container
-  load_env
-  for id in $AGENT_IDS; do
-    dir="$(agent_home "$id")"
-    if [[ -f "${dir}/secrets/imap.pass" ]]; then
-      continue
-    fi
-    # Pod deploy chowns agent state to the container uid — verify inside a running gateway.
-    if [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] && agent_container_running "$id"; then
-      container="$(agent_container "$id")"
-      if podman exec "$container" test -f /home/node/.openclaw/secrets/imap.pass 2>/dev/null; then
-        continue
-      fi
-    fi
-    out="${out:+$out }${id}"
-  done
-  echo "$out"
-}
-
-# Primary local gateway base (first resolved) — used to detect peers that resolve to our own
-# ingress (e.g. an alternate token_id registered to this agent).
-agent_own_gateway_base_url() {
-  local id="$1" bases
-  bases="$(local_agent_gateway_bases "$id")"
-  [[ -n "$bases" ]] || return 1
-  echo "${bases%% *}"
-}
-
-# Default peer for smoke tests. Precedence: local cross-agent (same-host webhooks 0.1.5),
-# then first remote candidate whose /a2a is auth-gated. Skips A2A_TEST_EXCLUDE_PEERS.
+# First remote A2A peer from A2A_PEER_AGENTS whose gateway is auth-gated.
 resolve_reachable_peer_token_id() {
   local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir cross
-  local p base
+  local resolver_config_dir p base
   load_env
   resolver_config_dir="$(agent_home "$local_deploy_id")"
-  cross="$(resolve_local_cross_agent_peer_token_id "$local_deploy_id" 2>/dev/null || true)"
-  if [[ -n "$cross" ]]; then
-    echo "$cross"
-    return 0
-  fi
-  for p in $(a2a_discovered_test_candidate_token_ids); do
+  for p in $(a2a_remote_peer_token_ids); do
     is_passport_token_id "$p" || continue
-    a2a_peer_token_id_excluded_from_tests "$p" && continue
-    a2a_peer_token_id_on_this_host "$p" && continue
     base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$base" ]] || continue
     if peer_shares_local_gateway_base "$local_deploy_id" "$p"; then
-      echo "    (skip peer ${p} — shares gateway with ${local_deploy_id} at ${base%/}; A2A covered by local suites)" >&2
       continue
     fi
     if a2a_probe_endpoint_reachable "$base"; then
       echo "$p"
       return 0
     fi
-    echo "    (skip peer ${p} — ${base}/a2a not reachable or not auth-gated)" >&2
   done
   return 1
-}
-
-# All live remote peers for constitution suites — one token_id per distinct live gateway
-# base URL. "Live" = URL resolved from the registry (API /full metadata.webhook_url, on-chain
-# fallback) AND the gateway answers /a2a auth-gated (401/403). Deduped by base because the
-# P2P login/auth flow targets the resolved base, so multiple token_ids sharing one gateway
-# are the same peer under test (and dead token_ids that resolve to no live host are dropped).
-# Peers that share the local agent's gateway remain in the list; A2A suites are skipped per
-# peer in cmd_test_constitution_for_agent (webhook/mail may still run).
-resolve_live_peer_token_ids() {
-  local local_deploy_id="${1:-$(resolve_local_agent_id)}"
-  local resolver_config_dir p base seen_bases="" out="" tid deploy_id
-  load_env
-  resolver_config_dir="$(agent_home "$local_deploy_id")"
-  # Same-host cross-agent peers first — outbound P2P webhooks pass when both run webhooks 0.1.5.
-  for tid in $(local_cross_agent_peer_token_ids "$local_deploy_id"); do
-    deploy_id="$(find_deploy_id_for_token_id "$tid" 2>/dev/null || true)"
-    [[ -n "$deploy_id" ]] || continue
-    base="$(agent_container_ingress_base_url "$deploy_id" 2>/dev/null || true)"
-    [[ -z "$base" ]] && base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
-    [[ -z "$base" ]] && base="$(agent_ingress_base_url "$deploy_id" 2>/dev/null || true)"
-    [[ -n "$base" ]] || continue
-    base="${base%/}"
-    [[ " $seen_bases " == *" $base "* ]] && continue
-    seen_bases="${seen_bases:+$seen_bases }$base"
-    out="${out:+$out }$tid"
-  done
-  for p in $(a2a_discovered_test_candidate_token_ids); do
-    is_passport_token_id "$p" || continue
-    a2a_peer_token_id_excluded_from_tests "$p" && continue
-    a2a_peer_token_id_on_this_host "$p" && continue
-    base="$(a2a_peer_public_base_url "$p" "$resolver_config_dir" 2>/dev/null || true)"
-    [[ -n "$base" ]] || continue
-    base="${base%/}"
-    [[ " $seen_bases " == *" $base "* ]] && continue
-    if a2a_probe_endpoint_reachable "$base"; then
-      seen_bases="${seen_bases:+$seen_bases }$base"
-      out="${out:+$out }$p"
-    else
-      echo "    (skip peer ${p} — ${base}/a2a not reachable or not auth-gated)" >&2
-    fi
-  done
-  [[ -n "$out" ]] || return 1
-  echo "$out"
-}
-
-print_constitution_agent_preflight() {
-  local local_id="$1"
-  local config_dir registered own_token expected card_code card_url
-  load_env
-  is_valid_agent_id "$local_id" || return 1
-  config_dir="$(agent_home "$local_id")"
-  expected="$(agent_container_ingress_base_url "$local_id" 2>/dev/null || true)"
-  [[ -n "$expected" ]] || expected="$(agent_a2a_public_base_url "$local_id" 2>/dev/null || true)"
-  [[ -n "$expected" ]] || expected="$(agent_ingress_base_url "$local_id" 2>/dev/null || true)"
-  # webhook_url source of truth: IdentyClaw API GET /api/identity/token/{tokenId}/full
-  # (metadata.webhook_url), with on-chain RODiT fallback — same resolution the peer path uses.
-  # Runs in-container when the host cannot read the mounted NEAR credentials (rootless podman
-  # uid mapping), so host filesystem permissions never produce a false "empty webhook_url".
-  own_token="$(agent_token_id "$local_id" 2>/dev/null || true)"
-  registered=""
-  if [[ -n "$own_token" ]]; then
-    registered="$(probe_identyclaw_peer_public_base_url "$config_dir" "$own_token" 2>/dev/null || true)"
-  fi
-  registered="${registered%/}"
-  expected="${expected%/}"
-
-  echo "==> Preflight (${local_id})"
-  if [[ -z "$own_token" ]]; then
-    echo "    webhook_url: not-passed — cannot resolve own Passport token_id (need readable NEAR creds or a running container)"
-  elif [[ -z "$registered" ]]; then
-    if a2a_resolve_peers_by_token_id_enabled; then
-      echo "    webhook_url: not-passed — API /full + on-chain have no metadata.webhook_url for token_id=${own_token}"
-    else
-      echo "    webhook_url: skipped — token_id=${own_token} (set IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1 to resolve via API /full)"
-    fi
-  elif [[ "$registered" == "$expected" ]]; then
-    echo "    webhook_url: passed — ${registered} (API /full token_id=${own_token})"
-  else
-    echo "    webhook_url: not-passed — registered=${registered} agent ingress=${expected} (API /full token_id=${own_token})"
-  fi
-
-  if [[ -n "$expected" ]]; then
-    card_url="${expected}/.well-known/agent-card.json"
-    card_code="$(a2a_probe_agent_card_status "$expected" 2>/dev/null || echo "000")"
-    if [[ "$card_code" == "200" ]]; then
-      echo "    agent-card:  passed — HTTP ${card_code} ${card_url}"
-    else
-      echo "    agent-card:  not-passed — HTTP ${card_code} ${card_url}"
-    fi
-    if a2a_probe_endpoint_reachable "$expected"; then
-      echo "    POST /a2a:   passed — auth-gated (401/403 without JWT)"
-    else
-      echo "    POST /a2a:   not-passed — not auth-gated or unreachable ${expected}/a2a"
-    fi
-  else
-    echo "    agent-card:  skipped — no ingress base URL resolved"
-  fi
-
-  local container desired_ver installed_ver
-  container="$(agent_container "$local_id" 2>/dev/null || true)"
-  desired_ver="$(clawhub_plugin_pinned_version "${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN}")"
-  installed_ver="$(webhooks_plugin_installed_version "$config_dir" "$container")"
-  if ! agent_has_near_credentials "$config_dir"; then
-    echo "    webhooks:    skipped — no NEAR credentials (plugin not installed)"
-  elif [[ -z "$installed_ver" ]]; then
-    echo "    webhooks:    not-passed — identyclaw-webhooks not installed — run ./identyclaw.sh upgrade-plugins ${local_id}"
-  elif [[ -n "$desired_ver" && "$installed_ver" != "$desired_ver" ]]; then
-    echo "    webhooks:    not-passed — installed=${installed_ver} pinned=${desired_ver} — run ./identyclaw.sh upgrade-plugins ${local_id}"
-  else
-    echo "    webhooks:    passed — identyclaw-webhooks@${installed_ver} (P2P/API signed ingress; no self-webhook probe)"
-  fi
-  echo ""
-}
-
-# Constitution cross-agent test mode from resolved peer capabilities.
-# a2a+email — remote A2A + email HOLA; a2a — A2A/webhooks only; email only — HOLA without A2A base.
-classify_constitution_test_mode() {
-  local a2a_base="$1" peer_email="$2" local_email="$3"
-  local has_a2a=0 has_email=0
-  [[ -n "$a2a_base" ]] && has_a2a=1
-  [[ -n "$peer_email" && -n "$local_email" && "${SKIP_MAIL_HOLA:-0}" != 1 ]] && has_email=1
-  if [[ $has_a2a -eq 1 && $has_email -eq 1 ]]; then
-    echo "a2a+email"
-  elif [[ $has_a2a -eq 1 ]]; then
-    echo "a2a"
-  elif [[ $has_email -eq 1 ]]; then
-    echo "email only"
-  else
-    echo "unavailable"
-  fi
-}
-
-# Probe remote peer A2A base + Passport contactUri email (host paths or running container).
-probe_test_candidate_peer_json() {
-  local local_id="$1" peer_token_id="$2"
-  local config_dir cred ext_dir container probed_json a2a_base
-  [[ -n "$local_id" && -n "$peer_token_id" ]] || return 1
-  is_passport_token_id "$peer_token_id" || return 1
-  config_dir="$(agent_home "$local_id")"
-  a2a_base="$(a2a_peer_public_base_url "$peer_token_id" "$config_dir" 2>/dev/null || true)"
-  cred="$(agent_near_credentials_host_path "$local_id" 2>/dev/null || true)"
-  ext_dir="$(agent_a2a_ext_dir "$config_dir" 2>/dev/null || true)"
-  if [[ -z "$cred" || ! -d "$ext_dir" ]]; then
-    container="$(agent_container "$local_id")"
-    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
-      cred="$(agent_near_credentials_in_container "$local_id" 2>/dev/null || true)"
-      ext_dir="$(a2a_api_probe_ext_dir_container "$container" 2>/dev/null || true)"
-      if [[ -n "$cred" && -n "$ext_dir" ]]; then
-        podman_cp_lib_rodit_env "$container" || return 1
-        podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-identity.mjs" \
-          "$container:/tmp/lib-peer-identity.mjs" >/dev/null 2>&1 || return 1
-        podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-gateway-url.mjs" \
-          "$container:/tmp/lib-peer-gateway-url.mjs" >/dev/null 2>&1 || return 1
-        podman cp "${IDENTYCLAW_ROOT}/scripts/probe-test-candidate-peer.mjs" \
-          "$container:/tmp/probe-test-candidate-peer.mjs" >/dev/null 2>&1 || return 1
-        local -a probe_args=(node /tmp/probe-test-candidate-peer.mjs "$ext_dir" "$cred" "$peer_token_id")
-        [[ -n "$a2a_base" ]] && probe_args+=(--a2a-base "$a2a_base")
-        probed_json="$(
-          timeout --foreground "${IDENTYCLAW_PROBE_TIMEOUT_SEC:-90}" \
-            podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
-            "${probe_args[@]}" 2>/dev/null || true
-        )"
-      fi
-    fi
-  else
-    local -a probe_args=(
-      node "${IDENTYCLAW_ROOT}/scripts/probe-test-candidate-peer.mjs"
-      "$ext_dir" "$cred" "$peer_token_id"
-    )
-    [[ -n "$a2a_base" ]] && probe_args+=(--a2a-base "$a2a_base")
-    probed_json="$(
-      timeout "${IDENTYCLAW_PROBE_TIMEOUT_SEC:-90}" "${probe_args[@]}" 2>/dev/null || true
-    )"
-  fi
-  [[ -n "$probed_json" ]] || return 1
-  printf '%s' "$probed_json"
 }
 
 # curl --resolve for local HTTPS ingress (host + in-container probes; pod nginx on loopback).
@@ -1681,25 +1307,6 @@ podman_cp_mail_responder_libs() {
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-mail-responder.mjs" "$container:/tmp/lib-mail-responder.mjs" >/dev/null 2>&1 || return 1
 }
 
-podman_cp_a2a_webhook_smoke_libs() {
-  local container="$1"
-  [[ -n "$container" ]] || return 1
-  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-a2a-webhook-smoke-responder.mjs" \
-    "$container:/tmp/lib-a2a-webhook-smoke-responder.mjs" >/dev/null 2>&1 || return 1
-  podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" \
-    "$container:/tmp/send-rodit-webhook.mjs" >/dev/null 2>&1 || return 1
-}
-
-# Email HOLA peer probe copies shared libs beside /tmp/test-mail-hola-peer.mjs.
-# Includes the responder (inbound direction) and webhook lib (P2P login to drive peer).
-podman_cp_mail_hola_test_libs() {
-  local container="$1"
-  [[ -n "$container" ]] || return 1
-  podman_cp_mail_responder_libs "$container" || return 1
-  podman_cp_lib_test_report "$container" || return 1
-  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null 2>&1 || return 1
-}
-
 probe_rodit_own_owner_id_in_container() {
   local container="$1"
   local cred ext_dir probed
@@ -1764,7 +1371,7 @@ probe_rodit_own_owner_id() {
   echo "$probed"
 }
 
-# True when ref is a Passport token_id (12-char), not a deployment slug like agent-a.
+# True when ref is a Passport token_id (12-char), not a deployment slug like agent-name-not-set.
 is_passport_token_id() {
   local ref="${1:-}"
   [[ -n "$ref" ]] || return 1
@@ -1852,7 +1459,7 @@ agent_chat_peer_discovery_test_prompt() {
   local self_token email api_base local_tokens
   load_env
   self_token="$(agent_token_id "$id" 2>/dev/null || true)"
-  email="$(agent_env_value "$id" EMAIL "")"
+  email="$(agent_email "$id")"
   api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
   [[ -n "$api_base" ]] || api_base="$(identyclaw_api_base_url_for_agent "$id" 2>/dev/null || true)"
   api_base="${api_base:-https://api.identyclaw.com}"
@@ -2793,7 +2400,8 @@ a2a_dynamic_peers_from_jwt_enabled() {
   [[ "${IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT:-0}" != "0" ]]
 }
 
-# Passport metadata via RoditClient.getConfigOwnRodit() — webhook_url, api_base, owner_id, host, port.
+# Passport metadata via RoditClient.getConfigOwnRodit() — webhook_url, api_base, owner_id, host, port,
+# display_name, contact_uri, contact_email (identity /full fallback in probe script).
 probe_rodit_passport_urls_json() {
   local config_dir="$1"
   local cred_file ext_dir cache cred_stat probed cached_key cached_json
@@ -2866,6 +2474,32 @@ rodit_passport_webhook_host() {
 
 rodit_passport_webhook_port() {
   rodit_passport_json_field "$1" "port"
+}
+
+rodit_passport_display_name() {
+  rodit_passport_json_field "$1" "display_name"
+}
+
+rodit_passport_contact_email() {
+  rodit_passport_json_field "$1" "contact_email"
+}
+
+agent_email() {
+  local id="$1" email="" config_dir
+  load_env
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  email="$(agent_env_value "$id" EMAIL "")"
+  if [[ -n "$email" ]]; then
+    echo "$email"
+    return 0
+  fi
+  if rodit_self_configure_enabled; then
+    config_dir="$(agent_home "$id")"
+    if agent_has_near_credentials "$config_dir"; then
+      email="$(rodit_passport_contact_email "$config_dir" 2>/dev/null || true)"
+      [[ -n "$email" ]] && echo "$email"
+    fi
+  fi
 }
 
 a2a_warn_legacy_auth_mode_env() {
@@ -3074,9 +2708,22 @@ ensure_identyclaw_network() {
 }
 
 agent_display_name() {
+  local id="$1" name="" config_dir
   load_env
-  is_valid_agent_id "$1" || { echo "$1"; return 0; }
-  agent_env_value "$1" DISPLAY_NAME "$1"
+  is_valid_agent_id "$id" || { echo "$id"; return 0; }
+  name="$(agent_env_value "$id" DISPLAY_NAME "")"
+  if [[ -n "$name" ]]; then
+    echo "$name"
+    return 0
+  fi
+  if rodit_self_configure_enabled; then
+    config_dir="$(agent_home "$id")"
+    if agent_has_near_credentials "$config_dir"; then
+      name="$(rodit_passport_display_name "$config_dir" 2>/dev/null || true)"
+      [[ -n "$name" ]] && { echo "$name"; return 0; }
+    fi
+  fi
+  echo "$id"
 }
 
 agent_ports() {
@@ -3090,15 +2737,20 @@ agent_ports() {
 }
 
 agent_internal_gateway_port() {
-  local id="$1" ord_a ord_l
+  local id="$1" ord_a ord_l gw
   load_env
+  gw="$(agent_env_value "$id" GATEWAY_PORT "")"
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; exit 1; }
-    ord_a=$(printf '%d' "'a")
-    ord_l="$(agent_letter_ord "$id")" || { echo "unknown agent: $id" >&2; exit 1; }
-    echo $(( 18789 + (ord_l - ord_a) * 2 ))
+    [[ -n "$gw" ]] && { echo "$gw"; return 0; }
+    if ord_l="$(agent_letter_ord "$id" 2>/dev/null)"; then
+      ord_a=$(printf '%d' "'a")
+      echo $(( 18789 + (ord_l - ord_a) * 2 ))
+      return 0
+    fi
+    echo 18789
   else
-    echo "${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
+    echo "${gw:-${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}}"
   fi
 }
 
@@ -3531,7 +3183,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|respond-mail|enable-mail-responder|test-a2a|test-a2a-auth|test-webhook|test|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3833,7 +3485,7 @@ agent_mailbox() {
   local id="$1"
   load_env
   is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; return 1; }
-  echo "$(agent_env_value "$id" EMAIL "")|$(agent_env_value "$id" DISPLAY_NAME "$id")"
+  echo "$(agent_email "$id")|$(agent_display_name "$id")"
 }
 
 ensure_mail_secrets_from_env() {

@@ -53,13 +53,58 @@ export async function fetchPeerIdentityFull(extDir, credPath, peerTokenId, apiBa
   return { identity, apiBase };
 }
 
-export function peerEmailFromIdentity(identity) {
+export function contactUriFromIdentity(identity) {
   const contactUri =
     identity?.dn?.contactUri ||
     identity?.dn?.allAttributes?.ContactURI ||
     identity?.contactUri ||
     "";
-  return contactUriToEmail(contactUri);
+  return String(contactUri || "").trim();
+}
+
+export function contactUriFromOwnRodit(ownRodit = {}) {
+  const dn = ownRodit?.dn ?? {};
+  const meta = ownRodit?.metadata ?? {};
+  return String(
+    dn.contactUri ||
+      dn.allAttributes?.ContactURI ||
+      meta.contactUri ||
+      meta.contact_uri ||
+      ownRodit?.contactUri ||
+      "",
+  ).trim();
+}
+
+export function displayNameFromOwnRodit(ownRodit = {}) {
+  const dn = ownRodit?.dn ?? {};
+  const meta = ownRodit?.metadata ?? {};
+  return String(
+    dn.displayName ||
+      dn.cn ||
+      dn.allAttributes?.DisplayName ||
+      dn.allAttributes?.CN ||
+      meta.display_name ||
+      meta.displayName ||
+      ownRodit?.display_name ||
+      "",
+  ).trim();
+}
+
+export function displayNameFromIdentity(identity) {
+  const dn = identity?.dn ?? {};
+  return String(
+    dn.displayName ||
+      dn.cn ||
+      dn.allAttributes?.DisplayName ||
+      dn.allAttributes?.CN ||
+      identity?.displayName ||
+      identity?.cn ||
+      "",
+  ).trim();
+}
+
+export function peerEmailFromIdentity(identity) {
+  return contactUriToEmail(contactUriFromIdentity(identity));
 }
 
 export async function verifyHolaViaApi(apiBase, jwt, hola, expectedRecipient = "") {

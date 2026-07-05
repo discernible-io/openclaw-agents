@@ -8,13 +8,13 @@
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #
 # Optional env (defaults match deploy.yml):
-#   DEPLOY_TIER / TARGET   main or development (default: image tag, else git branch)
-#   APP_PORT=9443 (main) or 7443 (development) — defaults via deploy_tier_app_port
+#   DEPLOY_TIER / TARGET   main (default: image tag, else git branch)
+#   APP_PORT=9443 — defaults via deploy_tier_app_port
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
 #   REPO_ROOT            Git checkout path (for identyclaw.sh init/bootstrap)
-#   AGENT_IDS            Space-separated list (default: agent-a agent-c agent-e)
+#   AGENT_IDS            Space-separated list (default: agent-name-not-set)
 #   SKIP_PLUGIN_UPDATE=1 Skip GitHub plugin clone/build/install (requires git + npm when unset)
 
 set -euo pipefail
@@ -36,11 +36,11 @@ export IDENTYCLAW_DEPLOY_MODE=pod
 # shellcheck source=lib.sh
 source "$REPO_ROOT/scripts/lib.sh"
 
-DEPLOY_TIER="$(resolve_deploy_tier "$REPO_ROOT" "$OPENCLAW_IMAGE")"
+DEPLOY_TIER="${DEPLOY_TIER:-main}"
 case "$DEPLOY_TIER" in
-  development|main) ;;
+  main) ;;
   *)
-    echo "DEPLOY_TIER must be development or main (got: $DEPLOY_TIER)" >&2
+    echo "DEPLOY_TIER must be main (got: $DEPLOY_TIER)" >&2
     exit 1
     ;;
 esac
@@ -50,7 +50,7 @@ POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
 
 ensure_app_layout
 load_env
-AGENT_IDS="${AGENT_IDS:-agent-a agent-c agent-e}"
+AGENT_IDS="${AGENT_IDS:-agent-name-not-set}"
 
 require_podman() {
   command -v podman >/dev/null 2>&1 || { echo "podman not found" >&2; exit 1; }
@@ -80,8 +80,8 @@ init_agent_if_missing() {
   dir="$(agent_home "$id")"
   load_env
   is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; return 1; }
-  email="$(agent_env_value "$id" EMAIL "")"
-  display_name="$(agent_env_value "$id" DISPLAY_NAME "$id")"
+  email="$(agent_email "$id")"
+  display_name="$(agent_display_name "$id")"
   password="$(agent_env_value "$id" PASSWORD "")"
   gw_port="$(agent_env_value "$id" GATEWAY_PORT "")"
   [[ -n "$email" && -n "$gw_port" ]] || { echo "unknown agent: $id (set AGENT_*_EMAIL / GATEWAY_PORT in env.local)" >&2; return 1; }
@@ -221,7 +221,7 @@ ensure_tls_certs
 normalize_tls_certs
 
 NGINX_CONF="${APP_DIR}/nginx/nginx.conf"
-bash "$REPO_ROOT/scripts/render-nginx-conf.sh" "$DEPLOY_TIER" "$NGINX_CONF"
+bash "$REPO_ROOT/scripts/render-nginx-conf.sh" "$NGINX_CONF"
 
 z="$(selinux_mount_suffix)"
 echo "==> Start nginx sidecar"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Issue a self-signed RSA certificate for nginx TLS (fullchain.pem + privkey.pem).
-# Matches paths in nginx/nginx.main.conf and nginx/nginx.development.conf.
+# Matches paths used by deploy-pod.sh (rendered nginx.conf mounted at runtime).
 # Intended for development and bootstrap when no CA-issued certs exist.
 #
 # Mutual authentication (A2A, webhooks) uses RODiT JWT signatures — not TLS client
@@ -8,7 +8,7 @@
 #
 # Usage: ./scripts/generate-self-signed-certs.sh [CERT_DIR] [--force]
 # Env:
-#   TLS_CN     Common Name / primary DNS SAN (default: agent-a.identyclaw.com)
+#   TLS_CN     Common Name / primary DNS SAN (default: agent-domain-not-set.example.com)
 #   CERT_DAYS  Validity in days (default: 825)
 #   EXTRA_SANS Comma-separated extra SAN entries (e.g. DNS:agent-c.example.com,DNS:agent-e.example.com)
 
@@ -26,7 +26,7 @@ for arg in "$@"; do
   esac
 done
 CERT_DIR="${CERT_DIR:-${REPO_ROOT}/certs}"
-TLS_CN="${TLS_CN:-agent-a.identyclaw.com}"
+TLS_CN="${TLS_CN:-agent-domain-not-set.example.com}"
 CERT_DAYS="${CERT_DAYS:-825}"
 
 if ! command -v openssl >/dev/null 2>&1; then
