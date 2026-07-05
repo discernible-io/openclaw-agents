@@ -146,10 +146,15 @@ ensure_tls_certs() {
 load_env() {
   local f
   local _peer_token_from_process=0 _peer_token_process_value=""
+  local _constitution_skip_from_process=0 _constitution_skip_process_value=""
   # Process environment overrides env.local (multi-peer test loops: export IDENTYCLAW_PEER_TOKEN_ID=…).
   if [[ -n "${IDENTYCLAW_PEER_TOKEN_ID+x}" ]]; then
     _peer_token_from_process=1
     _peer_token_process_value="$IDENTYCLAW_PEER_TOKEN_ID"
+  fi
+  if [[ -n "${CONSTITUTION_SKIP_SUITES+x}" ]]; then
+    _constitution_skip_from_process=1
+    _constitution_skip_process_value="$CONSTITUTION_SKIP_SUITES"
   fi
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   f="${IDENTYCLAW_APP_DIR}/env.local"
@@ -230,6 +235,9 @@ load_env() {
   AGENT_IDS="${AGENT_IDS:-}"
   if [[ "$_peer_token_from_process" -eq 1 ]]; then
     IDENTYCLAW_PEER_TOKEN_ID="$_peer_token_process_value"
+  fi
+  if [[ "$_constitution_skip_from_process" -eq 1 ]]; then
+    CONSTITUTION_SKIP_SUITES="$_constitution_skip_process_value"
   fi
 }
 
