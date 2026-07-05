@@ -35,6 +35,7 @@
 #   test-auth-boundaries [peer-token-id]  Channel isolation + mutual P2P JWT binding (local + optional peer)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Includes /api/testhola delivery; set SKIP_TESTHOLA=1 to skip
+#   Constitution suite skips: CONSTITUTION_SKIP_SUITES=a2a webhook mail mail-hola (see env.example)
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
 #   send-rodit-webhook <id> <peer-token-id> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents key)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
@@ -987,25 +988,33 @@ cmd_test_webhook() {
   load_env
   id="${id:-$(resolve_local_agent_id)}"
   local url code creds container
+  if constitution_suite_skipped webhook-all; then
+    echo "==> Skip test-webhook (CONSTITUTION_SKIP_SUITES includes webhook-all)"
+    return 0
+  fi
   url="$(agent_webhook_url "$id" hooks/wake)"
   container="$(agent_container "$id")"
-  echo "==> Webhook ingress probe: POST /hooks/wake without RODiT signature"
-  echo "    POST ${url}"
-  echo "    Senders sign at origin via @rodit/rodit-auth-be: x-signature + x-timestamp (see clienttest-idc)"
-  code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$url" \
-    -H 'Content-Type: application/json' \
-    -d '{"text":"identyclaw smoke"}')"
-  case "$code" in
-    400|401) echo "passed  POST /hooks/wake without RODiT signature — HTTP ${code}" ;;
-    404)
-      echo "not-passed  POST /hooks/wake without RODiT signature — HTTP 404 (route not exposed)" >&2
-      exit 1
-      ;;
-    *)
-      echo "not-passed  POST /hooks/wake without RODiT signature — HTTP ${code} (stack requires 400 or 401)" >&2
-      exit 1
-      ;;
-  esac
+  if ! constitution_suite_skipped webhook; then
+    echo "==> Webhook ingress probe: POST /hooks/wake without RODiT signature"
+    echo "    POST ${url}"
+    echo "    Senders sign at origin via @rodit/rodit-auth-be: x-signature + x-timestamp (see clienttest-idc)"
+    code="$(curl -sk -o /dev/null -w '%{http_code}' -X POST "$url" \
+      -H 'Content-Type: application/json' \
+      -d '{"text":"identyclaw smoke"}')"
+    case "$code" in
+      400|401) echo "passed  POST /hooks/wake without RODiT signature — HTTP ${code}" ;;
+      404)
+        echo "not-passed  POST /hooks/wake without RODiT signature — HTTP 404 (route not exposed)" >&2
+        exit 1
+        ;;
+      *)
+        echo "not-passed  POST /hooks/wake without RODiT signature — HTTP ${code} (stack requires 400 or 401)" >&2
+        exit 1
+        ;;
+    esac
+  else
+    echo "==> Skip webhook ingress smoke (CONSTITUTION_SKIP_SUITES includes webhook)"
+  fi
 
   creds="$(agent_near_credentials_for_tests "$id")"
   if ! _agent_container_name_running "$container"; then
@@ -1298,9 +1307,17 @@ cmd_test_all_peers() {
 
   cmd_test_peer_gateway || failed=1
   echo ""
-  cmd_test_webhook "$local_id" || failed=1
+  if constitution_suite_skipped webhook-all; then
+    echo "==> Skip test-webhook (CONSTITUTION_SKIP_SUITES includes webhook-all)"
+  else
+    cmd_test_webhook "$local_id" || failed=1
+  fi
   echo ""
-  cmd_test_mail "$local_id" || failed=1
+  if constitution_suite_skipped mail; then
+    echo "==> Skip test-mail (CONSTITUTION_SKIP_SUITES includes mail)"
+  else
+    cmd_test_mail "$local_id" || failed=1
+  fi
 
   if [[ -z "$peers" ]]; then
     echo ""
@@ -1315,17 +1332,33 @@ cmd_test_all_peers() {
         echo "==> Skip A2A suites for peer ${peer_token_id} (same gateway as ${local_id}; local suites cover this ingress)"
         echo ""
       else
-        cmd_test_a2a "$local_id" "$peer_token_id" || failed=1
+        if constitution_suite_skipped a2a; then
+          echo "==> Skip test-a2a for peer ${peer_token_id} (CONSTITUTION_SKIP_SUITES includes a2a)"
+        else
+          cmd_test_a2a "$local_id" "$peer_token_id" || failed=1
+        fi
         echo ""
-        cmd_test_a2a_auth "$peer_token_id" || failed=1
+        if constitution_suite_skipped a2a-auth; then
+          echo "==> Skip test-a2a-auth for peer ${peer_token_id} (CONSTITUTION_SKIP_SUITES includes a2a-auth)"
+        else
+          cmd_test_a2a_auth "$peer_token_id" || failed=1
+        fi
         echo ""
-        cmd_test_auth_boundaries "$peer_token_id" || failed=1
+        if constitution_suite_skipped auth-boundaries; then
+          echo "==> Skip test-auth-boundaries for peer ${peer_token_id} (CONSTITUTION_SKIP_SUITES includes auth-boundaries)"
+        else
+          cmd_test_auth_boundaries "$peer_token_id" || failed=1
+        fi
         echo ""
       fi
-      cmd_test_webhook_p2p "$local_id" "$peer_token_id" || failed=1
-      if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
+      if constitution_suite_skipped webhook-p2p; then
+        echo "==> Skip test-webhook-p2p for peer ${peer_token_id} (CONSTITUTION_SKIP_SUITES includes webhook-p2p)"
+      else
+        cmd_test_webhook_p2p "$local_id" "$peer_token_id" || failed=1
+      fi
+      if constitution_suite_skipped mail-hola; then
         echo ""
-        echo "==> Skip test-mail-hola for peer ${peer_token_id} (SKIP_MAIL_HOLA=1)"
+        echo "==> Skip test-mail-hola for peer ${peer_token_id} (CONSTITUTION_SKIP_SUITES includes mail-hola)"
       elif peer_mail_hola_ambiguous "$local_id" "$peer_token_id"; then
         echo ""
         echo "==> Skip test-mail-hola for peer ${peer_token_id} (shares this host's pod ingress; HOLA peerTokenId binding is ambiguous)"
@@ -1459,6 +1492,7 @@ except Exception:
   echo "    same-host cross-agent:   ${cross_peers:-none} (preferred for outbound P2P webhooks)"
   echo "    A2A_TEST_EXCLUDE_PEERS:  ${A2A_TEST_EXCLUDE_PEERS:-none}"
   echo "    A2A_TEST_ONLY_PEERS:     ${A2A_TEST_ONLY_PEERS:-none}"
+  echo "    CONSTITUTION_SKIP_SUITES: ${CONSTITUTION_SKIP_SUITES:-none}"
   echo "    webhooks pin (local):    ${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN} (peer receivers must match)"
   echo "    configured remote peers: ${configured_peers:-none}"
   if a2a_discover_peers_from_api_enabled; then
@@ -1510,17 +1544,37 @@ cmd_test_constitution_for_agent() {
 
   # --- Local coverage (once, peer-independent) ---
   echo "======== LOCAL SUITES (${local_id}) ========"
-  CONSTITUTION_LOCAL_ONLY=1 cmd_test_a2a "$local_id" || failed=1
+  if constitution_suite_skipped a2a; then
+    echo "==> Skip test-a2a (CONSTITUTION_SKIP_SUITES includes a2a)"
+  else
+    CONSTITUTION_LOCAL_ONLY=1 cmd_test_a2a "$local_id" || failed=1
+  fi
   echo ""
-  CONSTITUTION_LOCAL_ONLY=1 cmd_test_a2a_auth "$local_id" || failed=1
+  if constitution_suite_skipped a2a-auth; then
+    echo "==> Skip test-a2a-auth (CONSTITUTION_SKIP_SUITES includes a2a-auth)"
+  else
+    CONSTITUTION_LOCAL_ONLY=1 cmd_test_a2a_auth "$local_id" || failed=1
+  fi
   echo ""
-  cmd_test_webhook "$local_id" || failed=1
+  if constitution_suite_skipped webhook-all; then
+    echo "==> Skip test-webhook (CONSTITUTION_SKIP_SUITES includes webhook-all)"
+  else
+    cmd_test_webhook "$local_id" || failed=1
+  fi
   echo ""
-  cmd_test_mail "$local_id" || failed=1
+  if constitution_suite_skipped mail; then
+    echo "==> Skip test-mail (CONSTITUTION_SKIP_SUITES includes mail)"
+  else
+    cmd_test_mail "$local_id" || failed=1
+  fi
 
   if [[ -z "$peers" ]]; then
     echo ""
-    CONSTITUTION_LOCAL_ONLY=1 cmd_test_auth_boundaries "$local_id" || failed=1
+    if constitution_suite_skipped auth-boundaries; then
+      echo "==> Skip test-auth-boundaries (CONSTITUTION_SKIP_SUITES includes auth-boundaries)"
+    else
+      CONSTITUTION_LOCAL_ONLY=1 cmd_test_auth_boundaries "$local_id" || failed=1
+    fi
     echo ""
     echo "==> Skip peer suites (no live remote peers detected)"
     echo ""
@@ -1562,17 +1616,33 @@ print(d.get('a2aBase') or '', d.get('peerEmail') or '')
       echo "==> Skip A2A suites for peer ${peer} (same gateway as ${local_id}; local suites cover this ingress)"
       echo ""
     else
-      CONSTITUTION_PEER_ONLY=1 cmd_test_a2a "$local_id" "$peer" || failed=1
+      if constitution_suite_skipped a2a; then
+        echo "==> Skip test-a2a for peer ${peer} (CONSTITUTION_SKIP_SUITES includes a2a)"
+      else
+        CONSTITUTION_PEER_ONLY=1 cmd_test_a2a "$local_id" "$peer" || failed=1
+      fi
       echo ""
-      CONSTITUTION_PEER_ONLY=1 cmd_test_a2a_auth "$local_id" "$peer" || failed=1
+      if constitution_suite_skipped a2a-auth; then
+        echo "==> Skip test-a2a-auth for peer ${peer} (CONSTITUTION_SKIP_SUITES includes a2a-auth)"
+      else
+        CONSTITUTION_PEER_ONLY=1 cmd_test_a2a_auth "$local_id" "$peer" || failed=1
+      fi
       echo ""
-      cmd_test_auth_boundaries "$local_id" "$peer" || failed=1
+      if constitution_suite_skipped auth-boundaries; then
+        echo "==> Skip test-auth-boundaries for peer ${peer} (CONSTITUTION_SKIP_SUITES includes auth-boundaries)"
+      else
+        cmd_test_auth_boundaries "$local_id" "$peer" || failed=1
+      fi
       echo ""
     fi
-    cmd_test_webhook_p2p "$local_id" "$peer" || failed=1
-    if [[ "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
+    if constitution_suite_skipped webhook-p2p; then
+      echo "==> Skip test-webhook-p2p for peer ${peer} (CONSTITUTION_SKIP_SUITES includes webhook-p2p)"
+    else
+      cmd_test_webhook_p2p "$local_id" "$peer" || failed=1
+    fi
+    if constitution_suite_skipped mail-hola; then
       echo ""
-      echo "==> Skip test-mail-hola for peer ${peer} (SKIP_MAIL_HOLA=1)"
+      echo "==> Skip test-mail-hola for peer ${peer} (CONSTITUTION_SKIP_SUITES includes mail-hola)"
     elif peer_mail_hola_ambiguous "$local_id" "$peer"; then
       echo ""
       echo "==> Skip test-mail-hola for peer ${peer} (shares this host's pod ingress; HOLA peerTokenId binding is ambiguous)"

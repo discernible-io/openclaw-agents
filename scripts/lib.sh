@@ -167,7 +167,7 @@ load_env() {
         value="${value:1:${#value}-2}"
       fi
       case "$key" in
-        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|DEPLOY_*|NEAR_RPC_*) printf -v "$key" '%s' "$value" ;;
+        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|CONSTITUTION_*|SKIP_*|DEPLOY_*|NEAR_RPC_*) printf -v "$key" '%s' "$value" ;;
       esac
     done <"$f"
   fi
@@ -203,6 +203,7 @@ load_env() {
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   A2A_TEST_EXCLUDE_PEERS="${A2A_TEST_EXCLUDE_PEERS:-}"
   A2A_TEST_ONLY_PEERS="${A2A_TEST_ONLY_PEERS:-}"
+  CONSTITUTION_SKIP_SUITES="${CONSTITUTION_SKIP_SUITES:-}"
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
@@ -929,6 +930,22 @@ for tid in d.get('tokenIds') or []:
     fi
   fi
   echo "$out"
+}
+
+# True when a constitution suite name is listed in CONSTITUTION_SKIP_SUITES (space-separated).
+# Suite tokens: a2a, a2a-auth, auth-boundaries, webhook, webhook-all, webhook-p2p, mail, mail-hola.
+# Legacy: SKIP_MAIL_HOLA=1 also skips mail-hola.
+constitution_suite_skipped() {
+  local suite="$1" ref
+  [[ -n "$suite" ]] || return 1
+  load_env
+  if [[ "$suite" == mail-hola && "${SKIP_MAIL_HOLA:-0}" == 1 ]]; then
+    return 0
+  fi
+  for ref in ${CONSTITUTION_SKIP_SUITES:-}; do
+    [[ "$ref" == "$suite" ]] && return 0
+  done
+  return 1
 }
 
 # True when token_id is listed in A2A_TEST_EXCLUDE_PEERS (still usable for discovery/bootstrap).
