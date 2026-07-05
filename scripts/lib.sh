@@ -2189,6 +2189,7 @@ for tid in d.get('tokenIds') or []:
     A2A_RECONCILE_REGISTRY="$registry_json" \
     A2A_RECONCILE_API="$api_json" \
     A2A_RECONCILE_AGENT="$local_deploy_id" \
+    A2A_RECONCILE_LOCAL_TIDS="$(local_host_agent_token_ids 2>/dev/null || true)" \
     python3 <<'PY'
 import json, os, sys
 from urllib.parse import urlparse
@@ -2224,6 +2225,11 @@ except Exception:
     api_data = {}
 api_tids = {str(t).lower() for t in (api_data.get("tokenIds") or []) if t}
 agent = os.environ.get("A2A_RECONCILE_AGENT") or "agent"
+local_live = {
+    str(t).lower()
+    for t in os.environ.get("A2A_RECONCILE_LOCAL_TIDS", "").split()
+    if t
+}
 
 base_to_api_tid = {}
 for tid, base in bases.items():
@@ -2232,7 +2238,11 @@ for tid, base in bases.items():
         continue
     norm = norm_base(base)
     if norm:
-        base_to_api_tid[norm] = tid
+        # Prefer live Passport on this host over legacy API registrations at the same gateway.
+        if norm in base_to_api_tid and tid in local_live:
+            base_to_api_tid[norm] = tid
+        elif norm not in base_to_api_tid:
+            base_to_api_tid[norm] = tid
 for tid, entry in registry.items():
     tid = str(tid).lower()
     if tid not in api_tids:
@@ -2248,7 +2258,9 @@ for configured in os.environ.get("A2A_RECONCILE_TIDS", "").split():
     if not configured:
         continue
     base = norm_base(bases.get(configured, ""))
-    if configured in api_tids:
+    if configured in local_live:
+        canonical = configured
+    elif configured in api_tids:
         canonical = configured
     elif base and base in base_to_api_tid:
         canonical = base_to_api_tid[base]
