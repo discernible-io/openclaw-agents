@@ -1477,7 +1477,8 @@ probe_test_candidate_peer_json() {
         local -a probe_args=(node /tmp/probe-test-candidate-peer.mjs "$ext_dir" "$cred" "$peer_token_id")
         [[ -n "$a2a_base" ]] && probe_args+=(--a2a-base "$a2a_base")
         probed_json="$(
-          podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
+          timeout --foreground "${IDENTYCLAW_PROBE_TIMEOUT_SEC:-90}" \
+            podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
             "${probe_args[@]}" 2>/dev/null || true
         )"
       fi
@@ -1488,7 +1489,9 @@ probe_test_candidate_peer_json() {
       "$ext_dir" "$cred" "$peer_token_id"
     )
     [[ -n "$a2a_base" ]] && probe_args+=(--a2a-base "$a2a_base")
-    probed_json="$("${probe_args[@]}" 2>/dev/null || true)"
+    probed_json="$(
+      timeout "${IDENTYCLAW_PROBE_TIMEOUT_SEC:-90}" "${probe_args[@]}" 2>/dev/null || true
+    )"
   fi
   [[ -n "$probed_json" ]] || return 1
   printf '%s' "$probed_json"

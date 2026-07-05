@@ -1364,7 +1364,7 @@ except Exception:
   echo "    total candidates:        $(echo "$all_peers" | wc -w | tr -d ' ') (configured + api, deduped)"
   echo ""
   for id in $AGENT_IDS; do
-    print_agent_test_candidates "$id"
+    print_agent_test_candidates "$id" || true
     echo ""
   done
 }
