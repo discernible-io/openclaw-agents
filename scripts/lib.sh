@@ -407,6 +407,7 @@ if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:
         lines = [ln for ln in f if not ln.startswith(prefix)]
 lines.append(f"{key}={value}\n")
+env_file.parent.mkdir(parents=True, exist_ok=True)
 with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)
@@ -421,6 +422,7 @@ prefix = f"{key}="
 if not env_file.is_file():
     raise SystemExit(0)
 lines = [ln for ln in env_file.read_text(encoding="utf-8").splitlines(keepends=True) if not ln.startswith(prefix)]
+env_file.parent.mkdir(parents=True, exist_ok=True)
 with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)
@@ -578,7 +580,7 @@ agent_near_cred_path_for_config_sync() {
   local container="${2:-}"
   local cred=""
   [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
-  if agent_config_use_container "$config_dir" "$container"; then
+  if agent_env_use_container "$config_dir" "$container"; then
     _agent_near_cred_path_in_container "$container"
     return 0
   fi
@@ -600,10 +602,18 @@ agent_container_for_config_dir() {
 agent_env_use_container() {
   local config_dir="$1"
   local container="${2:-}"
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+
+  # Agent state dir owned by the container user (0700) — never try host .env writes.
+  if [[ ! -w "$config_dir" ]] 2>/dev/null; then
+    [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"
+    return $?
+  fi
+
   if [[ -w "$config_dir/.env" ]] 2>/dev/null; then
     return 1
   fi
-  if [[ ! -f "$config_dir/.env" ]] && [[ -w "$config_dir" ]] 2>/dev/null; then
+  if [[ ! -f "$config_dir/.env" ]] 2>/dev/null && [[ -w "$config_dir" ]] 2>/dev/null; then
     return 1
   fi
   [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"
@@ -3847,7 +3857,10 @@ private_key = creds.get("private_key", "")
 if not account_id or not private_key:
     raise SystemExit(0)
 
-container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
+if str(env_file).startswith("/home/node/"):
+    container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
+else:
+    container_cred_path = str(cred_file)
 
 strip_prefixes = (
     "IDENTYCLAW_ACCOUNT_ID=",
@@ -3872,6 +3885,7 @@ if near_rpc_url:
     lines.append(f"NEAR_RPC_URL={near_rpc_url}\n")
 lines.append("RODIT_NEAR_CREDENTIALS_SOURCE=file\n")
 lines.append(f"NEAR_CREDENTIALS_FILE_PATH={container_cred_path}\n")
+env_file.parent.mkdir(parents=True, exist_ok=True)
 with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)
@@ -3887,11 +3901,12 @@ sync_quiet_plugin_env() {
   local near_rpc_url="${NEAR_RPC_URL:-}"
   container="$(agent_container_for_config_dir "$config_dir" "$container")"
   env_file="$(agent_env_file_path "$config_dir" "$container")"
-  if ! agent_env_use_container "$config_dir" "$container"; then
-    _write_quiet_plugin_env_file "$config_dir/.env" "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url"
-  elif podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    podman exec -i "$container" python3 - /home/node/.openclaw/.env \
-      "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url" <<'PY'
+  agent_env_use_container "$config_dir" "$container" || {
+    [[ -w "$config_dir" ]] 2>/dev/null || return 0
+    [[ -f "$config_dir/.env" ]] 2>/dev/null || [[ -w "$config_dir" ]] 2>/dev/null || return 0
+  }
+  _agent_env_python "$config_dir" "$container" "$env_file" \
+    "$IDENTYCLAW_NEAR_CONTRACT_ID" "$fallback_ms" "$near_rpc_url" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -3919,7 +3934,6 @@ with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)
 PY
-  fi
 }
 
 _write_quiet_plugin_env_file() {
