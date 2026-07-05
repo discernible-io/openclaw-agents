@@ -247,9 +247,9 @@ resolve_openclaw_model_defaults() {
       OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-opencode-go/kimi-k2.6}"
       ;;
     openrouter)
-      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/x-ai/grok-4.3}"
-      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/nvidia/nemotron-3-ultra-550b-a55b:free}"
-      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/qwen/qwen3-coder:free}"
+      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/deepseek/deepseek-v4-flash:free}"
+      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder:free}"
+      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/deepseek/deepseek-v4-flash}"
       ;;
     *)
       echo "Unknown OPENCLAW_LLM_PROVIDER: ${provider} (use openrouter or opencode)" >&2
