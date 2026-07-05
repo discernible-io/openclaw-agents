@@ -3554,17 +3554,18 @@ start_pod_agent() {
       echo "Already running: ${container} (synced .env + plugins; use './identyclaw.sh restart ${id}' to bounce the gateway)"
       return 0
     fi
-    echo "==> ${id} already running in pod — syncing A2A config and restarting gateway"
+    echo "==> ${id} already running in pod — syncing credentials/.env and recreating gateway"
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
+    sync_identyclaw_env "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
-    podman restart "$container" >/dev/null
+    recreate_pod_agent_gateway "$id"
     ensure_discord_plugin_compat_and_restart "$id"
-    echo "Restarted ${container}"
+    echo "Recreated ${container}"
     return 0
   fi
 
@@ -3901,10 +3902,9 @@ private_key = creds.get("private_key", "")
 if not account_id or not private_key:
     raise SystemExit(0)
 
-if str(env_file).startswith("/home/node/"):
-    container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
-else:
-    container_cred_path = str(cred_file)
+# .env is always loaded inside the gateway container (--env-file + bind mount at
+# /home/node/.openclaw). Host filesystem paths break RODiT SDK mkdir/init.
+container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
 
 strip_prefixes = (
     "IDENTYCLAW_ACCOUNT_ID=",
@@ -4725,6 +4725,43 @@ install_a2a_plugin() {
 openclaw_agent_image() {
   load_env
   echo "${OPENCLAW_IMAGE:-${OPENCLAW_LOCAL_IMAGE:-${OPENCLAW_BASE_IMAGE}}}"
+}
+
+# Recreate a pod agent gateway so --env-file picks up .env changes (podman restart does not).
+recreate_pod_agent_gateway() {
+  local id="$1"
+  local dir container gw_port z tls_env=() image pod_name
+  load_env
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  gw_port="$(agent_internal_gateway_port "$id")"
+  z="$(selinux_mount_suffix)"
+  image="$(openclaw_agent_image)"
+  pod_name="${POD_NAME:-identyclaw-agents-pod}"
+  if a2a_tls_skip_verify_enabled; then
+    tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
+  fi
+  prepare_agent_state_for_gateway_start "$id" pod
+  podman rm -f "$container" 2>/dev/null || true
+  restore_pod_path_for_host "$dir"
+  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
+  podman run -d \
+    --pod "$pod_name" \
+    --name "$container" \
+    --init \
+    --replace \
+    --shm-size=2g \
+    --restart unless-stopped \
+    -e HOME=/home/node \
+    -e OPENCLAW_NO_RESPAWN=1 \
+    "${tls_env[@]}" \
+    --env-file "$dir/.env" \
+    -v "$dir:/home/node/.openclaw:rw${z}" \
+    -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \
+    -v "$dir/.config:/home/node/.config:ro${z}" \
+    "$image" \
+    node dist/index.js gateway --bind lan --port "$gw_port"
+  ensure_pod_agent_state_for_container "$id"
 }
 
 # Run OpenClaw CLI against an agent state dir (live container or ephemeral podman run).
