@@ -3556,8 +3556,9 @@ recreate_pod_agent_container() {
   image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
   [[ -n "$image" ]] || image="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
 
-  sync_identyclaw_env "$dir" "$container"
+  # Host must own agent state so .env sync writes container paths before --env-file is read.
   prepare_agent_state_for_gateway_start "$id" pod
+  sync_identyclaw_env "$dir" ""
 
   podman rm -f "$container" 2>/dev/null || true
 
@@ -3612,8 +3613,6 @@ start_pod_agent() {
 
   if podman container exists "$container" 2>/dev/null; then
     prepare_agent_state_for_gateway_start "$id" pod
-    ensure_agent_state_for_container_exec "$id"
-    sync_identyclaw_env "$dir" "$container"
     recreate_pod_agent_container "$id"
     container="$(agent_container "$id")"
     wait_for_running_agent_container "$container" || return 1
