@@ -882,7 +882,7 @@ cmd_test_a2a_auth() {
   podman cp "${IDENTYCLAW_ROOT}/scripts/test-a2a-rodit-auth.mjs" "$container:/tmp/test-a2a-rodit-auth.mjs" >/dev/null
 
   if [[ -n "$peer_token_id" ]]; then
-    target="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$local_id")")"
+    target="$(a2a_peer_public_base_url_with_retry "$peer_token_id" "$(agent_home "$local_id")")"
     [[ -n "$target" ]] || {
       if a2a_resolve_peers_by_token_id_enabled; then
         echo "No URL for peer token_id ${peer_token_id} — API /full and on-chain metadata.webhook_url lookup failed" >&2
@@ -1149,7 +1149,7 @@ cmd_test_webhook_p2p() {
   local sender_container sender_creds receiver_base local_base peer_creds ext_dir
   local receiver_deploy_id reverse_via_container=0 local_receiver_base
   sender_container="$(agent_container "$sender")"
-  receiver_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$sender")")"
+  receiver_base="$(a2a_peer_public_base_url_with_retry "$peer_token_id" "$(agent_home "$sender")")"
   receiver_deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
   if [[ -n "$receiver_deploy_id" ]]; then
     local_receiver_base="$(agent_container_ingress_base_url "$receiver_deploy_id" 2>/dev/null || true)"

@@ -2128,6 +2128,22 @@ a2a_peer_public_base_url() {
   return 1
 }
 
+# Retry transient API /full lookups during constitution runs (same peer often resolves on next attempt).
+a2a_peer_public_base_url_with_retry() {
+  local token_id="$1"
+  local resolver_config_dir="${2:-}"
+  local attempts="${A2A_PEER_URL_LOOKUP_RETRIES:-3}"
+  local delay_sec="${A2A_PEER_URL_LOOKUP_RETRY_SEC:-2}"
+  local try=1 base=""
+  while [[ $try -le $attempts ]]; do
+    base="$(a2a_peer_public_base_url "$token_id" "$resolver_config_dir" 2>/dev/null || true)"
+    [[ -n "$base" ]] && { echo "$base"; return 0; }
+    [[ $try -lt $attempts ]] && sleep "$delay_sec"
+    try=$((try + 1))
+  done
+  return 1
+}
+
 a2a_resolve_peers_by_token_id_enabled() {
   a2a_dynamic_peers_from_jwt_enabled
 }
