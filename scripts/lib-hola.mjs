@@ -96,7 +96,20 @@ export function tamperHolaChecksum(hola) {
 
 export function extractHolaFromText(text) {
   const raw = String(text || "");
-  const match = raw.match(HOLA_LINE_RE);
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      const env = JSON.parse(raw.slice(start, end + 1));
+      const fromJson = String(env?.hola || "").trim();
+      if (fromJson.startsWith("HOLA/")) return fromJson;
+    } catch {
+      // fall through to plain-text extraction
+    }
+  }
+  // Collapse RFC 5322 soft line breaks before matching the trailing HOLA line.
+  const collapsed = raw.replace(/\r\n/g, "\n").replace(/\n[ \t]+/g, "");
+  const match = collapsed.match(HOLA_LINE_RE);
   return match ? match[0].trim() : "";
 }
 

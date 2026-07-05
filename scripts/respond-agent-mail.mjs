@@ -54,9 +54,14 @@ const { actions, handledCount } = await respondToHolaProbes(ctx, {
       : a.replyError
         ? `reply-failed ${a.replyError}`
         : "no-reply (no sender address)";
+    const replayNote = a.acceptedDespiteReplay ? " (nonce-replay-ok)" : "";
+    const failNote =
+      !a.verified && a.verifyFailureReasons?.length
+        ? ` reasons=${a.verifyFailureReasons.join(",")}`
+        : "";
     process.stdout.write(
       `[mail-responder] probe=${a.probeId}:${a.variant} from=${a.senderEmail || "?"} ` +
-        `verified=${a.verified}${a.inboundHola ? "" : " (no-hola)"} → ${status}\n`,
+        `verified=${a.verified}${replayNote}${a.inboundHola ? "" : " (no-hola)"}${failNote} → ${status}\n`,
     );
   },
 });

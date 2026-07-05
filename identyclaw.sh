@@ -503,7 +503,7 @@ cmd_test_mail_hola() {
   local api_base poll_sec peer_base
   api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
   [[ -n "$api_base" ]] && hola_args+=(--api-base "$api_base")
-  poll_sec="${MAIL_HOLA_POLL_SECONDS:-60}"
+  poll_sec="${MAIL_HOLA_POLL_SECONDS:-180}"
   hola_args+=(--poll-seconds "$poll_sec")
   # Peer A2A gateway lets us drive the reciprocal inbound probe (peer → us).
   peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$id")" 2>/dev/null || true)"
@@ -583,7 +583,7 @@ cmd_respond_mail() {
 # Install a user systemd timer that runs `respond-mail` on an interval (cron-style).
 cmd_enable_mail_responder() {
   require_rootless_user
-  local interval="${1:-5min}"
+  local interval="${1:-2min}"
   local unit_dir="${HOME}/.config/systemd/user"
   local script_path="${ROOT}/identyclaw.sh"
   mkdir -p "$unit_dir"

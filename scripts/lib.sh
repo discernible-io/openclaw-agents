@@ -1400,6 +1400,7 @@ print_constitution_agent_preflight() {
   # Runs in-container when the host cannot read the mounted NEAR credentials (rootless podman
   # uid mapping), so host filesystem permissions never produce a false "empty webhook_url".
   own_token="$(agent_token_id "$local_id" 2>/dev/null || true)"
+  registered=""
   if [[ -n "$own_token" ]]; then
     registered="$(probe_identyclaw_peer_public_base_url "$config_dir" "$own_token" 2>/dev/null || true)"
   fi

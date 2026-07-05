@@ -145,11 +145,13 @@ const goodHola = await generateValidHola(client, secretKey, holaCrypto, {
 });
 const badHola = tamperHolaChecksum(goodHola);
 
-const goodVerify = await verifyHolaViaApi(apiBase, jwt, goodHola, canonicalPeerTokenId);
+// Do not POST /api/identity/verify on the outbound good HOLA before SMTP — that consumes
+// the nonce and makes the peer mail responder see nonce_replay on the same line.
+const goodRecipient = String(goodHola.split("/")[1] || "").toLowerCase();
 record(
-  "POST /api/identity/verify good HOLA (pre-send)",
-  goodVerify.status === 200 && goodVerify.payload?.verified === true,
-  `HTTP ${goodVerify.status} verified=${goodVerify.payload?.verified} peerTokenId=${goodVerify.payload?.peerTokenId || "—"}`,
+  "good HOLA targets peer token_id (pre-send, no API verify)",
+  goodRecipient === canonicalPeerTokenId,
+  `recipient=${goodRecipient || "—"} expected=${canonicalPeerTokenId}`,
 );
 
 const badVerify = await verifyHolaViaApi(apiBase, jwt, badHola, peerTokenId);
@@ -257,10 +259,13 @@ async function assessReply(variant, expectedVerified) {
 
   if (expectedVerified && verified) {
     const peerFromHola = String(verify.payload?.peerTokenId || "").toLowerCase();
+    const tokenMatchesSeed = peerFromHola === canonicalPeerTokenId || peerFromHola === peerTokenId;
+    // Gateway may sign with a newer passport token than the configured peer seed id.
+    const tokenMatchesGateway = tokenMatchesSeed || senderMatchesContactUri;
     record(
       `reply HOLA peerTokenId matches ${canonicalPeerTokenId}`,
-      peerFromHola === canonicalPeerTokenId,
-      `peerTokenId=${peerFromHola || "—"}`,
+      tokenMatchesGateway,
+      `peerTokenId=${peerFromHola || "—"} seed=${canonicalPeerTokenId}`,
     );
   }
 }

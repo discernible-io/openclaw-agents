@@ -78,3 +78,99 @@ export async function verifyHolaViaApi(apiBase, jwt, hola, expectedRecipient = "
   const payload = await res.json().catch(() => ({}));
   return { status: res.status, payload };
 }
+
+/**
+ * Accept an inbound probe HOLA that already passed crypto checks but failed only because
+ * the prober called POST /api/identity/verify before SMTP delivery (nonce replay).
+ */
+export function isNonceReplayOnlyValidProbe(payload, { ownTokenId, senderTokenId, envelopeToTokenId } = {}) {
+  if (!payload || payload.verified === true) return false;
+
+  const reasons = Array.isArray(payload.failureReasons) ? payload.failureReasons : [];
+  if (reasons.length !== 1 || reasons[0] !== "nonce_replay") return false;
+
+  const checks = payload.checks || {};
+  if (
+    checks.signatureValid !== true ||
+    checks.checksumValid !== true ||
+    checks.timestampFresh !== true ||
+    checks.tokenExists !== true ||
+    checks.tokenActive !== true
+  ) {
+    return false;
+  }
+
+  const peer = String(payload.peerTokenId || "")
+    .trim()
+    .toLowerCase();
+  const sender = String(senderTokenId || "")
+    .trim()
+    .toLowerCase();
+  if (sender && peer && peer !== sender) return false;
+
+  const dest = String(payload.destinatary || "")
+    .trim()
+    .toLowerCase();
+  const own = String(ownTokenId || "")
+    .trim()
+    .toLowerCase();
+  const envTo = String(envelopeToTokenId || "")
+    .trim()
+    .toLowerCase();
+  if (!dest) return false;
+  return dest === own || (envTo && dest === envTo);
+}
+
+/**
+ * Verify an inbound email HOLA probe for the responder. Tries strict expectedRecipient
+ * first, then relaxed; treats nonce-replay-only failures as good when crypto checks pass.
+ */
+export async function verifyInboundProbeHola(apiBase, jwt, hola, context = {}) {
+  const strict = await verifyHolaViaApi(apiBase, jwt, hola, context.ownTokenId);
+  if (strict.payload?.verified === true) {
+    return {
+      verified: true,
+      status: strict.status,
+      payload: strict.payload,
+      peerTokenId: String(strict.payload?.peerTokenId || "").toLowerCase(),
+      acceptedDespiteReplay: false,
+    };
+  }
+  if (isNonceReplayOnlyValidProbe(strict.payload, context)) {
+    return {
+      verified: true,
+      status: strict.status,
+      payload: strict.payload,
+      peerTokenId: String(strict.payload?.peerTokenId || "").toLowerCase(),
+      acceptedDespiteReplay: true,
+    };
+  }
+
+  const relaxed = await verifyHolaViaApi(apiBase, jwt, hola);
+  if (relaxed.payload?.verified === true) {
+    return {
+      verified: true,
+      status: relaxed.status,
+      payload: relaxed.payload,
+      peerTokenId: String(relaxed.payload?.peerTokenId || "").toLowerCase(),
+      acceptedDespiteReplay: false,
+    };
+  }
+  if (isNonceReplayOnlyValidProbe(relaxed.payload, context)) {
+    return {
+      verified: true,
+      status: relaxed.status,
+      payload: relaxed.payload,
+      peerTokenId: String(relaxed.payload?.peerTokenId || "").toLowerCase(),
+      acceptedDespiteReplay: true,
+    };
+  }
+
+  return {
+    verified: false,
+    status: strict.status,
+    payload: strict.payload,
+    peerTokenId: String(strict.payload?.peerTokenId || "").toLowerCase(),
+    acceptedDespiteReplay: false,
+  };
+}

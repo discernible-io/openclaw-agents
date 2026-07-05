@@ -18,7 +18,7 @@ import {
   readMessagePlain,
   sendMail,
 } from "./lib-himalaya-mail.mjs";
-import { verifyHolaViaApi } from "./lib-peer-identity.mjs";
+import { verifyInboundProbeHola } from "./lib-peer-identity.mjs";
 import {
   applyNearRoditEnv,
   loadRoditAuthBe,
@@ -175,7 +175,8 @@ export async function respondToHolaProbes(deps, opts = {}) {
     const jsonEnvelope = parseEnvelopeJson(plain) || {};
     const senderEmail = parseFromAddress(plain);
     const senderTokenId = String(jsonEnvelope?.from?.tokenId || "").trim().toLowerCase();
-    const inboundHola = extractHolaFromText(plain);
+    const inboundHola =
+      String(jsonEnvelope?.hola || "").trim() || extractHolaFromText(plain);
 
     const envelopeMeta = {
       probeId: parsed.probeId,
@@ -186,23 +187,19 @@ export async function respondToHolaProbes(deps, opts = {}) {
     let verified = false;
     let verifyStatus = 0;
     let peerTokenId = "";
+    let acceptedDespiteReplay = false;
+    let verifyFailureReasons = [];
     if (inboundHola) {
-      // Strict: HOLA must verify for our Passport token_id (expectedRecipient).
-      let res = await verifyHolaViaApi(apiBase, jwt, inboundHola, ownTokenId);
-      verifyStatus = res.status;
-      verified = res.payload?.verified === true;
-      peerTokenId = String(res.payload?.peerTokenId || "").toLowerCase();
-      // Legacy probes may target a superseded token_id at the same gateway — accept when
-      // the API verifies the HOLA and names the probing peer (constitution peerTokenId check).
-      if (!verified) {
-        const relaxed = await verifyHolaViaApi(apiBase, jwt, inboundHola);
-        if (relaxed.payload?.verified === true) {
-          res = relaxed;
-          verifyStatus = relaxed.status;
-          verified = true;
-          peerTokenId = String(relaxed.payload?.peerTokenId || "").toLowerCase();
-        }
-      }
+      const verify = await verifyInboundProbeHola(apiBase, jwt, inboundHola, {
+        ownTokenId,
+        senderTokenId,
+        envelopeToTokenId: String(jsonEnvelope?.to?.tokenId || "").trim().toLowerCase(),
+      });
+      verifyStatus = verify.status;
+      verified = verify.verified === true;
+      peerTokenId = verify.peerTokenId;
+      acceptedDespiteReplay = verify.acceptedDespiteReplay === true;
+      verifyFailureReasons = verify.payload?.failureReasons || [];
     }
 
     let subjectOut = responseSubject(parsed.probeId, parsed.variant);
@@ -246,6 +243,8 @@ export async function respondToHolaProbes(deps, opts = {}) {
       verified,
       verifyStatus,
       peerTokenId,
+      acceptedDespiteReplay,
+      verifyFailureReasons,
       replied,
       replyError,
       responseSubject: subjectOut,
