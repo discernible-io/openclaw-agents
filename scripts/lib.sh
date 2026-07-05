@@ -4432,10 +4432,16 @@ if inbound.get("allowUnauthenticated") is not False:
     changed = True
 
 auth = inbound.setdefault("auth", {})
+existing_audience = (auth.get("audience") or "").strip()
+resolved_audience = (audience or "").strip()
+# Never wipe a previously synced owner_id when the probe is unavailable (e.g. host
+# cannot read container-owned NEAR creds during sync).
+if not resolved_audience and existing_audience:
+    resolved_audience = existing_audience
 desired_auth = {
     "provider": "rodit",
     "issuer": issuer,
-    "audience": audience,
+    "audience": resolved_audience,
     "identityClaim": "token_id",
 }
 for key, value in desired_auth.items():
