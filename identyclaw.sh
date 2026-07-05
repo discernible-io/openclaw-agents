@@ -618,6 +618,83 @@ EOF
   echo "    Disable: systemctl --user disable --now identyclaw-mail-responder.timer"
 }
 
+# Run deterministic inbound A2A webhook smoke handler once (constitution peer → local webhook).
+respond_a2a_webhook_smoke_one() {
+  local id="$1"
+  local container creds
+  container="$(agent_container "$id")"
+  if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    echo "    (${id}: container not running — skip A2A webhook smoke responder)" >&2
+    return 0
+  fi
+  creds="$(agent_near_credentials_in_container "$id")"
+  [[ -n "$creds" ]] || {
+    echo "    (${id}: no NEAR credentials — skip A2A webhook smoke responder)" >&2
+    return 0
+  }
+  podman_cp_a2a_webhook_smoke_libs "$container" || {
+    echo "    (${id}: failed to copy A2A webhook smoke libs)" >&2
+    return 1
+  }
+  podman cp "${IDENTYCLAW_ROOT}/scripts/respond-a2a-webhook-smoke.mjs" "$container:/tmp/respond-a2a-webhook-smoke.mjs" >/dev/null
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
+    node /tmp/respond-a2a-webhook-smoke.mjs --creds "$creds"
+}
+
+cmd_respond_a2a_webhook_smoke() {
+  local target="${1:-}"
+  load_env
+  require_podman
+  if [[ -z "$target" || "$target" == "all" ]]; then
+    local rc=0
+    for id in $AGENT_IDS; do
+      echo "==> A2A webhook smoke responder: ${id}"
+      respond_a2a_webhook_smoke_one "$id" || rc=1
+    done
+    return "$rc"
+  fi
+  is_valid_agent_id "$target" || { echo "Invalid agent id: ${target}" >&2; return 1; }
+  echo "==> A2A webhook smoke responder: ${target}"
+  respond_a2a_webhook_smoke_one "$target"
+}
+
+cmd_enable_a2a_webhook_smoke_responder() {
+  require_rootless_user
+  local interval="${1:-1min}"
+  local unit_dir="${HOME}/.config/systemd/user"
+  local script_path="${ROOT}/identyclaw.sh"
+  mkdir -p "$unit_dir"
+  cat >"${unit_dir}/identyclaw-a2a-webhook-smoke-responder.service" <<EOF
+[Unit]
+Description=IdentyClaw inbound A2A webhook smoke responder (deterministic send_rodit_webhook)
+After=podman-restart.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${ROOT}
+ExecStart=/usr/bin/env bash ${script_path} respond-a2a-webhook-smoke all
+EOF
+  cat >"${unit_dir}/identyclaw-a2a-webhook-smoke-responder.timer" <<EOF
+[Unit]
+Description=Run IdentyClaw A2A webhook smoke responder every ${interval}
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=${interval}
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now identyclaw-a2a-webhook-smoke-responder.timer
+  echo "==> A2A webhook smoke responder timer enabled (every ${interval})."
+  echo "    Status:  systemctl --user status identyclaw-a2a-webhook-smoke-responder.timer"
+  echo "    Logs:    journalctl --user -u identyclaw-a2a-webhook-smoke-responder.service -f"
+  echo "    Disable: systemctl --user disable --now identyclaw-a2a-webhook-smoke-responder.timer"
+}
+
 cmd_generate_certs() {
   local force=""
   for arg in "$@"; do
@@ -1132,8 +1209,36 @@ cmd_test_webhook_p2p() {
     echo "    Inbound: live peer at ${receiver_base} via A2A message/send (P2P login → send_rodit_webhook at origin)"
   fi
 
+  local smoke_responder_pids=()
+  if [[ "$reverse_via_container" -ne 1 ]] && [[ "${WEBHOOK_P2P_SIMULATE_INBOUND:-}" != 1 ]]; then
+    local smoke_id
+    for smoke_id in $AGENT_IDS; do
+      if agent_container_running "$smoke_id"; then
+        echo "    Inbound: polling ${smoke_id} A2A webhook smoke responder during live peer test"
+        (
+          while true; do
+            respond_a2a_webhook_smoke_one "$smoke_id" >/dev/null 2>&1 || true
+            sleep 5
+          done
+        ) &
+        smoke_responder_pids+=("$!")
+      fi
+    done
+  fi
+
   local exit_code=0
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$sender_container" "${exec_args[@]}" || exit_code=$?
+
+  if [[ ${#smoke_responder_pids[@]} -gt 0 ]]; then
+    local pid
+    for pid in "${smoke_responder_pids[@]}"; do
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    done
+    for smoke_id in $AGENT_IDS; do
+      respond_a2a_webhook_smoke_one "$smoke_id" >/dev/null 2>&1 || true
+    done
+  fi
 
   if [[ "$reverse_via_container" -eq 1 && -n "$local_base" && -n "$receiver_deploy_id" ]]; then
     echo ""
@@ -1988,6 +2093,8 @@ main() {
     test-mail-hola) cmd_test_mail_hola "$@" ;;
     respond-mail) cmd_respond_mail "$@" ;;
     enable-mail-responder) cmd_enable_mail_responder "$@" ;;
+    respond-a2a-webhook-smoke) cmd_respond_a2a_webhook_smoke "$@" ;;
+    enable-a2a-webhook-smoke-responder) cmd_enable_a2a_webhook_smoke_responder "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-a2a-auth) cmd_test_a2a_auth "$@" ;;

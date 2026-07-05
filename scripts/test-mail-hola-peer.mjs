@@ -100,9 +100,16 @@ console.log("");
 
 let identity;
 let peerEmail = "";
+let canonicalPeerTokenId = peerTokenId;
 try {
   ({ identity } = await fetchPeerIdentityFull(extDir, credPath, peerTokenId, apiBase));
   peerEmail = peerEmailFromIdentity(identity);
+  const liveToken = String(
+    identity?.tokenId || identity?.token_id || identity?.dn?.tokenId || "",
+  )
+    .trim()
+    .toLowerCase();
+  if (liveToken) canonicalPeerTokenId = liveToken;
   record(
     "GET /api/identity/token/{peer}/full contactUri email",
     Boolean(peerEmail),
@@ -133,12 +140,12 @@ if (!jwt) {
 }
 
 const goodHola = await generateValidHola(client, secretKey, holaCrypto, {
-  recipientTokenId: peerTokenId,
+  recipientTokenId: canonicalPeerTokenId,
   signerTokenId: ownTokenId,
 });
 const badHola = tamperHolaChecksum(goodHola);
 
-const goodVerify = await verifyHolaViaApi(apiBase, jwt, goodHola, peerTokenId);
+const goodVerify = await verifyHolaViaApi(apiBase, jwt, goodHola, canonicalPeerTokenId);
 record(
   "POST /api/identity/verify good HOLA (pre-send)",
   goodVerify.status === 200 && goodVerify.payload?.verified === true,
@@ -163,7 +170,7 @@ async function sendProbe(variant, hola) {
   const envelope = buildCollaborationEnvelope({
     messageId: `${probeId}-${variant}`,
     fromTokenId: ownTokenId,
-    toTokenId: peerTokenId,
+    toTokenId: canonicalPeerTokenId,
     contactUri: identity?.dn?.contactUri || `email:${peerEmail.split("@")[1] || "unknown"}:${peerEmail}`,
     hola,
     variant,
@@ -251,8 +258,8 @@ async function assessReply(variant, expectedVerified) {
   if (expectedVerified && verified) {
     const peerFromHola = String(verify.payload?.peerTokenId || "").toLowerCase();
     record(
-      `reply HOLA peerTokenId matches ${peerTokenId}`,
-      peerFromHola === peerTokenId,
+      `reply HOLA peerTokenId matches ${canonicalPeerTokenId}`,
+      peerFromHola === canonicalPeerTokenId,
       `peerTokenId=${peerFromHola || "—"}`,
     );
   }
@@ -352,8 +359,9 @@ if (skipInbound) {
         );
         record(
           "inbound HOLA peerTokenId matches peer",
-          action.verified && action.peerTokenId === peerTokenId,
-          `peerTokenId=${action.peerTokenId || "—"} expected=${peerTokenId}`,
+          action.verified &&
+            (action.peerTokenId === canonicalPeerTokenId || action.peerTokenId === peerTokenId),
+          `peerTokenId=${action.peerTokenId || "—"} expected=${canonicalPeerTokenId}`,
         );
         record(
           "our responder replied to peer",

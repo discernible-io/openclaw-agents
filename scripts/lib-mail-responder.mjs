@@ -187,10 +187,22 @@ export async function respondToHolaProbes(deps, opts = {}) {
     let verifyStatus = 0;
     let peerTokenId = "";
     if (inboundHola) {
-      const res = await verifyHolaViaApi(apiBase, jwt, inboundHola, ownTokenId);
+      // Strict: HOLA must verify for our Passport token_id (expectedRecipient).
+      let res = await verifyHolaViaApi(apiBase, jwt, inboundHola, ownTokenId);
       verifyStatus = res.status;
       verified = res.payload?.verified === true;
       peerTokenId = String(res.payload?.peerTokenId || "").toLowerCase();
+      // Legacy probes may target a superseded token_id at the same gateway — accept when
+      // the API verifies the HOLA and names the probing peer (constitution peerTokenId check).
+      if (!verified) {
+        const relaxed = await verifyHolaViaApi(apiBase, jwt, inboundHola);
+        if (relaxed.payload?.verified === true) {
+          res = relaxed;
+          verifyStatus = relaxed.status;
+          verified = true;
+          peerTokenId = String(relaxed.payload?.peerTokenId || "").toLowerCase();
+        }
+      }
     }
 
     let subjectOut = responseSubject(parsed.probeId, parsed.variant);

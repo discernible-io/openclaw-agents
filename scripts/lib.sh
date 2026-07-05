@@ -986,7 +986,8 @@ discover_live_api_peers_json_for_agent() {
   a2a_discover_peers_from_api_enabled || return 0
   load_env
   config_dir="$(agent_home "$id")"
-  agent_has_near_credentials "$config_dir" || return 0
+  container="$(agent_container "$id")"
+  agent_has_near_credentials "$config_dir" "$container" || return 0
   api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
   [[ -n "$api_base" ]] || api_base="$(identyclaw_api_base_url_override 2>/dev/null || true)"
 
@@ -1033,6 +1034,26 @@ discover_live_api_peers_json_for_agent() {
         "${discover_args[@]}" 2>/dev/null || true
     )"
   fi
+  [[ -n "$probed_json" && "$probed_json" == \{* ]] || {
+    echo "{}"
+    return 0
+  }
+  # Rodit structured logs may precede JSON on stdout — keep the last JSON object line.
+  probed_json="$(printf '%s' "$probed_json" | python3 -c "
+import json, sys
+text = sys.stdin.read()
+for line in reversed(text.splitlines()):
+    line = line.strip()
+    if not line.startswith('{'):
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(obj, dict):
+        print(json.dumps(obj, separators=(',', ':')))
+        break
+" 2>/dev/null || true)"
   [[ -n "$probed_json" && "$probed_json" == \{* ]] || {
     echo "{}"
     return 0
@@ -1592,6 +1613,15 @@ podman_cp_mail_responder_libs() {
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-identity.mjs" "$container:/tmp/lib-peer-identity.mjs" >/dev/null 2>&1 || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-himalaya-mail.mjs" "$container:/tmp/lib-himalaya-mail.mjs" >/dev/null 2>&1 || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-mail-responder.mjs" "$container:/tmp/lib-mail-responder.mjs" >/dev/null 2>&1 || return 1
+}
+
+podman_cp_a2a_webhook_smoke_libs() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-a2a-webhook-smoke-responder.mjs" \
+    "$container:/tmp/lib-a2a-webhook-smoke-responder.mjs" >/dev/null 2>&1 || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" \
+    "$container:/tmp/send-rodit-webhook.mjs" >/dev/null 2>&1 || return 1
 }
 
 # Email HOLA peer probe copies shared libs beside /tmp/test-mail-hola-peer.mjs.
@@ -3393,7 +3423,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3659,12 +3689,18 @@ agent_mailbox() {
 ensure_mail_secrets_from_env() {
   local id="$1"
   local config_dir="$2"
-  local password=""
+  local password="" existing=""
   load_env
   is_valid_agent_id "$id" && password="$(agent_env_value "$id" PASSWORD "")"
-  if [[ -n "$password" ]] && [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
+  if [[ -z "$password" ]]; then
+    return 0
+  fi
+  if [[ -f "$config_dir/secrets/imap.pass" ]]; then
+    existing="$(tr -d '\n' <"$config_dir/secrets/imap.pass")"
+  fi
+  if [[ "$existing" != "$password" ]]; then
     write_secret_helpers "$config_dir" "$password"
-    echo "    (${id}: Migadu password loaded from env.local → secrets/)" >&2
+    echo "    (${id}: Migadu password synced from env.local → secrets/)" >&2
   fi
 }
 
