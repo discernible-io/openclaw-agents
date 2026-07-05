@@ -131,6 +131,7 @@ start_agent_in_pod() {
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
   prepare_agent_state_for_gateway_start "$id" pod
+  sync_identyclaw_env "$dir" "$container"
 
   podman run -d \
     --pod "$POD_NAME" \

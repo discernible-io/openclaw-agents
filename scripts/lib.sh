@@ -3538,6 +3538,47 @@ wait_for_running_agent_container() {
   return 1
 }
 
+# Recreate a pod agent container so --env-file picks up .env changes (podman restart does not).
+recreate_pod_agent_container() {
+  local id="$1"
+  local dir container gw_port image pod_name z tls_env=()
+  load_env
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  gw_port="$(agent_internal_gateway_port "$id")"
+  pod_name="${POD_NAME:-identyclaw-agents-pod}"
+  z="$(selinux_mount_suffix)"
+  if a2a_tls_skip_verify_enabled; then
+    tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
+  fi
+  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
+
+  image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
+  [[ -n "$image" ]] || image="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
+
+  sync_identyclaw_env "$dir" "$container"
+  prepare_agent_state_for_gateway_start "$id" pod
+
+  podman rm -f "$container" 2>/dev/null || true
+
+  podman run -d \
+    --pod "$pod_name" \
+    --name "$container" \
+    --init \
+    --replace \
+    --shm-size=2g \
+    --restart unless-stopped \
+    -e HOME=/home/node \
+    -e OPENCLAW_NO_RESPAWN=1 \
+    "${tls_env[@]}" \
+    --env-file "$dir/.env" \
+    -v "$dir:/home/node/.openclaw:rw${z}" \
+    -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \
+    -v "$dir/.config:/home/node/.config:ro${z}" \
+    "$image" \
+    node dist/index.js gateway --bind lan --port "$gw_port"
+}
+
 start_pod_agent() {
   local id="$1"
   local mode="${2:-restart}"
@@ -3554,16 +3595,17 @@ start_pod_agent() {
       echo "Already running: ${container} (synced .env + plugins; use './identyclaw.sh restart ${id}' to bounce the gateway)"
       return 0
     fi
-    echo "==> ${id} already running in pod — syncing credentials/.env and recreating gateway"
+    echo "==> ${id} already running in pod — syncing credentials/.env and recreating container (refresh --env-file)"
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
-    sync_identyclaw_env "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
-    recreate_pod_agent_gateway "$id"
+    recreate_pod_agent_container "$id"
+    container="$(agent_container "$id")"
+    sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Recreated ${container}"
     return 0
@@ -3572,15 +3614,15 @@ start_pod_agent() {
   if podman container exists "$container" 2>/dev/null; then
     prepare_agent_state_for_gateway_start "$id" pod
     ensure_agent_state_for_container_exec "$id"
-    # Pod state is container-owned on the host — start first so openclaw.json sync uses podman exec.
-    podman start "$container"
+    sync_identyclaw_env "$dir" "$container"
+    recreate_pod_agent_container "$id"
+    container="$(agent_container "$id")"
     wait_for_running_agent_container "$container" || return 1
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
-    sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
-    podman restart "$container" >/dev/null
+    sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Started ${container} (pod container)"
     return 0
@@ -3889,12 +3931,12 @@ sync_identyclaw_env() {
     echo "    (${config_dir##*/}: skip .env sync — no Passport api_base; set IDENTYCLAW_API_BASE_URL to override)" >&2
     return 0
   }
-  _agent_env_python "$config_dir" "$container" "$use_container_env" "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" <<'PY'
+  _agent_env_python "$config_dir" "$container" "$use_container_env" "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" "${IDENTYCLAW_DEPLOY_MODE:-standalone}" <<'PY'
 import json, os, sys
 from pathlib import Path
 
-cred_file, env_file, contract_id, api_base, near_rpc_url = (
-    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+cred_file, env_file, contract_id, api_base, near_rpc_url, deploy_mode = (
+    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 )
 creds = json.loads(cred_file.read_text(encoding="utf-8"))
 account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
@@ -3902,9 +3944,12 @@ private_key = creds.get("private_key", "")
 if not account_id or not private_key:
     raise SystemExit(0)
 
-# .env is always loaded inside the gateway container (--env-file + bind mount at
-# /home/node/.openclaw). Host filesystem paths break RODiT SDK mkdir/init.
-container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
+# Pod deploy passes host .env via --env-file; paths must be in-container (/home/node/.openclaw/...).
+# Host filesystem paths break RODiT SDK mkdir/init when the gateway loads .env inside the container.
+if str(env_file).startswith("/home/node/") or deploy_mode == "pod":
+    container_cred_path = f"/home/node/.openclaw/secrets/near-credentials/{account_id}.json"
+else:
+    container_cred_path = str(cred_file)
 
 strip_prefixes = (
     "IDENTYCLAW_ACCOUNT_ID=",
