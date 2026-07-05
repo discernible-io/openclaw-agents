@@ -40,6 +40,7 @@ const hookPath = arg("--path", "hooks/wake").replace(/^\/+/, "");
 const skipInbound = process.argv.includes("--skip-inbound");
 const requireInbound = process.argv.includes("--require-inbound");
 const simulateInbound = process.argv.includes("--simulate-inbound");
+const pollTimeoutMs = Number(arg("--poll-timeout-ms", process.env.WEBHOOK_P2P_INBOUND_POLL_TIMEOUT_MS || "180000")) || 180000;
 
 if (!localCredsPath || !peerBase || !peerId) {
   process.stderr.write(
@@ -125,6 +126,7 @@ if (skipInbound) {
             localCredsPath,
             hookPath,
             delaySeconds: 0,
+            pollTimeoutMs,
           });
     process.stdout.write(`    probe: POST ${inbound.hookUrl || localBase + "/" + hookPath}\n`);
     let ok = record("peer send_rodit_webhook to local gateway", inbound.peerDeliveredOk, inbound.peerDeliveredDetail);

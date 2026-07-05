@@ -1137,12 +1137,12 @@ cmd_test_webhook_p2p() {
     peer_token_id="$(resolve_peer_token_id "$sender" 2>/dev/null || true)"
     [[ -n "$peer_token_id" ]] || {
       echo "No peer token_id in A2A_PEER_AGENTS for ${sender} — set IDENTYCLAW_PEER_TOKEN_ID or pass token_id" >&2
-      exit 1
+      return 1
     }
   fi
   is_passport_token_id "$peer_token_id" || {
     echo "Peer must be a Passport token_id (got: ${peer_token_id})" >&2
-    exit 1
+    return 1
   }
   require_agent_running "$sender"
 
@@ -1165,13 +1165,13 @@ cmd_test_webhook_p2p() {
     else
       echo "No URL for peer token_id ${peer_token_id} — set A2A_PEER_URLS in env.local" >&2
     fi
-    exit 1
+    return 1
   }
 
   sender_creds="$(agent_near_credentials_for_tests "$sender")"
   [[ -n "$sender_creds" ]] || {
     echo "No NEAR credentials for ${sender} (secrets/near-credentials/*.json; host unreadable — check container mount)" >&2
-    exit 1
+    return 1
   }
 
   peer_creds="$(peer_near_credentials_path "$peer_token_id")"
@@ -1208,6 +1208,9 @@ cmd_test_webhook_p2p() {
     --path hooks/wake
   )
   [[ -n "$sender_token_id" ]] && exec_args+=(--local-token-id "$sender_token_id")
+  if [[ -n "${WEBHOOK_P2P_INBOUND_POLL_TIMEOUT_MS:-}" ]]; then
+    exec_args+=(--poll-timeout-ms "$WEBHOOK_P2P_INBOUND_POLL_TIMEOUT_MS")
+  fi
 
   if [[ "$reverse_via_container" -eq 1 ]]; then
     exec_args+=(--skip-inbound)
@@ -1227,7 +1230,7 @@ cmd_test_webhook_p2p() {
         (
           while true; do
             respond_a2a_webhook_smoke_one "$smoke_id" >/dev/null 2>&1 || true
-            sleep 5
+            sleep "${WEBHOOK_P2P_SMOKE_POLL_SEC:-2}"
           done
         ) &
         smoke_responder_pids+=("$!")

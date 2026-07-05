@@ -332,7 +332,7 @@ export async function runInboundWebhookFromLivePeer(opts) {
     markerPrefix = "live-inbound",
     delaySeconds = 0,
     pollIntervalMs = 2000,
-    pollTimeoutMs = 120000,
+    pollTimeoutMs = 180000,
   } = opts;
 
   if (!localId || !peerBase || !localBase || !localCredsPath) {
