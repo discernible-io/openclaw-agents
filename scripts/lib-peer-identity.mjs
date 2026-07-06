@@ -118,7 +118,7 @@ export function isNonceReplayOnlyValidProbe(payload, { ownTokenId, senderTokenId
     .trim()
     .toLowerCase();
   if (!dest) return false;
-  return dest === own || (envTo && dest === envTo);
+  return dest === own || Boolean(envTo && dest === envTo);
 }
 
 /**

@@ -941,7 +941,7 @@ for tid in d.get('tokenIds') or []:
 }
 
 # True when a constitution suite name is listed in CONSTITUTION_SKIP_SUITES (space-separated).
-# Suite tokens: a2a, a2a-auth, auth-boundaries, webhook, webhook-all, webhook-p2p, mail, mail-hola.
+# Suite tokens: a2a, a2a-auth, a2a-messaging, auth-boundaries, webhook, webhook-all, webhook-p2p, mail, mail-hola.
 # Legacy: SKIP_MAIL_HOLA=1 also skips mail-hola.
 constitution_suite_skipped() {
   local suite="$1" ref

@@ -24,7 +24,8 @@
 #   test-all-agents      Start AGENT_IDS, resolve peers, run constitution per local agent
 #   test-all-agents-chat Constitution suites + chat-driven peer discovery (A2A + email) per agent
 #   test-all-peers       Run constitution suites against every A2A_PEER_AGENTS peer (excl. own token_id)
-#   test-peer-gateway    Unit tests: metadata.webhook_url → agent card URL
+#   test-peer-gateway    Unit tests: peer URL resolution + repo-local helpers (alias: test-unit)
+#   test-unit            All repo-local unit tests (no Podman; CI-safe)
 #   test-mail [id]       himalaya envelope list inside container (default: local agent)
 #   test-mail-hola [id] [peer-token-id]  Reciprocal email HOLA: we probe peer + peer probes us (REQUIRE_MAIL_HOLA=1 to enforce)
 #   respond-mail [id|all]  Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point)
@@ -32,10 +33,11 @@
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
 #   test-a2a-auth [peer-token-id]    P2P JWT on /a2a (peer when configured, then local inbound)
+#   test-a2a-messaging [from] [peer]  message/send → tasks/get E2E (requires live peer)
 #   test-auth-boundaries [peer-token-id]  Channel isolation + mutual P2P JWT binding (local + optional peer)
 #   test-webhook [id]    Smoke-test webhook ingress (default: local agent)
 #                        Includes /api/testhola delivery; set SKIP_TESTHOLA=1 to skip
-#   Constitution suite skips: CONSTITUTION_SKIP_SUITES=a2a webhook mail mail-hola (see env.example)
+#   Constitution suite skips: CONSTITUTION_SKIP_SUITES=a2a a2a-messaging webhook mail mail-hola (see env.example)
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
 #   send-rodit-webhook <id> <peer-token-id> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents key)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
@@ -719,23 +721,29 @@ cmd_generate_certs() {
 
 a2a_fetch_agent_card() {
   local runner_id="$1" target_id="$2"
-  local url container resolve=() curl_flags=(-sk)
+  local url container resolve=() curl_flags=(-sk) card_json schema_rc=0
   url="$(agent_agent_card_url "$target_id")"
   if agent_is_local "$runner_id" && agent_container_running "$runner_id"; then
     container="$(agent_container "$runner_id")"
     if agent_is_local "$target_id"; then
       mapfile -t resolve < <(agent_ingress_curl_resolve_args "$target_id")
     fi
-    podman exec "$container" curl "${curl_flags[@]}" "${resolve[@]}" "$url"
-    return 0
+    card_json="$(podman exec "$container" curl "${curl_flags[@]}" "${resolve[@]}" "$url")"
+  else
+    mapfile -t resolve < <(agent_ingress_curl_resolve_args "$target_id")
+    card_json="$(curl -sk "${resolve[@]}" "$url")"
   fi
-  mapfile -t resolve < <(agent_ingress_curl_resolve_args "$target_id")
-  curl -sk "${resolve[@]}" "$url"
+  echo "$card_json"
+  if [[ -f "${IDENTYCLAW_ROOT}/scripts/probe-agent-card-schema.mjs" ]]; then
+    echo "$card_json" | node "${IDENTYCLAW_ROOT}/scripts/probe-agent-card-schema.mjs" --label "${target_id}" || schema_rc=$?
+    return "$schema_rc"
+  fi
+  return 0
 }
 
 a2a_fetch_peer_agent_card() {
   local runner_id="$1" peer_token_id="$2"
-  local url container curl_flags=(-sk) resolver_dir
+  local url container curl_flags=(-sk) resolver_dir card_json schema_rc=0
   resolver_dir="$(agent_home "$runner_id")"
   url="$(a2a_peer_agent_card_url "$peer_token_id" "$resolver_dir")"
   [[ -n "$url" ]] || {
@@ -748,10 +756,16 @@ a2a_fetch_peer_agent_card() {
   }
   if agent_container_running "$runner_id"; then
     container="$(agent_container "$runner_id")"
-    podman exec "$container" curl "${curl_flags[@]}" "$url"
-    return $?
+    card_json="$(podman exec "$container" curl "${curl_flags[@]}" "$url")"
+  else
+    card_json="$(curl -sk "$url")"
   fi
-  curl -sk "$url"
+  echo "$card_json"
+  if [[ -f "${IDENTYCLAW_ROOT}/scripts/probe-agent-card-schema.mjs" ]]; then
+    echo "$card_json" | node "${IDENTYCLAW_ROOT}/scripts/probe-agent-card-schema.mjs" --label "peer:${peer_token_id}" || schema_rc=$?
+    return "$schema_rc"
+  fi
+  return 0
 }
 
 a2a_probe_unauth_post_url() {
@@ -783,7 +797,7 @@ a2a_probe_unauth_post() {
 }
 
 cmd_test_a2a() {
-  local from_id peer_token_id self_token_id
+  local from_id peer_token_id self_token_id failed=0
   require_podman
   load_env
   from_id="${1:-$(resolve_local_agent_id)}"
@@ -816,7 +830,7 @@ cmd_test_a2a() {
     elif a2a_resolve_peers_by_token_id_enabled; then
       echo "    (API /full and on-chain metadata.webhook_url lookup failed — check IDENTYCLAW_BASE_URL, NEAR creds, passport)" >&2
     fi
-    a2a_fetch_peer_agent_card "$from_id" "$peer_token_id"
+    a2a_fetch_peer_agent_card "$from_id" "$peer_token_id" || failed=1
     echo ""
   else
     echo "==> Skip peer discovery (no A2A_PEER_AGENTS / IDENTYCLAW_PEER_TOKEN_ID)"
@@ -825,24 +839,29 @@ cmd_test_a2a() {
 
   if [[ "${CONSTITUTION_PEER_ONLY:-0}" != 1 ]]; then
     echo "==> Discovery: local ${from_id}"
-    a2a_fetch_agent_card "$from_id" "$from_id"
+    a2a_fetch_agent_card "$from_id" "$from_id" || failed=1
     echo ""
 
     echo "==> Inbound auth probe: POST /a2a without Authorization"
-    a2a_probe_unauth_post "$from_id"
+    a2a_probe_unauth_post "$from_id" || failed=1
   fi
   if [[ -n "$peer_token_id" ]]; then
     local peer_a2a_url peer_resolver_dir
     peer_resolver_dir="$(agent_home "$from_id")"
     peer_a2a_url="$(a2a_peer_a2a_endpoint_url "$peer_token_id" "$peer_resolver_dir")"
-    [[ -n "$peer_a2a_url" ]] && a2a_probe_unauth_post_url "peer:${peer_token_id}" "$peer_a2a_url"
+    [[ -n "$peer_a2a_url" ]] && a2a_probe_unauth_post_url "peer:${peer_token_id}" "$peer_a2a_url" || failed=1
   fi
 
   echo ""
-  echo "A2A smoke: passed (discovery + inbound auth probe)."
+  if [[ $failed -eq 0 ]]; then
+    echo "A2A smoke: passed (discovery + inbound auth probe)."
+  else
+    echo "A2A smoke: not-passed (see output above)." >&2
+    return 1
+  fi
   if [[ -n "$peer_token_id" ]]; then
     echo "For end-to-end RODiT messaging, run:"
-    echo "  $0 ask ${from_id} 'Use a2a_send_message to ping ${peer_token_id} and report the task id'"
+    echo "  $0 test-a2a-messaging ${from_id} ${peer_token_id}"
   fi
 }
 
@@ -1294,8 +1313,57 @@ NODE
 }
 
 cmd_test_peer_gateway() {
-  echo "==> Peer gateway resolution (unit)"
-  node "${IDENTYCLAW_ROOT}/scripts/test-peer-gateway-resolution.mjs"
+  cmd_test_unit
+}
+
+cmd_test_unit() {
+  echo "==> Unit tests (repo-local, no Podman)"
+  node "${IDENTYCLAW_ROOT}/scripts/test-unit-all.mjs"
+}
+
+cmd_test_a2a_messaging() {
+  local local_id="" peer_token_id=""
+  if [[ -n "${1:-}" ]] && is_valid_agent_id "$1"; then
+    local_id="$1"
+    shift
+  fi
+  peer_token_id="${1:-}"
+  local container creds ext_dir peer_base failed=0
+  require_podman
+  load_env
+  local_id="${local_id:-$(resolve_local_agent_id)}"
+  peer_token_id="$(resolve_peer_token_id "$local_id" "$peer_token_id" 2>/dev/null || true)"
+  [[ -n "$peer_token_id" ]] || {
+    echo "test-a2a-messaging requires a peer token_id (A2A_PEER_AGENTS)" >&2
+    return 1
+  }
+  if peer_shares_local_gateway_base "$local_id" "$peer_token_id"; then
+    echo "==> Skip test-a2a-messaging (peer ${peer_token_id} shares gateway with ${local_id})"
+    return 0
+  fi
+  require_agent_running "$local_id"
+
+  peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$local_id")")"
+  [[ -n "$peer_base" ]] || {
+    echo "No peer base URL for token_id ${peer_token_id}" >&2
+    return 1
+  }
+
+  container="$(agent_container "$local_id")"
+  creds="$(agent_near_credentials_for_tests "$local_id")"
+  [[ -n "$creds" ]] || {
+    echo "No NEAR credentials for ${local_id}" >&2
+    return 1
+  }
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_lib_rodit_env "$container" || return 1
+  podman_cp_lib_test_report "$container" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/test-a2a-messaging-e2e.mjs" "$container:/tmp/test-a2a-messaging-e2e.mjs" >/dev/null
+
+  echo "==> A2A messaging E2E (local=${local_id} → peer ${peer_token_id} at ${peer_base})"
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" node /tmp/test-a2a-messaging-e2e.mjs \
+    --ext-dir "$ext_dir" --creds "$creds" --peer-base "$peer_base" || failed=1
+  return "$failed"
 }
 
 cmd_test_all_peers() {
@@ -1345,6 +1413,12 @@ cmd_test_all_peers() {
           echo "==> Skip test-a2a-auth for peer ${peer_token_id} (CONSTITUTION_SKIP_SUITES includes a2a-auth)"
         else
           cmd_test_a2a_auth "$peer_token_id" || failed=1
+        fi
+        echo ""
+        if constitution_suite_skipped a2a-messaging; then
+          echo "==> Skip test-a2a-messaging for peer ${peer_token_id} (CONSTITUTION_SKIP_SUITES includes a2a-messaging)"
+        else
+          cmd_test_a2a_messaging "$local_id" "$peer_token_id" || failed=1
         fi
         echo ""
         if constitution_suite_skipped auth-boundaries; then
@@ -1631,6 +1705,14 @@ print(d.get('a2aBase') or '', d.get('peerEmail') or '')
         CONSTITUTION_PEER_ONLY=1 cmd_test_a2a_auth "$local_id" "$peer" || failed=1
       fi
       echo ""
+      if constitution_suite_skipped a2a-messaging; then
+        echo "==> Skip test-a2a-messaging for peer ${peer} (CONSTITUTION_SKIP_SUITES includes a2a-messaging)"
+      elif peer_shares_local_gateway_base "$local_id" "$peer"; then
+        echo "==> Skip test-a2a-messaging for peer ${peer} (same gateway as ${local_id})"
+      else
+        cmd_test_a2a_messaging "$local_id" "$peer" || failed=1
+      fi
+      echo ""
       if constitution_suite_skipped auth-boundaries; then
         echo "==> Skip test-auth-boundaries for peer ${peer} (CONSTITUTION_SKIP_SUITES includes auth-boundaries)"
       else
@@ -1679,7 +1761,7 @@ cmd_test() {
   echo "    A2A_PEER_AGENTS=${A2A_PEER_AGENTS}"
   echo ""
 
-  cmd_test_peer_gateway || failed=1
+  cmd_test_unit || failed=1
   echo ""
   cmd_test_constitution_for_agent "$local_id" || failed=1
 
@@ -2162,6 +2244,8 @@ main() {
     test-all-agents-chat) cmd_test_all_agents_chat "$@" ;;
     test-all-peers) cmd_test_all_peers "$@" ;;
     test-peer-gateway) cmd_test_peer_gateway "$@" ;;
+    test-unit) cmd_test_unit "$@" ;;
+    test-a2a-messaging) cmd_test_a2a_messaging "$@" ;;
     test-mail) cmd_test_mail "$@" ;;
     test-mail-hola) cmd_test_mail_hola "$@" ;;
     respond-mail) cmd_respond_mail "$@" ;;

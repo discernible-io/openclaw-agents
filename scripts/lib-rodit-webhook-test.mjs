@@ -169,6 +169,52 @@ export async function runSendRoditWebhookRequest(opts) {
 }
 
 /**
+ * Outbound to a peerId absent from outbound.agents — wiring contract only.
+ */
+export async function runSendToUnconfiguredPeer(opts) {
+  const {
+    configPath = process.env.OPENCLAW_CONFIG || DEFAULT_CONFIG,
+    pluginDir = DEFAULT_PLUGIN_DIR,
+    signerCredsPath,
+    peerId = "zzzzzzzzzzzz",
+    hookPath = "hooks/wake",
+  } = opts;
+
+  if (!signerCredsPath) {
+    throw new Error("signerCredsPath is required");
+  }
+
+  process.env.NEAR_CREDENTIALS_FILE_PATH = signerCredsPath;
+  const rawConfig = JSON.parse(readFileSync(configPath, "utf8"));
+  const plugins = rawConfig.plugins?.entries || {};
+  const pluginKey = plugins["identyclaw-a2a"] ? "identyclaw-a2a" : "a2a";
+  const agents = plugins[pluginKey]?.config?.outbound?.agents || {};
+  if (agents[peerId]) {
+    throw new Error(`peerId ${peerId} is configured — pick an id not in outbound.agents`);
+  }
+
+  const sendRoditWebhook = await loadSendRoditWebhook(pluginDir);
+  const sendResult = await sendRoditWebhook({
+    config: rawConfig,
+    peerId,
+    text: `unconfigured-peer-probe-${Date.now()}`,
+    delaySeconds: 0,
+    hookPath,
+  });
+
+  const detail = sendResult.ok
+    ? "unexpected ok:true for unconfigured peer"
+    : JSON.stringify(sendResult.response || sendResult.error || sendResult).slice(0, 300);
+
+  return {
+    peerId,
+    rejected: !sendResult.ok,
+    detail,
+    sendResult,
+  };
+}
+
+/**
  * Outbound: local agent sends send_rodit_webhook → verify peer received (peer /hooks/_receipts).
  */
 export async function runOutboundWebhookToPeer(opts) {

@@ -55,7 +55,7 @@ function listInboundTaskFiles(tasksDir) {
   }
 }
 
-function extractSmokeFromTask(taskJson) {
+export function extractSmokeFromTask(taskJson) {
   const history = taskJson?.history;
   if (!Array.isArray(history)) return null;
   for (const entry of history) {
@@ -75,7 +75,7 @@ function extractSmokeFromTask(taskJson) {
   return null;
 }
 
-function taskAlreadyDelivered(taskJson, marker) {
+export function taskAlreadyDelivered(taskJson, marker) {
   const artifacts = taskJson?.artifacts;
   if (!Array.isArray(artifacts)) return false;
   for (const artifact of artifacts) {

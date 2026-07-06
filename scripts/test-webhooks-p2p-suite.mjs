@@ -19,6 +19,7 @@ import {
   runInboundWebhookFromLivePeer,
   runInboundWebhookFromPeer,
   runOutboundWebhookToPeer,
+  runSendToUnconfiguredPeer,
 } from "./lib-rodit-webhook-test.mjs";
 import { createTally, reportFinding, reportSkip } from "./lib-test-report.mjs";
 
@@ -86,6 +87,48 @@ try {
 } catch (err) {
   record("send_rodit_webhook to peer", false, err.message);
   record("GET peer /hooks/_receipts", false, "not run after send error");
+  tallySection(false);
+}
+
+process.stdout.write("\n--- Outbound: hooks/agent path ---\n");
+try {
+  const agentPath = "hooks/agent";
+  const outboundAgent = await runOutboundWebhookToPeer({
+    configPath,
+    pluginDir,
+    localId,
+    peerId,
+    localCredsPath,
+    peerBase,
+    hookPath: agentPath,
+    delaySeconds: 0,
+    markerPrefix: "outbound-webhook-agent",
+  });
+  process.stdout.write(`    POST ${outboundAgent.hookUrl}\n`);
+  let ok = record("send_rodit_webhook to peer (hooks/agent)", outboundAgent.deliveredOk, outboundAgent.deliveredDetail);
+  ok = record("GET peer /hooks/_receipts (hooks/agent)", outboundAgent.peerReceivedOk, outboundAgent.peerReceivedDetail) && ok;
+  tallySection(ok);
+} catch (err) {
+  record("send_rodit_webhook to peer (hooks/agent)", false, err.message);
+  record("GET peer /hooks/_receipts (hooks/agent)", false, "not run after send error");
+  tallySection(false);
+}
+
+process.stdout.write("\n--- Outbound: unconfigured peerId ---\n");
+try {
+  const unconfigured = await runSendToUnconfiguredPeer({
+    configPath,
+    pluginDir,
+    signerCredsPath: localCredsPath,
+  });
+  const ok = record(
+    "send_rodit_webhook to unconfigured peerId",
+    unconfigured.rejected === true,
+    unconfigured.detail,
+  );
+  tallySection(ok);
+} catch (err) {
+  record("send_rodit_webhook to unconfigured peerId", false, err.message);
   tallySection(false);
 }
 

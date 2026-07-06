@@ -101,6 +101,15 @@ function responseSubject(probeId, variant) {
   return `HOLA_RESPONSE:${probeId}:${variant}`;
 }
 
+export function mailRejectionOmitsHolaLine(body) {
+  return !/HOLA\/[^\s]+/i.test(String(body || ""));
+}
+
+/** @internal test helper */
+export function buildRejectionMailBody(envelope, reason) {
+  return rejectionResponseBody(envelope, reason);
+}
+
 function verifiedResponseBody(envelope, hola) {
   const body = {
     schema: "identyclaw.collaboration.v1",

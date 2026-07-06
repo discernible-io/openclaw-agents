@@ -1,0 +1,21 @@
+name: Unit tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, development]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run repo-local unit tests
+        run: node scripts/test-unit-all.mjs

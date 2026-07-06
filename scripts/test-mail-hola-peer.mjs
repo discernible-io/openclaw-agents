@@ -402,8 +402,15 @@ if (skipInbound) {
         record(
           "our responder verified peer HOLA",
           action.verified === true,
-          `verified=${action.verified} peerTokenId=${action.peerTokenId || "—"} (HTTP ${action.verifyStatus})`,
+          `verified=${action.verified} peerTokenId=${action.peerTokenId || "—"} acceptedDespiteReplay=${action.acceptedDespiteReplay === true} (HTTP ${action.verifyStatus})`,
         );
+        if (action.verified && action.acceptedDespiteReplay) {
+          record(
+            "inbound HOLA accepted despite nonce replay",
+            true,
+            "responder policy accepted crypto-valid replay-only probe",
+          );
+        }
         const inboundTokenMatches = action.verified && peerTokenIdMatchesPeer(action.peerTokenId, action.senderEmail);
         record(
           "inbound HOLA peerTokenId matches peer",

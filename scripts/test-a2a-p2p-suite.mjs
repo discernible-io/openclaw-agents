@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /**
+ * @deprecated Use ./identyclaw.sh test (constitution suites). Overlaps test-auth-boundaries
+ * and test-webhooks-p2p-suite; rodit-auth-be crypto is tested upstream.
+ *
  * A2A P2P auth test suite with optional P2P webhook section.
  *
  * Usage:
