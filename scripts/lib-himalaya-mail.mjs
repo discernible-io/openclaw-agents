@@ -3,8 +3,19 @@
  */
 import { execFileSync } from "node:child_process";
 
+export function envelopeFromAddress(envelope) {
+  if (!envelope || typeof envelope !== "object") return "";
+  const from = envelope.from;
+  if (!from || typeof from !== "object") return "";
+  return String(from.addr || from.address || "").trim();
+}
+
 export function sendMail({ fromName, fromEmail, to, subject, body }) {
-  const mail = `From: ${fromName} <${fromEmail}>\nTo: ${to}\nSubject: ${subject}\n\n${body}\n`;
+  const recipient = String(to || "").trim();
+  if (!recipient) {
+    throw new Error("cannot send message without a recipient");
+  }
+  const mail = `From: ${fromName} <${fromEmail}>\nTo: ${recipient}\nSubject: ${subject}\n\n${body}\n`;
   execFileSync("himalaya", ["message", "send"], {
     input: mail,
     encoding: "utf8",

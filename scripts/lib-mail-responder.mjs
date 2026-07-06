@@ -13,12 +13,13 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { extractHolaFromText, generateValidHola, loadHolaCrypto, secretKeyBytes } from "./lib-hola.mjs";
 import {
+  envelopeFromAddress,
   listInboxEnvelopes,
   parseFromAddress,
   readMessagePlain,
   sendMail,
 } from "./lib-himalaya-mail.mjs";
-import { verifyInboundProbeHola } from "./lib-peer-identity.mjs";
+import { contactUriToEmail, peerEmailFromIdentity, verifyInboundProbeHola } from "./lib-peer-identity.mjs";
 import {
   applyNearRoditEnv,
   loadRoditAuthBe,
@@ -121,6 +122,42 @@ function verifiedResponseBody(envelope, hola) {
   return `--- identyclaw.collaboration.v1 ---\n${JSON.stringify(body, null, 2)}\n\n${hola}\n`;
 }
 
+/**
+ * Resolve the SMTP reply recipient for an inbound HOLA probe.
+ * Himalaya envelope metadata is preferred when plain body omits headers.
+ */
+export function resolveReplyRecipientEmail({ plain = "", jsonEnvelope = {}, envelope = null }) {
+  const fromHeader = parseFromAddress(plain);
+  if (fromHeader) return fromHeader;
+
+  const envAddr = envelopeFromAddress(envelope);
+  if (envAddr) return envAddr;
+
+  const fromObj = jsonEnvelope?.from;
+  if (fromObj && typeof fromObj === "object") {
+    const direct = String(fromObj.email || "").trim();
+    if (direct) return direct;
+    const fromUri = contactUriToEmail(fromObj.contactUri);
+    if (fromUri) return fromUri;
+  }
+
+  return "";
+}
+
+async function resolveReplyRecipientWithApi(apiBase, jwt, senderTokenId, partial) {
+  const existing = resolveReplyRecipientEmail(partial);
+  if (existing || !senderTokenId || !apiBase || !jwt) {
+    return existing;
+  }
+  const res = await fetch(
+    `${String(apiBase).replace(/\/+$/, "")}/api/identity/token/${encodeURIComponent(senderTokenId)}/full`,
+    { headers: { authorization: `Bearer ${jwt}` } },
+  );
+  if (!res.ok) return "";
+  const identity = await res.json().catch(() => null);
+  return peerEmailFromIdentity(identity);
+}
+
 function rejectionResponseBody(envelope, reason) {
   // Must NOT contain a "HOLA/" line — an unverified sender gets no signed credential back.
   const body = {
@@ -182,8 +219,12 @@ export async function respondToHolaProbes(deps, opts = {}) {
 
     const plain = readMessagePlain(id);
     const jsonEnvelope = parseEnvelopeJson(plain) || {};
-    const senderEmail = parseFromAddress(plain);
     const senderTokenId = String(jsonEnvelope?.from?.tokenId || "").trim().toLowerCase();
+    const senderEmail = await resolveReplyRecipientWithApi(apiBase, jwt, senderTokenId, {
+      plain,
+      jsonEnvelope,
+      envelope: env,
+    });
     const inboundHola =
       String(jsonEnvelope?.hola || "").trim() || extractHolaFromText(plain);
 
@@ -228,7 +269,9 @@ export async function respondToHolaProbes(deps, opts = {}) {
 
     let replied = false;
     let replyError = "";
-    if (senderEmail && !dryRun) {
+    if (!senderEmail) {
+      replyError = "no reply recipient resolved (From header, envelope, JSON from, or API contactUri)";
+    } else if (!dryRun) {
       try {
         sendMail({ fromName, fromEmail, to: senderEmail, subject: subjectOut, body: bodyOut });
         replied = true;
