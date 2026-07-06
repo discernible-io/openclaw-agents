@@ -751,7 +751,11 @@ respond_a2a_hola_smoke_one() {
     echo "    (${id}: no AGENT_*_EMAIL — skip A2A HOLA smoke responder)" >&2
     return 0
   }
-  own_token_id="$(probe_rodit_own_token_id "$(agent_home "$id")" 2>/dev/null || true)"
+  own_token_id="$(agent_token_id "$id" 2>/dev/null || true)"
+  [[ -n "$own_token_id" ]] || {
+    echo "    (${id}: no Passport token_id — skip A2A HOLA smoke responder)" >&2
+    return 0
+  }
   ext_dir="$(agent_a2a_ext_dir_container)"
   podman_cp_a2a_hola_smoke_libs "$container" || {
     echo "    (${id}: failed to copy A2A HOLA smoke libs)" >&2
