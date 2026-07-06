@@ -248,5 +248,11 @@ if [[ "${IDENTYCLAW_ENABLE_MAIL_RESPONDER:-1}" != 0 ]]; then
     echo "    (mail responder timer not installed — run ./identyclaw.sh enable-mail-responder manually)" >&2
 fi
 
+if [[ "${IDENTYCLAW_ENABLE_A2A_HOLA_SMOKE_RESPONDER:-1}" != 0 ]]; then
+  echo "==> Enable inbound A2A HOLA smoke responder (systemd user timer)"
+  bash "$REPO_ROOT/identyclaw.sh" enable-a2a-hola-smoke-responder "${IDENTYCLAW_A2A_HOLA_SMOKE_POLL_INTERVAL:-1min}" || \
+    echo "    (A2A HOLA smoke responder timer not installed — run ./identyclaw.sh enable-a2a-hola-smoke-responder manually)" >&2
+fi
+
 echo "Restart gateway(s): ${REPO_ROOT}/identyclaw.sh restart all"
 echo "Full redeploy: ./scripts/deploy-local-podman.sh --skip-build"

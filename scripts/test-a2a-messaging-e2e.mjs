@@ -165,7 +165,8 @@ if (taskId) {
       jsonrpc: "2.0",
       id: `get-${taskId}`,
       method: "tasks/get",
-      params: { id: taskId },
+      // A2A SDK strips history unless historyLength is set (0.4.x DefaultRequestHandler).
+      params: { id: taskId, historyLength: 100 },
     };
     const get = await postA2a(jwt, getBody);
     if (get.status >= 200 && get.status < 300 && taskHistoryContainsMarker(get.json?.result, marker)) {

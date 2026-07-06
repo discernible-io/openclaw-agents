@@ -15,6 +15,7 @@ const suites = [
   "test-hola-format-unit.mjs",
   "test-peer-identity-unit.mjs",
   "test-a2a-webhook-smoke-responder-unit.mjs",
+  "test-a2a-hola-smoke-responder-unit.mjs",
   "test-agent-card-validate-unit.mjs",
   "test-mail-responder-format-unit.mjs",
 ];

@@ -30,6 +30,8 @@
 #   test-mail-hola [id] [peer-token-id]  Reciprocal email HOLA: we probe peer + peer probes us (REQUIRE_MAIL_HOLA=1 to enforce)
 #   respond-mail [id|all]  Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point)
 #   enable-mail-responder [interval]  Install user systemd timer to run respond-mail (default 5min)
+#   respond-a2a-hola-smoke [id|all]  Deterministic inbound A2A HOLA probe email sender (smoke tests)
+#   enable-a2a-hola-smoke-responder [interval]  Timer for respond-a2a-hola-smoke (default 1min)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
 #   test-a2a [from] [peer-token-id]  Smoke-test A2A discovery + inbound auth
 #   test-a2a-auth [peer-token-id]    P2P JWT on /a2a (peer when configured, then local inbound)
@@ -519,9 +521,39 @@ cmd_test_mail_hola() {
     hola_args+=(--skip-inbound)
   fi
   [[ "${REQUIRE_MAIL_HOLA:-0}" == 1 ]] && hola_args+=(--require)
+
+  local hola_smoke_pids=() peer_deploy_id=""
+  if [[ -n "$peer_base" ]] && ! peer_mail_hola_ambiguous "$id" "$peer_token_id"; then
+    if a2a_peer_token_id_on_this_host "$peer_token_id"; then
+      peer_deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
+      if [[ -n "$peer_deploy_id" ]] && agent_container_running "$peer_deploy_id"; then
+        echo "    Inbound: polling ${peer_deploy_id} A2A HOLA smoke responder during reciprocal test"
+        (
+          while true; do
+            respond_a2a_hola_smoke_one "$peer_deploy_id" >/dev/null 2>&1 || true
+            sleep "${MAIL_HOLA_SMOKE_POLL_SEC:-2}"
+          done
+        ) &
+        hola_smoke_pids+=("$!")
+      fi
+    fi
+  fi
+
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 -e "REQUIRE_MAIL_HOLA=${REQUIRE_MAIL_HOLA:-0}" \
     "$container" node /tmp/test-mail-hola-peer.mjs \
     "${hola_args[@]}" || failed=1
+
+  if [[ ${#hola_smoke_pids[@]} -gt 0 ]]; then
+    local pid
+    for pid in "${hola_smoke_pids[@]}"; do
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    done
+    if [[ -n "$peer_deploy_id" ]]; then
+      respond_a2a_hola_smoke_one "$peer_deploy_id" >/dev/null 2>&1 || true
+    fi
+  fi
+
   return "$failed"
 }
 
@@ -696,6 +728,94 @@ EOF
   echo "    Status:  systemctl --user status identyclaw-a2a-webhook-smoke-responder.timer"
   echo "    Logs:    journalctl --user -u identyclaw-a2a-webhook-smoke-responder.service -f"
   echo "    Disable: systemctl --user disable --now identyclaw-a2a-webhook-smoke-responder.timer"
+}
+
+# Run deterministic inbound A2A email HOLA smoke handler once (reciprocal mail HOLA peer → local).
+respond_a2a_hola_smoke_one() {
+  local id="$1"
+  local container creds ext_dir mailbox email display_name own_token_id
+  container="$(agent_container "$id")"
+  if ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    echo "    (${id}: container not running — skip A2A HOLA smoke responder)" >&2
+    return 0
+  fi
+  creds="$(agent_near_credentials_in_container "$id")"
+  [[ -n "$creds" ]] || {
+    echo "    (${id}: no NEAR credentials — skip A2A HOLA smoke responder)" >&2
+    return 0
+  }
+  mailbox="$(agent_mailbox "$id")"
+  email="${mailbox%%|*}"
+  display_name="${mailbox#*|}"
+  [[ -n "$email" ]] || {
+    echo "    (${id}: no AGENT_*_EMAIL — skip A2A HOLA smoke responder)" >&2
+    return 0
+  }
+  own_token_id="$(probe_rodit_own_token_id "$(agent_home "$id")" 2>/dev/null || true)"
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman_cp_a2a_hola_smoke_libs "$container" || {
+    echo "    (${id}: failed to copy A2A HOLA smoke libs)" >&2
+    return 1
+  }
+  podman cp "${IDENTYCLAW_ROOT}/scripts/respond-a2a-hola-smoke.mjs" "$container:/tmp/respond-a2a-hola-smoke.mjs" >/dev/null
+  local -a args=(--creds "$creds" --from-email "$email" --from-name "$display_name" --ext-dir "$ext_dir")
+  [[ -n "$own_token_id" ]] && args+=(--own-token-id "$own_token_id")
+  podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
+    node /tmp/respond-a2a-hola-smoke.mjs "${args[@]}"
+}
+
+cmd_respond_a2a_hola_smoke() {
+  local target="${1:-}"
+  load_env
+  require_podman
+  if [[ -z "$target" || "$target" == "all" ]]; then
+    local rc=0
+    for id in $AGENT_IDS; do
+      echo "==> A2A HOLA smoke responder: ${id}"
+      respond_a2a_hola_smoke_one "$id" || rc=1
+    done
+    return "$rc"
+  fi
+  is_valid_agent_id "$target" || { echo "Invalid agent id: ${target}" >&2; return 1; }
+  echo "==> A2A HOLA smoke responder: ${target}"
+  respond_a2a_hola_smoke_one "$target"
+}
+
+cmd_enable_a2a_hola_smoke_responder() {
+  require_rootless_user
+  local interval="${1:-1min}"
+  local unit_dir="${HOME}/.config/systemd/user"
+  local script_path="${ROOT}/identyclaw.sh"
+  mkdir -p "$unit_dir"
+  cat >"${unit_dir}/identyclaw-a2a-hola-smoke-responder.service" <<EOF
+[Unit]
+Description=IdentyClaw inbound A2A email HOLA smoke responder (deterministic himalaya send)
+After=podman-restart.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${ROOT}
+ExecStart=/usr/bin/env bash ${script_path} respond-a2a-hola-smoke all
+EOF
+  cat >"${unit_dir}/identyclaw-a2a-hola-smoke-responder.timer" <<EOF
+[Unit]
+Description=Run IdentyClaw A2A HOLA smoke responder every ${interval}
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=${interval}
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now identyclaw-a2a-hola-smoke-responder.timer
+  echo "==> A2A HOLA smoke responder timer enabled (every ${interval})."
+  echo "    Status:  systemctl --user status identyclaw-a2a-hola-smoke-responder.timer"
+  echo "    Logs:    journalctl --user -u identyclaw-a2a-hola-smoke-responder.service -f"
+  echo "    Disable: systemctl --user disable --now identyclaw-a2a-hola-smoke-responder.timer"
 }
 
 cmd_generate_certs() {
@@ -2252,6 +2372,8 @@ main() {
     enable-mail-responder) cmd_enable_mail_responder "$@" ;;
     respond-a2a-webhook-smoke) cmd_respond_a2a_webhook_smoke "$@" ;;
     enable-a2a-webhook-smoke-responder) cmd_enable_a2a_webhook_smoke_responder "$@" ;;
+    respond-a2a-hola-smoke) cmd_respond_a2a_hola_smoke "$@" ;;
+    enable-a2a-hola-smoke-responder) cmd_enable_a2a_hola_smoke_responder "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-a2a-auth) cmd_test_a2a_auth "$@" ;;

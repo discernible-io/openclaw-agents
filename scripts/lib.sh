@@ -1684,10 +1684,19 @@ podman_cp_mail_responder_libs() {
 podman_cp_a2a_webhook_smoke_libs() {
   local container="$1"
   [[ -n "$container" ]] || return 1
+  podman_cp_a2a_hola_smoke_libs "$container" || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-a2a-webhook-smoke-responder.mjs" \
     "$container:/tmp/lib-a2a-webhook-smoke-responder.mjs" >/dev/null 2>&1 || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/send-rodit-webhook.mjs" \
     "$container:/tmp/send-rodit-webhook.mjs" >/dev/null 2>&1 || return 1
+}
+
+podman_cp_a2a_hola_smoke_libs() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman_cp_mail_responder_libs "$container" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-a2a-hola-smoke-responder.mjs" \
+    "$container:/tmp/lib-a2a-hola-smoke-responder.mjs" >/dev/null 2>&1 || return 1
 }
 
 # Email HOLA peer probe copies shared libs beside /tmp/test-mail-hola-peer.mjs.
@@ -3531,7 +3540,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3820,6 +3829,14 @@ deterministic responder — no LLM action needed:
 ./identyclaw.sh respond-mail ${id}
 # Or run it on a schedule (user systemd timer, default every 5min):
 ./identyclaw.sh enable-mail-responder
+\`\`\`
+
+When a peer drives reciprocal testing via **A2A** (\`IDENTYCLAW_SMOKE inbound email HOLA test\`),
+the deterministic A2A HOLA smoke responder signs and sends the probe email (no LLM):
+
+\`\`\`bash
+./identyclaw.sh respond-a2a-hola-smoke ${id}
+./identyclaw.sh enable-a2a-hola-smoke-responder
 \`\`\`
 
 The responder only replies with a signed HOLA when the inbound HOLA verifies; a
@@ -4493,6 +4510,62 @@ if own_token_id:
     card_desc = f"{display_name} (IdentyClaw A2A, token_id={own_token_id})"
 if card.get("description") != card_desc:
     card["description"] = card_desc
+    changed = True
+
+# Agent Card skills[] — required by A2A discovery (plugin reads inbound.agentCard.skills only).
+KNOWN_SKILLS = {
+    "identyclaw": {
+        "id": "identyclaw",
+        "name": "IdentyClaw",
+        "description": "HOLA verify and create, Passport lookup, DID resolution, and agent discovery",
+        "tags": ["identity", "hola", "passport"],
+    },
+    "himalaya": {
+        "id": "himalaya",
+        "name": "Email",
+        "description": "Send and read Migadu email via the himalaya CLI",
+        "tags": ["email", "smtp", "imap"],
+    },
+    "linkedin-social": {
+        "id": "linkedin-social",
+        "name": "LinkedIn",
+        "description": "LinkedIn post and audience workflows via ClawLink",
+        "tags": ["linkedin", "social"],
+    },
+    "bird-twitter": {
+        "id": "bird-twitter",
+        "name": "Twitter / X",
+        "description": "Post and search on Twitter/X via bird CLI",
+        "tags": ["twitter", "social"],
+    },
+}
+A2A_SKILL = {
+    "id": "a2a-messaging",
+    "name": "A2A Peer Messaging",
+    "description": "Agent-to-agent messaging, tasks, and file exchange with RODiT JWT auth",
+    "tags": ["a2a", "messaging", "tasks"],
+}
+skill_entries = data.get("skills", {}).get("entries", {})
+advertised = []
+seen_ids = set()
+for slug, entry in skill_entries.items():
+    if not isinstance(entry, dict) or entry.get("enabled") is not True:
+        continue
+    meta = KNOWN_SKILLS.get(slug)
+    if meta and meta["id"] not in seen_ids:
+        advertised.append(meta)
+        seen_ids.add(meta["id"])
+if A2A_SKILL["id"] not in seen_ids:
+    advertised.append(A2A_SKILL)
+    seen_ids.add(A2A_SKILL["id"])
+if not advertised:
+    advertised.append({
+        "id": "default",
+        "name": display_name,
+        "description": card_desc,
+    })
+if json.dumps(card.get("skills"), sort_keys=True) != json.dumps(advertised, sort_keys=True):
+    card["skills"] = advertised
     changed = True
 
 if public_base_url:
