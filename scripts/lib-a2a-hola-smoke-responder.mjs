@@ -95,6 +95,21 @@ export function holaSmokeTaskAlreadyDelivered(taskJson, subject) {
   return false;
 }
 
+/**
+ * Signer token_id from the mounted NEAR key (getConfigOwnRodit), not the instruction recipient.
+ * Legacy API aliases (e.g. cdbvzmckzhlk) must not be used when the NEAR key is ldskcksmchlw.
+ */
+export async function resolveHolaSmokeSignerTokenId(client, fallback = "") {
+  const config = await client.getConfigOwnRodit();
+  const fromRodit = String(config?.own_rodit?.token_id || "").trim().toLowerCase();
+  if (fromRodit) return fromRodit;
+  const fb = String(fallback || "").trim().toLowerCase();
+  if (!fb) {
+    throw new Error("own signer token_id missing from getConfigOwnRodit()");
+  }
+  return fb;
+}
+
 async function deliverHolaProbe({
   extDir,
   credPath,
@@ -110,12 +125,18 @@ async function deliverHolaProbe({
   const require = createRequire(pathToFileURL(join(extDir, "package.json")).href);
   const { RoditClient } = require("@rodit/rodit-auth-be");
   const client = await RoditClient.create({ role: "client" });
-  const signerTokenId = String(ownTokenId || "").trim().toLowerCase();
-  if (!signerTokenId) {
-    throw new Error("ownTokenId required to sign outbound HOLA probe");
+  const recipientTokenId = String(instruction.recipientTokenId || "").trim();
+  if (!recipientTokenId) {
+    throw new Error("instruction missing recipientTokenId");
+  }
+  const signerTokenId = await resolveHolaSmokeSignerTokenId(client, ownTokenId);
+  if (signerTokenId === recipientTokenId.toLowerCase()) {
+    throw new Error(
+      `HOLA signer must be this agent's passport token_id (${signerTokenId}), not the recipient (${recipientTokenId})`,
+    );
   }
   const hola = await generateValidHola(client, secretKey, holaCrypto, {
-    recipientTokenId: instruction.recipientTokenId,
+    recipientTokenId,
     signerTokenId,
   });
   sendMail({
@@ -125,7 +146,7 @@ async function deliverHolaProbe({
     subject: instruction.subject,
     body: `${hola}\n`,
   });
-  return { hola, subject: instruction.subject, to: instruction.toEmail };
+  return { hola, subject: instruction.subject, to: instruction.toEmail, signerTokenId };
 }
 
 /**
@@ -172,6 +193,7 @@ export async function respondToA2aHolaSmoke(opts = {}) {
 
     let delivered = false;
     let detail = "";
+    let signerTokenId = "";
     if (dryRun) {
       detail = "dry-run";
     } else {
@@ -185,7 +207,8 @@ export async function respondToA2aHolaSmoke(opts = {}) {
           instruction,
         });
         delivered = true;
-        detail = `subject=${result.subject} to=${result.to}`;
+        signerTokenId = result.signerTokenId || "";
+        detail = `subject=${result.subject} to=${result.to} signer=${signerTokenId}`;
       } catch (e) {
         detail = e instanceof Error ? e.message : String(e);
       }
@@ -196,6 +219,7 @@ export async function respondToA2aHolaSmoke(opts = {}) {
         at: new Date().toISOString(),
         subject: instruction.subject,
         to: instruction.toEmail,
+        signerTokenId,
       };
       handledCount += 1;
     }
@@ -206,6 +230,7 @@ export async function respondToA2aHolaSmoke(opts = {}) {
       subject: instruction.subject,
       toEmail: instruction.toEmail,
       recipientTokenId: instruction.recipientTokenId,
+      signerTokenId,
       delivered,
       detail,
     };

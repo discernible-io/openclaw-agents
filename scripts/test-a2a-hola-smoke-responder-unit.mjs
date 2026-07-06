@@ -12,15 +12,16 @@ import {
   extractHolaSmokeFromTask,
   holaSmokeTaskAlreadyDelivered,
   parseHolaSmokeInstruction,
+  resolveHolaSmokeSignerTokenId,
 } from "./lib-a2a-hola-smoke-responder.mjs";
 import { createTally, reportFinding } from "./lib-test-report.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const tally = createTally();
 
-function runCase(surface, fn) {
+async function runCase(surface, fn) {
   try {
-    fn();
+    await fn();
     tally.add(reportFinding(surface, true));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -37,7 +38,7 @@ const holaLine =
 
 process.stdout.write("A2A HOLA smoke responder (unit)\n\n");
 
-runCase("parseHolaSmokeInstruction valid", () => {
+await runCase("parseHolaSmokeInstruction valid", () => {
   const parsed = parseHolaSmokeInstruction(holaLine);
   assert.ok(parsed);
   assert.equal(parsed.recipientTokenId, "PeerTokenId12");
@@ -45,11 +46,11 @@ runCase("parseHolaSmokeInstruction valid", () => {
   assert.equal(parsed.subject, "IDENTYCLAW_HOLA_PROBE:hola-mail-in-123:good");
 });
 
-runCase("parseHolaSmokeInstruction malformed", () => {
+await runCase("parseHolaSmokeInstruction malformed", () => {
   assert.equal(parseHolaSmokeInstruction("not a hola smoke instruction"), null);
 });
 
-runCase("extractHolaSmokeFromTask from fixture", () => {
+await runCase("extractHolaSmokeFromTask from fixture", () => {
   const fixturePath = join(__dirname, "fixtures/a2a-inbound-task-hola-smoke.json");
   const taskJson = JSON.parse(readFileSync(fixturePath, "utf8"));
   const extracted = extractHolaSmokeFromTask(taskJson);
@@ -60,17 +61,34 @@ runCase("extractHolaSmokeFromTask from fixture", () => {
   assert.equal(extracted.instruction.toEmail, "andrew@example.com");
 });
 
-runCase("holaSmokeTaskAlreadyDelivered false when no artifacts", () => {
+await runCase("holaSmokeTaskAlreadyDelivered false when no artifacts", () => {
   assert.equal(holaSmokeTaskAlreadyDelivered({ artifacts: [] }, "probe-subject"), false);
 });
 
-runCase("holaSmokeTaskAlreadyDelivered true when subject in artifact", () => {
+await runCase("holaSmokeTaskAlreadyDelivered true when subject in artifact", () => {
   const taskJson = {
     artifacts: [{ parts: [{ text: "Sent IDENTYCLAW_HOLA_PROBE:hola-mail-in-1:good via himalaya" }] }],
   };
   assert.equal(
     holaSmokeTaskAlreadyDelivered(taskJson, "IDENTYCLAW_HOLA_PROBE:hola-mail-in-1:good"),
     true,
+  );
+});
+
+await runCase("resolveHolaSmokeSignerTokenId prefers getConfigOwnRodit", async () => {
+  const signer = await resolveHolaSmokeSignerTokenId({
+    getConfigOwnRodit: async () => ({ own_rodit: { token_id: "ldskcksmchlw" } }),
+  });
+  assert.equal(signer, "ldskcksmchlw");
+});
+
+await runCase("resolveHolaSmokeSignerTokenId throws when NEAR config lacks token_id", async () => {
+  await assert.rejects(
+    () =>
+      resolveHolaSmokeSignerTokenId({
+        getConfigOwnRodit: async () => ({ own_rodit: {} }),
+      }),
+    /own signer token_id missing/,
   );
 });
 

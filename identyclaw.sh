@@ -512,31 +512,38 @@ cmd_test_mail_hola() {
   hola_args+=(--poll-seconds "$poll_sec")
   # Peer A2A gateway lets us drive the reciprocal inbound probe (peer → us).
   peer_base="$(a2a_peer_public_base_url "$peer_token_id" "$(agent_home "$id")" 2>/dev/null || true)"
-  if [[ -n "$peer_base" ]] && ! peer_mail_hola_ambiguous "$id" "$peer_token_id"; then
-    hola_args+=(--peer-base "$peer_base")
-  else
-    if [[ -n "$peer_base" ]] && peer_mail_hola_ambiguous "$id" "$peer_token_id"; then
+  local hola_inbound=0
+  if [[ -n "$peer_base" ]]; then
+    if a2a_peer_token_id_on_this_host "$peer_token_id"; then
+      hola_inbound=1
+      echo "    inbound reciprocal: same-host peer — deterministic A2A HOLA smoke responder signs with peer NEAR key"
+    elif ! peer_mail_hola_ambiguous "$id" "$peer_token_id"; then
+      hola_inbound=1
+    else
       echo "    skip inbound reciprocal (peer gateway shares this host's pod ingress; peerTokenId binding is ambiguous)"
     fi
+  fi
+  if [[ $hola_inbound -eq 1 ]]; then
+    hola_args+=(--peer-base "$peer_base")
+  else
     hola_args+=(--skip-inbound)
   fi
   [[ "${REQUIRE_MAIL_HOLA:-0}" == 1 ]] && hola_args+=(--require)
 
-  local hola_smoke_pids=() peer_deploy_id=""
-  if [[ -n "$peer_base" ]] && ! peer_mail_hola_ambiguous "$id" "$peer_token_id"; then
-    if a2a_peer_token_id_on_this_host "$peer_token_id"; then
-      peer_deploy_id="$(find_deploy_id_for_token_id "$peer_token_id" 2>/dev/null || true)"
-      if [[ -n "$peer_deploy_id" ]] && agent_container_running "$peer_deploy_id"; then
-        echo "    Inbound: polling ${peer_deploy_id} A2A HOLA smoke responder during reciprocal test"
+  local hola_smoke_pids=() smoke_id=""
+  if [[ $hola_inbound -eq 1 ]]; then
+    for smoke_id in $AGENT_IDS; do
+      if agent_container_running "$smoke_id"; then
+        echo "    Inbound: polling ${smoke_id} A2A HOLA smoke responder during reciprocal test"
         (
           while true; do
-            respond_a2a_hola_smoke_one "$peer_deploy_id" >/dev/null 2>&1 || true
+            respond_a2a_hola_smoke_one "$smoke_id" >/dev/null 2>&1 || true
             sleep "${MAIL_HOLA_SMOKE_POLL_SEC:-2}"
           done
         ) &
         hola_smoke_pids+=("$!")
       fi
-    fi
+    done
   fi
 
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 -e "REQUIRE_MAIL_HOLA=${REQUIRE_MAIL_HOLA:-0}" \
@@ -549,9 +556,9 @@ cmd_test_mail_hola() {
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     done
-    if [[ -n "$peer_deploy_id" ]]; then
-      respond_a2a_hola_smoke_one "$peer_deploy_id" >/dev/null 2>&1 || true
-    fi
+    for smoke_id in $AGENT_IDS; do
+      respond_a2a_hola_smoke_one "$smoke_id" >/dev/null 2>&1 || true
+    done
   fi
 
   return "$failed"
@@ -752,10 +759,6 @@ respond_a2a_hola_smoke_one() {
     return 0
   }
   own_token_id="$(agent_token_id "$id" 2>/dev/null || true)"
-  [[ -n "$own_token_id" ]] || {
-    echo "    (${id}: no Passport token_id — skip A2A HOLA smoke responder)" >&2
-    return 0
-  }
   ext_dir="$(agent_a2a_ext_dir_container)"
   podman_cp_a2a_hola_smoke_libs "$container" || {
     echo "    (${id}: failed to copy A2A HOLA smoke libs)" >&2
@@ -763,6 +766,7 @@ respond_a2a_hola_smoke_one() {
   }
   podman cp "${IDENTYCLAW_ROOT}/scripts/respond-a2a-hola-smoke.mjs" "$container:/tmp/respond-a2a-hola-smoke.mjs" >/dev/null
   local -a args=(--creds "$creds" --from-email "$email" --from-name "$display_name" --ext-dir "$ext_dir")
+  # Signer token_id is resolved in-container from getConfigOwnRodit (NEAR key); host value is fallback only.
   [[ -n "$own_token_id" ]] && args+=(--own-token-id "$own_token_id")
   podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 "$container" \
     node /tmp/respond-a2a-hola-smoke.mjs "${args[@]}"
