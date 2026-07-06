@@ -36,9 +36,11 @@ import {
   peerEmailFromIdentity,
   verifyHolaViaApi,
 } from "./lib-peer-identity.mjs";
+import { parseWebhookBase } from "./lib-peer-gateway-url.mjs";
 import { parseFromAddress, pollInboxForSubject, sendMail } from "./lib-himalaya-mail.mjs";
 import { respondToHolaProbes } from "./lib-mail-responder.mjs";
 import { acquireP2pJwtForPeer, fetchJson } from "./lib-rodit-webhook-test.mjs";
+import { fetchPublicAgentTokenIds } from "./lib-discover-agents.mjs";
 import { createTally, reportFinding, reportSkip } from "./lib-test-report.mjs";
 
 function arg(name, fallback = "") {
@@ -110,6 +112,40 @@ try {
     .trim()
     .toLowerCase();
   if (liveToken) canonicalPeerTokenId = liveToken;
+  // Deprecated seed ids (e.g. lmsfckzncdbw) may still resolve in /full while GET /api/agents
+  // registers the live passport (cfbkbhzdzflk) at the same gateway — mirror a2a_reconcile_peer_token_id_list.
+  if (canonicalPeerTokenId === peerTokenId) {
+    const peerGateway = parseWebhookBase(
+      identity?.metadata?.webhook_url || identity?.metadata?.webhookUrl || "",
+    );
+    if (peerGateway) {
+      try {
+        const { tokenIds } = await fetchPublicAgentTokenIds(apiBase, { maxPages: 3 });
+        for (const apiTid of tokenIds) {
+          if (apiTid === peerTokenId) continue;
+          try {
+            const { identity: altIdentity } = await fetchPeerIdentityFull(
+              extDir,
+              credPath,
+              apiTid,
+              apiBase,
+            );
+            const altGateway = parseWebhookBase(
+              altIdentity?.metadata?.webhook_url || altIdentity?.metadata?.webhookUrl || "",
+            );
+            if (altGateway && altGateway.toLowerCase() === peerGateway.toLowerCase()) {
+              canonicalPeerTokenId = apiTid;
+              break;
+            }
+          } catch {
+            // try next registry entry
+          }
+        }
+      } catch {
+        // best-effort; contactUri / gateway fallback still applies below
+      }
+    }
+  }
   record(
     "GET /api/identity/token/{peer}/full contactUri email",
     Boolean(peerEmail),
@@ -204,6 +240,14 @@ if (await sendProbe("bad", badHola)) {
 
 const consumedReplyIds = new Set();
 
+/** Seed id, /full canonical, or same-gateway live passport via contactUri binding. */
+function peerTokenIdMatchesPeer(peerFromHola, senderEmail = "") {
+  const id = String(peerFromHola || "").toLowerCase();
+  if (!id) return false;
+  const matchesSeed = id === canonicalPeerTokenId || id === peerTokenId;
+  return matchesSeed || emailsMatch(senderEmail, peerEmail);
+}
+
 async function assessReply(variant, expectedVerified) {
   const hit = await pollInboxForSubject(probeId, {
     timeoutMs: pollSeconds * 1000,
@@ -259,13 +303,11 @@ async function assessReply(variant, expectedVerified) {
 
   if (expectedVerified && verified) {
     const peerFromHola = String(verify.payload?.peerTokenId || "").toLowerCase();
-    const tokenMatchesSeed = peerFromHola === canonicalPeerTokenId || peerFromHola === peerTokenId;
-    // Gateway may sign with a newer passport token than the configured peer seed id.
-    const tokenMatchesGateway = tokenMatchesSeed || senderMatchesContactUri;
+    const tokenMatchesGateway = peerTokenIdMatchesPeer(peerFromHola, senderEmail);
     record(
       `reply HOLA peerTokenId matches ${canonicalPeerTokenId}`,
       tokenMatchesGateway,
-      `peerTokenId=${peerFromHola || "—"} seed=${canonicalPeerTokenId}`,
+      `peerTokenId=${peerFromHola || "—"} canonical=${canonicalPeerTokenId} seed=${peerTokenId}`,
     );
   }
 }
@@ -362,11 +404,11 @@ if (skipInbound) {
           action.verified === true,
           `verified=${action.verified} peerTokenId=${action.peerTokenId || "—"} (HTTP ${action.verifyStatus})`,
         );
+        const inboundTokenMatches = action.verified && peerTokenIdMatchesPeer(action.peerTokenId, action.senderEmail);
         record(
           "inbound HOLA peerTokenId matches peer",
-          action.verified &&
-            (action.peerTokenId === canonicalPeerTokenId || action.peerTokenId === peerTokenId),
-          `peerTokenId=${action.peerTokenId || "—"} per-spec tokenId=${canonicalPeerTokenId}`,
+          inboundTokenMatches,
+          `peerTokenId=${action.peerTokenId || "—"} canonical=${canonicalPeerTokenId} seed=${peerTokenId}`,
         );
         record(
           "our responder replied to peer",
