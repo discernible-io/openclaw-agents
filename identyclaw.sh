@@ -10,6 +10,8 @@
 #   set-password <id>    Set Migadu mailbox password (agent-{slug})
 #   set-discord-token <id>  Store Discord bot token in secrets/
 #   set-telegram-token <id> Store Telegram bot token in secrets/
+#   pairing-list <id>      List pending Telegram DM pairing requests
+#   pairing-approve <id> <code>  Approve a Telegram pairing code
 #   set-socialclaw-key <id> Store SocialClaw workspace API key in secrets/
 #   set-instagram <id>      Store Instagram username/password in secrets/
 #   set-twitter <id>        Store X/Twitter login + enable hourly DM polling
@@ -189,6 +191,29 @@ cmd_set_telegram_token() {
   write_telegram_token "$dir" "$token"
   echo "Telegram token stored in ${dir}/secrets/TELEGRAM_BOT_TOKEN (mode 600)"
   echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_pairing_list() {
+  local id="${1:?Usage: $0 pairing-list agent-b}"
+  require_agent_id_arg "$id" "$0 pairing-list <agent-id>"
+  require_podman
+  require_agent_running "$id"
+  local dir container
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  openclaw_agent_exec "$dir" "$container" pairing list telegram
+}
+
+cmd_pairing_approve() {
+  local id="${1:?Usage: $0 pairing-approve agent-b <code>}"
+  local code="${2:?Usage: $0 pairing-approve agent-b <code>}"
+  require_agent_id_arg "$id" "$0 pairing-approve <agent-id> <code>"
+  require_podman
+  require_agent_running "$id"
+  local dir container
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  openclaw_agent_exec "$dir" "$container" pairing approve telegram "$code"
 }
 
 cmd_set_socialclaw_key() {
@@ -1223,6 +1248,8 @@ main() {
     set-password) cmd_set_password "$@" ;;
     set-discord-token) cmd_set_discord_token "$@" ;;
     set-telegram-token) cmd_set_telegram_token "$@" ;;
+    pairing-list) cmd_pairing_list "$@" ;;
+    pairing-approve) cmd_pairing_approve "$@" ;;
     set-socialclaw-key) cmd_set_socialclaw_key "$@" ;;
     set-instagram) cmd_set_instagram "$@" ;;
     set-twitter) cmd_set_twitter "$@" ;;

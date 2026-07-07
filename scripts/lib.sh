@@ -6726,7 +6726,9 @@ Bidirectional chat via the built-in Telegram channel plugin.
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the bot token.
 2. On the host: `./identyclaw.sh set-telegram-token <agent-id>`
 3. Restart the gateway: `./identyclaw.sh restart <agent-id>`
-4. DM the bot — approve pairing if `dmPolicy` requires it (default: pairing).
+4. DM the bot — approve pairing if `dmPolicy` requires it (default: pairing):
+   - List pending: `./identyclaw.sh pairing-list <agent-id>`
+   - Approve: `./identyclaw.sh pairing-approve <agent-id> <CODE>`
 
 ## Config
 
