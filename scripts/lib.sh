@@ -6740,8 +6740,13 @@ EOF
 
 ensure_telegram_channel_stub() {
   local config_dir="$1"
+  local container="${2:-}"
   local config="$config_dir/openclaw.json"
   [[ -f "$config" ]] || return 0
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec "$container" node /app/openclaw.mjs plugins enable telegram >/dev/null 2>&1 || true
+  fi
   python3 - "$config" <<'PY'
 import json, sys
 from pathlib import Path
