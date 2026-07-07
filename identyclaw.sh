@@ -122,10 +122,13 @@ cmd_init() {
   load_env
   local id
   for id in $AGENT_IDS; do
-    is_valid_agent_id "$id" || {
+    if ! is_valid_agent_id "$id"; then
       echo "Invalid agent id in AGENT_IDS: ${id} (expected agent-{slug}, e.g. agent-name-not-set)" >&2
+      if [[ "$id" =~ ^[a-z][a-z0-9-]*$ ]]; then
+        echo "Did you mean agent-${id}? Update AGENT_IDS and rename AGENT_* env prefix to match." >&2
+      fi
       exit 1
-    }
+    fi
     init_one_agent "$id" "$(agent_email "$id")" "$(agent_display_name "$id")" "$(agent_env_value "$id" PASSWORD "")" "$(agent_env_value "$id" GATEWAY_PORT "")"
   done
   echo ""
@@ -141,6 +144,7 @@ cmd_init() {
 
 cmd_set_password() {
   local id="${1:?Usage: $0 set-password agent-b}"
+  require_agent_id_arg "$id" "$0 set-password <agent-id>"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -154,6 +158,7 @@ cmd_set_password() {
 
 cmd_set_discord_token() {
   local id="${1:?Usage: $0 set-discord-token agent-b}"
+  require_agent_id_arg "$id" "$0 set-discord-token <agent-id>"
   local dir
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
@@ -907,6 +912,7 @@ cmd_set_api_key() {
   local id="${1:?Usage: $0 set-api-key agent-b [sk-or-...]}"
   local key="${2:-${OPENROUTER_API_KEY:-}}"
   local dir
+  require_agent_id_arg "$id" "$0 set-api-key <agent-id> [sk-or-...]"
   dir="$(agent_home "$id")"
   if ! [[ -d "$dir" ]] && ! agent_container_running "$id"; then
     echo "Run $0 init first (missing ${dir})" >&2
@@ -926,6 +932,7 @@ cmd_set_opencode_key() {
   local id="${1:?Usage: $0 set-opencode-key agent-b [sk-...]}"
   local key="${2:-${OPENCODE_API_KEY:-}}"
   local dir
+  require_agent_id_arg "$id" "$0 set-opencode-key <agent-id> [sk-...]"
   dir="$(agent_home "$id")"
   if ! [[ -d "$dir" ]] && ! agent_container_running "$id"; then
     echo "Run $0 init first (missing ${dir})" >&2

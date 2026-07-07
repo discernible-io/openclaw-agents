@@ -52,7 +52,7 @@ identyclaw-agents-app/
         ├── workspace/        # Agent workspace, skills docs
         ├── secrets/
         │   ├── near-credentials/
-        │   │   └── <account>.json   # IdentyClaw Passport (NEAR key) — required for identity
+        │   │   └── <implicit-account-id-not-set>.json   # IdentyClaw Passport (NEAR key) — required for identity
         │   ├── imap.pass              # Optional Migadu password (set-password)
         │   └── openrouter.key         # LLM API key (set-api-key)
         └── extensions/         # ClawHub plugins (built during deploy)
@@ -139,17 +139,28 @@ Edit `../identyclaw-agents-app/env.local`. **Minimum required:**
 # Rename when ready (slug + env prefix must match):
 # AGENT_IDS=agent-acme
 
-IDENTYCLAW_NEAR_RPC_URL=https://go.getblock.io/YOUR_GETBLOCK_API_KEY
+IDENTYCLAW_NEAR_RPC_URL=https://go.getblock.io/GETBLOCK-API-KEY-NOT-SET
 ```
 
 Everything else in `env.example` has sensible defaults. See [Configuration](#configuration) below.
+
+Placeholder values use a consistent `not-set` pattern until you replace them:
+
+| Placeholder | Replace with |
+|-------------|--------------|
+| `agent-name-not-set` | Your agent slug (e.g. `agent-acme`) |
+| `AGENT_NAME_NOT_SET_*` | Env prefix derived from that slug |
+| `GETBLOCK-API-KEY-NOT-SET` | Your NEAR RPC provider API key |
+| `agent-domain-not-set.example.com` | Your public DNS hostname |
+| `<implicit-account-id-not-set>` | 64-char NEAR implicit account from Passport enrollment |
+| `sk-or-OPENROUTER-API-KEY-NOT-SET` | OpenRouter key (via `set-api-key`, not in `env.local`) |
 
 ### 3. Add IdentyClaw Passport credentials
 
 Copy your Passport JSON (NEAR account + private key) to:
 
 ```text
-../identyclaw-agents-app/agents/agent-name-not-set/secrets/near-credentials/<account>.json
+../identyclaw-agents-app/agents/agent-name-not-set/secrets/near-credentials/<implicit-account-id-not-set>.json
 ```
 
 This file is the **root of trust** for RODiT auth. Never commit it.
@@ -159,12 +170,12 @@ This file is the **root of trust** for RODiT auth. Never commit it.
 In your IdentyClaw Passport, set:
 
 ```text
-metadata.webhook_url = https://<your-host>:9443
+metadata.webhook_url = https://agent-domain-not-set.example.com:9443
 ```
 
 - Include **scheme**, **host**, and **port**
 - **No path suffix** (no `/a2a`, no `/hooks/...`)
-- Example: `https://agent.example.com:9443`
+- Example: `https://agent-domain-not-set.example.com:9443`
 
 With NEAR creds present, bootstrap **self-configures** from Passport via `RoditClient.getConfigOwnRodit()` (and identity API `/full` when needed):
 
@@ -267,9 +278,9 @@ Enables user linger + `podman-restart.service` so containers survive reboot.
 
 | Path | Purpose |
 |------|---------|
-| `agents/<id>/secrets/near-credentials/*.json` | IdentyClaw Passport NEAR credentials |
-| Passport `metadata.webhook_url` | Public HTTPS base for ingress + A2A |
-| LLM key via `set-api-key` | OpenRouter / OpenCode auth |
+| `agents/<id>/secrets/near-credentials/<implicit-account-id-not-set>.json` | IdentyClaw Passport NEAR credentials |
+| Passport `metadata.webhook_url` | Public HTTPS base for ingress + A2A (e.g. `https://agent-domain-not-set.example.com:9443`) |
+| LLM key via `set-api-key` | OpenRouter / OpenCode auth (`sk-or-OPENROUTER-API-KEY-NOT-SET` placeholder until set) |
 
 ### Optional overrides (leave unset for Passport self-config)
 

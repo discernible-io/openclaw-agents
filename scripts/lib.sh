@@ -337,6 +337,37 @@ is_valid_agent_id() {
   [[ "$1" =~ ^agent-[a-z][a-z0-9-]*$ ]]
 }
 
+# True when ref looks like an LLM API key passed where an agent id was expected.
+looks_like_llm_api_key() {
+  [[ "$1" == sk-or-* || "$1" == sk-* ]]
+}
+
+# Exit with a clear message when the first CLI arg is an API key or invalid agent slug.
+require_agent_id_arg() {
+  local id="$1"
+  local usage="$2"
+  if looks_like_llm_api_key "$id"; then
+    echo "First argument looks like an API key, not an agent id: ${id:0:12}…" >&2
+    echo "Usage: ${usage}" >&2
+    if [[ "$id" == sk-or-* ]]; then
+      echo "Example: ./identyclaw.sh set-api-key agent-name-not-set ${id:0:20}…" >&2
+    elif [[ "$usage" == *set-opencode-key* ]]; then
+      echo "Example: ./identyclaw.sh set-opencode-key agent-name-not-set ${id:0:20}…" >&2
+    else
+      echo "Example: ./identyclaw.sh set-api-key agent-name-not-set <sk-or-…>" >&2
+      echo "OpenCode keys (sk-…): ./identyclaw.sh set-opencode-key agent-name-not-set <sk-…>" >&2
+    fi
+    exit 1
+  fi
+  if ! is_valid_agent_id "$id"; then
+    echo "Invalid agent id: ${id} (expected agent-{slug}, e.g. agent-name-not-set)" >&2
+    if [[ "$id" =~ ^[a-z][a-z0-9-]*$ ]]; then
+      echo "Did you mean agent-${id}? Set AGENT_IDS=agent-${id} and matching AGENT_$(echo "$id" | tr '[:lower:]-' '[:upper:]_')_* vars in env.local." >&2
+    fi
+    exit 1
+  fi
+}
+
 agent_env_value() {
   local id="$1" field="$2" default="${3:-}"
   local prefix combined
