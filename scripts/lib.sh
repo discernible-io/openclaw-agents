@@ -204,6 +204,9 @@ load_env() {
   IDENTYCLAW_CLAWHUB_TWITTER_SKILL="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
   IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-linkedin-social}"
   IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
+  IDENTYCLAW_CLAWHUB_SOCIALCLAW_SKILL="${IDENTYCLAW_CLAWHUB_SOCIALCLAW_SKILL:-socialclaw}"
+  IDENTYCLAW_SERVICE_CONTACT_SALES="${IDENTYCLAW_SERVICE_CONTACT_SALES:-sales@identyclaw.com}"
+  IDENTYCLAW_SERVICE_CONTACT_SUPPORT="${IDENTYCLAW_SERVICE_CONTACT_SUPPORT:-support@identyclaw.com}"
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-pod}"
   IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
@@ -3546,7 +3549,9 @@ write_agent_email_doc() {
 
 - **Account:** \`${email}\` (${display_name})
 - **Config:** \`/home/node/.config/himalaya/config.toml\`
-- **IMAP/SMTP:** Migadu (\`imap.migadu.com:993\`, \`smtp.migadu.com:${smtp_port}\`)
+- **IMAP/SMTP:** Migadu (\`imap.migadu.com:993\` TLS, \`smtp.migadu.com:${smtp_port}\` STARTTLS)
+- **Sales contact:** \`$(identyclaw_service_contact_sales)\`
+- **Support contact:** \`$(identyclaw_service_contact_support)\`
 
 ## Read inbox
 
@@ -6294,6 +6299,11 @@ ensure_agent_bootstrap() {
   ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_twitter_secrets_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
+  ensure_socialclaw_skill "$id" "$config_dir"
+  ensure_telegram_secrets_from_env "$id" "$config_dir"
+  ensure_telegram_channel_stub "$config_dir"
+  ensure_telegram_ready "$id" "$config_dir"
+  write_agent_publishing_doc "$config_dir"
   ensure_near_credentials_layout "$config_dir"
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
@@ -6409,6 +6419,338 @@ data.setdefault("channels", {}).setdefault("discord", {})["allowBots"] = "mentio
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
 PY
+}
+
+identyclaw_service_contact_sales() {
+  load_env
+  echo "${IDENTYCLAW_SERVICE_CONTACT_SALES:-sales@identyclaw.com}"
+}
+
+identyclaw_service_contact_support() {
+  load_env
+  echo "${IDENTYCLAW_SERVICE_CONTACT_SUPPORT:-support@identyclaw.com}"
+}
+
+write_agent_publishing_doc() {
+  local config_dir="$1"
+  local twitter_slug linkedin_slug socialclaw_slug
+  load_env
+  twitter_slug="$(twitter_clawhub_skill_slug)"
+  linkedin_slug="$(linkedin_skill_slug)"
+  socialclaw_slug="$(socialclaw_skill_slug)"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/PUBLISHING.md" <<EOF
+# Social publishing (dual stack)
+
+Use **official OpenClaw channels** for chat (Discord, Telegram) and the publishing
+stack below for outbound posts. Read the linked workspace docs before any write.
+
+| Platform | Mode | Tooling |
+|----------|------|---------|
+| Discord | Chat (inbound/outbound) | Official \`@openclaw/discord\` — \`set-discord-token\` |
+| Telegram | Chat (inbound/outbound) | Official \`channels.telegram\` — \`TELEGRAM.md\` / \`set-telegram-token\` |
+| X / Twitter | Publish | ClawHub \`${twitter_slug}\` + \`@steipete/bird\` — \`TWITTER.md\` / \`set-twitter-cookies\` |
+| LinkedIn | Publish | \`${linkedin_slug}\` + ClawLink — \`LINKEDIN.md\` / [claw-link.dev](https://claw-link.dev/dashboard?add=linkedin) |
+| Multi-platform schedule | Publish | ClawHub \`${socialclaw_slug}\` + [SocialClaw](https://getsocialclaw.com) — \`set-socialclaw-key\` |
+
+## SocialClaw (X, LinkedIn, Reddit, Discord webhook, Telegram channel, …)
+
+1. Operator: \`./identyclaw.sh set-socialclaw-key <agent-id>\` (workspace API key from \`socialclaw login\`).
+2. Read \`workspace/skills/${socialclaw_slug}/SKILL.md\`.
+3. Connect accounts: \`socialclaw accounts connect --provider <provider> --open\` (or manual for Discord/Telegram).
+4. Confirm with the user before scheduling or publishing.
+
+## X (bird-twitter)
+
+- Session cookies via \`./identyclaw.sh set-twitter-cookies <agent-id>\` (\`auth_token\` + \`ct0\`).
+- Read \`TWITTER.md\` and \`workspace/skills/${twitter_slug}/SKILL.md\`.
+
+## LinkedIn (ClawLink)
+
+- OAuth at https://claw-link.dev/dashboard?add=linkedin — no API keys in chat.
+- Read \`LINKEDIN.md\`.
+
+**Always confirm with the operator before write actions** (posts, DMs, deletes, schedules).
+EOF
+  chmod 644 "$config_dir/workspace/PUBLISHING.md"
+}
+
+socialclaw_skill_slug() {
+  load_env
+  local spec="${IDENTYCLAW_CLAWHUB_SOCIALCLAW_SKILL:-socialclaw}"
+  spec="${spec#clawhub:}"
+  spec="${spec##*/}"
+  spec="${spec%%@*}"
+  echo "$spec"
+}
+
+socialclaw_skill_installed_in_container() {
+  local container="$1"
+  local slug
+  slug="$(socialclaw_skill_slug)"
+  podman exec "$container" sh -c "test -f /home/node/.openclaw/workspace/skills/${slug}/SKILL.md" 2>/dev/null
+}
+
+_patch_socialclaw_openclaw_json() {
+  local config_path="$1"
+  local slug
+  slug="$(socialclaw_skill_slug)"
+  python3 - "$config_path" "$slug" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug = sys.argv[2]
+if not path.is_file():
+    raise SystemExit(0)
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+if skills.get(slug, {}).get("enabled") is not True:
+    skills[slug] = {"enabled": True}
+    changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+_patch_socialclaw_openclaw_json_in_container() {
+  local container="$1"
+  local slug
+  slug="$(socialclaw_skill_slug)"
+  podman exec -i "$container" python3 - "$slug" <<'PY'
+import json, sys
+from pathlib import Path
+
+slug = sys.argv[1]
+path = Path("/home/node/.openclaw/openclaw.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+if skills.get(slug, {}).get("enabled") is not True:
+    skills[slug] = {"enabled": True}
+    changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+sync_socialclaw_env() {
+  local config_dir="$1"
+  local secret_file="$config_dir/secrets/SOCIALCLAW_API_KEY"
+  local env_file="$config_dir/.env"
+  [[ -f "$secret_file" ]] || return 0
+  local api_key
+  api_key="$(<"$secret_file")"
+  [[ -n "$api_key" ]] || return 0
+  python3 - "$env_file" "$api_key" <<'PY'
+import sys, os
+path, api_key = sys.argv[1], sys.argv[2]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("SOCIALCLAW_API_KEY=")]
+lines.append(f"SOCIALCLAW_API_KEY={api_key}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+write_socialclaw_api_key() {
+  local config_dir="$1"
+  local api_key="$2"
+  [[ -n "$api_key" ]] || { echo "empty SocialClaw API key" >&2; return 1; }
+  mkdir -p "$config_dir/secrets"
+  printf '%s' "$api_key" >"$config_dir/secrets/SOCIALCLAW_API_KEY"
+  chmod 600 "$config_dir/secrets/SOCIALCLAW_API_KEY"
+  sync_socialclaw_env "$config_dir"
+}
+
+ensure_socialclaw_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local api_key=""
+  load_env
+  is_valid_agent_id "$id" && api_key="$(agent_env_value "$id" SOCIALCLAW_API_KEY "")"
+  if [[ -n "$api_key" ]] && [[ ! -f "$config_dir/secrets/SOCIALCLAW_API_KEY" ]]; then
+    write_socialclaw_api_key "$config_dir" "$api_key"
+    echo "    (${id}: SocialClaw API key synced from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/SOCIALCLAW_API_KEY" ]]; then
+    sync_socialclaw_env "$config_dir"
+  fi
+}
+
+ensure_socialclaw_skill() {
+  local id="$1"
+  local config_dir="$2"
+  local container skill_spec slug
+  load_env
+  skill_spec="${IDENTYCLAW_CLAWHUB_SOCIALCLAW_SKILL:-}"
+  [[ -n "$skill_spec" ]] || return 0
+  slug="$(socialclaw_skill_slug)"
+  container="$(agent_container "$id")"
+  ensure_socialclaw_secrets_from_env "$id" "$config_dir"
+  if [[ -f "$config_dir/openclaw.json" ]]; then
+    _patch_socialclaw_openclaw_json "$config_dir/openclaw.json"
+  fi
+  write_agent_publishing_doc "$config_dir"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  ensure_openclaw_cli_link "$container"
+  if ! socialclaw_skill_installed_in_container "$container"; then
+    echo "    (${id}: installing ClawHub SocialClaw skill ${skill_spec}…)" >&2
+    podman exec "$container" node /app/openclaw.mjs skills install "$skill_spec" >&2 \
+      || podman exec "$container" node /app/openclaw.mjs skills install "$slug" >&2 || true
+  fi
+  _patch_socialclaw_openclaw_json_in_container "$container"
+  sync_socialclaw_env "$config_dir"
+}
+
+write_telegram_token() {
+  local config_dir="$1"
+  local token="$2"
+  [[ -n "$token" ]] || { echo "empty Telegram bot token" >&2; return 1; }
+  mkdir -p "$config_dir/secrets"
+  printf '%s' "$token" >"$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  chmod 600 "$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  sync_telegram_env "$config_dir"
+  python3 - "$config_dir/openclaw.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+telegram = data.setdefault("channels", {}).setdefault("telegram", {})
+if not telegram.get("enabled"):
+    telegram["enabled"] = True
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+  write_agent_telegram_doc "$config_dir"
+}
+
+sync_telegram_env() {
+  local config_dir="$1"
+  local secret_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  local env_file="$config_dir/.env"
+  [[ -f "$secret_file" ]] || return 0
+  local token
+  token="$(<"$secret_file")"
+  [[ -n "$token" ]] || return 0
+  python3 - "$env_file" "$token" <<'PY'
+import sys, os
+path, token = sys.argv[1], sys.argv[2]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("TELEGRAM_BOT_TOKEN=")]
+lines.append(f"TELEGRAM_BOT_TOKEN={token}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+write_agent_telegram_doc() {
+  local config_dir="$1"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/TELEGRAM.md" <<'EOF'
+# Telegram (official OpenClaw channel)
+
+Bidirectional chat via the built-in Telegram channel plugin.
+
+## Setup (one-time)
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the bot token.
+2. On the host: `./identyclaw.sh set-telegram-token <agent-id>`
+3. Restart the gateway: `./identyclaw.sh restart <agent-id>`
+4. DM the bot — approve pairing if `dmPolicy` requires it (default: pairing).
+
+## Config
+
+- Token: `secrets/TELEGRAM_BOT_TOKEN` → synced to `.env` as `TELEGRAM_BOT_TOKEN`
+- Channel config: `openclaw.json` → `channels.telegram`
+
+For publishing to a Telegram **channel** (not chat), prefer SocialClaw — see `PUBLISHING.md`.
+EOF
+  chmod 644 "$config_dir/workspace/TELEGRAM.md"
+}
+
+ensure_telegram_channel_stub() {
+  local config_dir="$1"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+changed = False
+if plugins.get("telegram", {}).get("enabled") is not True:
+    plugins["telegram"] = {"enabled": True}
+    changed = True
+telegram = data.setdefault("channels", {}).setdefault("telegram", {})
+if "dmPolicy" not in telegram:
+    telegram["dmPolicy"] = "pairing"
+    changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+  write_agent_telegram_doc "$config_dir"
+}
+
+ensure_telegram_ready() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  local token_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" "$token_file" "$id" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, token_file, agent_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+data = json.loads(path.read_text(encoding="utf-8"))
+telegram = data.get("channels", {}).get("telegram")
+if not isinstance(telegram, dict):
+    raise SystemExit(0)
+
+has_token = token_file.is_file() and token_file.read_text(encoding="utf-8").strip()
+enabled = telegram.get("enabled", False)
+changed = False
+
+if enabled and not has_token:
+    telegram["enabled"] = False
+    changed = True
+    print(f"WARNING: {agent_id}: Telegram enabled but no token — disabled until ./identyclaw.sh set-telegram-token {agent_id}", file=sys.stderr)
+elif not enabled and has_token:
+    telegram["enabled"] = True
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+ensure_telegram_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local token=""
+  load_env
+  is_valid_agent_id "$id" && token="$(agent_env_value "$id" TELEGRAM_BOT_TOKEN "")"
+  if [[ -n "$token" ]] && [[ ! -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    write_telegram_token "$config_dir" "$token"
+    echo "    (${id}: Telegram bot token synced from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    sync_telegram_env "$config_dir"
+    write_agent_telegram_doc "$config_dir"
+  fi
 }
 
 ensure_internal_gateway_port() {
@@ -6742,6 +7084,9 @@ write_openclaw_json() {
         "enabled": true
       },
       "discord": {
+        "enabled": true
+      },
+      "telegram": {
         "enabled": true
       },
       "openrouter": {

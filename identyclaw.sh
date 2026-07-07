@@ -9,6 +9,8 @@
 #   init                 Create agent dirs from AGENT_IDS in env.local
 #   set-password <id>    Set Migadu mailbox password (agent-{slug})
 #   set-discord-token <id>  Store Discord bot token in secrets/
+#   set-telegram-token <id> Store Telegram bot token in secrets/
+#   set-socialclaw-key <id> Store SocialClaw workspace API key in secrets/
 #   set-instagram <id>      Store Instagram username/password in secrets/
 #   set-twitter <id>        Store X/Twitter login + enable hourly DM polling
 #   set-twitter-cookies <id>  Store X session cookies for bird-twitter skill
@@ -106,6 +108,8 @@ init_one_agent() {
   write_himalaya_send_script "$email" "$display_name" "$dir"
   write_agent_email_doc "$email" "$display_name" "$dir"
   write_openclaw_json "$dir" "$gateway_port"
+  ensure_telegram_channel_stub "$dir"
+  write_agent_publishing_doc "$dir"
   ensure_agent_env "$dir"
 
   if [[ -n "$password" ]]; then
@@ -169,6 +173,36 @@ cmd_set_discord_token() {
   echo
   write_discord_token "$dir" "$token"
   echo "Discord token stored in ${dir}/secrets/DISCORD_BOT_TOKEN (mode 600)"
+  echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_set_telegram_token() {
+  local id="${1:?Usage: $0 set-telegram-token agent-b}"
+  require_agent_id_arg "$id" "$0 set-telegram-token <agent-id>"
+  local dir
+  dir="$(agent_home "$id")"
+  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  local token
+  read -r -s -p "Telegram bot token for ${id}: " token
+  echo
+  write_telegram_token "$dir" "$token"
+  echo "Telegram token stored in ${dir}/secrets/TELEGRAM_BOT_TOKEN (mode 600)"
+  echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_set_socialclaw_key() {
+  local id="${1:?Usage: $0 set-socialclaw-key agent-b}"
+  require_agent_id_arg "$id" "$0 set-socialclaw-key <agent-id>"
+  local dir
+  dir="$(agent_home "$id")"
+  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  local api_key
+  read -r -s -p "SocialClaw workspace API key for ${id}: " api_key
+  echo
+  [[ -n "$api_key" ]] || { echo "empty API key" >&2; exit 1; }
+  write_socialclaw_api_key "$dir" "$api_key"
+  ensure_socialclaw_skill "$id" "$dir"
+  echo "SocialClaw API key stored in ${dir}/secrets/SOCIALCLAW_API_KEY (mode 600)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
@@ -1187,6 +1221,8 @@ main() {
     init) cmd_init "$@" ;;
     set-password) cmd_set_password "$@" ;;
     set-discord-token) cmd_set_discord_token "$@" ;;
+    set-telegram-token) cmd_set_telegram_token "$@" ;;
+    set-socialclaw-key) cmd_set_socialclaw_key "$@" ;;
     set-instagram) cmd_set_instagram "$@" ;;
     set-twitter) cmd_set_twitter "$@" ;;
     set-twitter-cookies) cmd_set_twitter_cookies "$@" ;;
