@@ -78,13 +78,14 @@ Host **npm** is not required for the standard path: ClawHub plugin installs run 
 
 **Credentials & config**
 
-| Item | Purpose |
-|------|---------|
-| **OpenRouter** or **OpenCode** API key | LLM (`set-api-key`) |
-| **IdentyClaw Passport** JSON | NEAR credentials under `agents/<id>/secrets/near-credentials/` |
-| **NEAR RPC URL** | `IDENTYCLAW_NEAR_RPC_URL` in `env.local` |
-| **Public hostname** | DNS, or `/etc/hosts` / `USE_LOCAL_RESOLVE=1` for local testing |
-| **TLS** | Self-signed (`generate-certs`) or CA PEMs in `certs/` |
+| Item | When needed | Purpose |
+|------|-------------|---------|
+| **OpenRouter** or **OpenCode** API key | Before deploy | LLM (`set-api-key`) |
+| **NEAR RPC URL** | Before deploy | `IDENTYCLAW_NEAR_RPC_URL` in `env.local` |
+| **Public hostname** | Before TLS / Passport metadata | DNS, `AGENT_*_PUBLIC_HOST`, or Passport `webhook_url` |
+| **TLS** | Before deploy | Self-signed (`generate-certs`) or CA PEMs in `certs/` |
+| **NEAR implicit account** | After first deploy | `./identyclaw.sh generate-near-account <id>` (Node in container; host npm not required) |
+| **IdentyClaw Passport** JSON | After purchase | NEAR credentials under `agents/<id>/secrets/near-credentials/` |
 
 Optional: Migadu (or compatible) mailbox for Himalaya email / HOLA mail probes.
 
@@ -97,7 +98,7 @@ Optional: Migadu (or compatible) mailbox for Himalaya email / HOLA mail probes.
 | Phase | Command | What gets obtained |
 |-------|---------|-------------------|
 | **Build images** | `./identyclaw.sh build-image` or `deploy-local-podman.sh` (first step) | Pulls `OPENCLAW_BASE_IMAGE` from GHCR; builds `openclaw-himalaya:local` (Himalaya binary from GitHub releases, Chromium in image, Discord plugin seeded via `openclaw plugins install` in the Containerfile); builds `identyclaw-nginx` image |
-| **Deploy** | `./scripts/deploy-local-podman.sh` → `deploy-pod.sh` | **ClawHub plugins** into `agents/<id>/extensions/` via ephemeral `podman run` + `openclaw plugins install` (A2A, identyclaw-tools, webhooks — versions pinned in `env.local`); **identyclaw skill** via `openclaw skills install`; starts pod + nginx; renders nginx config; ensures TLS PEMs |
+| **Deploy** | `./scripts/deploy-local-podman.sh` → `deploy-pod.sh` | **ClawHub plugins** into `agents/<id>/extensions/` via ephemeral `podman run` + `openclaw plugins install` (A2A, identyclaw-tools, webhooks — versions pinned in `env.local`); **identyclaw skill** via `openclaw skills install`; starts pod + nginx; renders nginx config; ensures TLS PEMs. Then `./identyclaw.sh generate-near-account <id>` |
 | **Bootstrap** | Runs during deploy (`ensure_agent_bootstrap`) and on `start`/`restart` | Host **Node** probes Passport (`RoditClient`, identity API); syncs `.env` and `openclaw.json` plugin config; installs/refreshes plugins if NEAR creds present and versions drift |
 | **Runtime** | Container start | Entrypoint seeds bundled Discord plugin from image into the bind-mounted home if versions drift |
 
@@ -153,19 +154,105 @@ Placeholder values use a consistent `not-set` pattern until you replace them:
 | `GETBLOCK-API-KEY-NOT-SET` | Your NEAR RPC provider API key |
 | `agent-domain-not-set.example.com` | Your public DNS hostname |
 | `<implicit-account-id-not-set>` | 64-char NEAR implicit account from Passport enrollment |
-| `sk-or-OPENROUTER-API-KEY-NOT-SET` | OpenRouter key (via `set-api-key`, not in `env.local`) |
+| `sk-OPENROUTER-API-KEY-NOT-SET` | OpenRouter key (via `set-api-key`, not in `env.local`) |
 
-### 3. Add IdentyClaw Passport credentials
+### 3. LLM API key
 
-Copy your Passport JSON (NEAR account + private key) to:
+```bash
+./identyclaw.sh set-api-key agent-name-not-set
+# Or OpenCode: ./identyclaw.sh set-opencode-key agent-name-not-set
+```
+
+### 4. Build images
+
+```bash
+./identyclaw.sh build-image
+```
+
+Builds `openclaw-himalaya:local` (OpenClaw + Himalaya). Does **not** create the app directory — you should have run `init` already.
+
+### 5. TLS for nginx
+
+If you do not have Passport credentials yet, set a public hostname override first (used for cert SANs):
+
+```bash
+# In env.local (until Passport metadata.webhook_url is available):
+# AGENT_NAME_NOT_SET_PUBLIC_HOST=agent-domain-not-set.example.com
+```
+
+Then:
+
+```bash
+./identyclaw.sh generate-certs
+```
+
+Uses SANs from Passport-derived hostnames (or `AGENT_*_PUBLIC_HOST` if set). Or place CA-issued `fullchain.pem` + `privkey.pem` in `../identyclaw-agents-app/certs/`.
+
+### 6. Deploy
+
+**Production layout (recommended)** — Podman pod + nginx sidecar:
+
+```bash
+./scripts/deploy-local-podman.sh
+```
+
+Before DNS points at the host:
+
+```bash
+USE_LOCAL_RESOLVE=1 ./scripts/deploy-local-podman.sh
+```
+
+**Loopback-only (development)** — no nginx pod:
+
+```bash
+# In env.local: IDENTYCLAW_DEPLOY_MODE=standalone
+./identyclaw.sh start all
+```
+
+Deploy **installs ClawHub plugins and the identyclaw skill** into `agents/<id>/extensions/` (IdentyClaw tools, A2A, webhooks — versions pinned in `env.local`), renders nginx config, and starts the gateway.
+
+After deploy, use the operator CLI copied to the app dir:
+
+```bash
+../identyclaw-agents-app/repo/identyclaw.sh restart all
+../identyclaw-agents-app/repo/identyclaw.sh status
+```
+
+#### Generate NEAR implicit account (openclaw-identyclaw plugin)
+
+After the first deploy, the **openclaw-identyclaw plugin** (`identyclaw-tools`) is installed. Create the NEAR implicit account **before** purchasing a Passport.
+
+**Host npm is not required** — Node runs inside the OpenClaw container:
+
+```bash
+./identyclaw.sh generate-near-account agent-name-not-set
+```
+
+This writes `agents/<id>/secrets/near-credentials/<implicit_account_id>.json` (mode `0600`) and prints the `implicit_account_id` on stdout. Private keys are never printed.
+
+Then:
+
+1. **Purchase** an IdentyClaw Passport at https://purchase.identyclaw.com using that `implicit_account_id` (mint checkout funds the account)
+
+### 7. Add IdentyClaw Passport credentials
+
+After purchase, the NEAR credentials JSON should already be at:
 
 ```text
 ../identyclaw-agents-app/agents/agent-name-not-set/secrets/near-credentials/<implicit-account-id-not-set>.json
 ```
 
+If you generated the account with the plugin (step 6), the file is already there. Otherwise copy your Passport JSON (NEAR account + private key) to that path.
+
 This file is the **root of trust** for RODiT auth. Never commit it.
 
-### 4. Register Passport metadata
+Restart the gateway so bootstrap syncs credentials into `.env` and plugin config:
+
+```bash
+./identyclaw.sh restart agent-name-not-set
+```
+
+### 8. Register Passport metadata
 
 In your IdentyClaw Passport, set:
 
@@ -190,55 +277,11 @@ With NEAR creds present, bootstrap **self-configures** from Passport via `RoditC
 
 Set `IDENTYCLAW_RODIT_SELF_CONFIGURE=0` in `env.local` to disable and use explicit `AGENT_*_PUBLIC_HOST` / `AGENT_*_EMAIL` instead.
 
-### 5. LLM API key
+Re-run `generate-certs` if TLS SANs should match the Passport hostname, then restart:
 
 ```bash
-./identyclaw.sh set-api-key agent-name-not-set
-# Or OpenCode: ./identyclaw.sh set-opencode-key agent-name-not-set
-```
-
-### 6. Build images
-
-```bash
-./identyclaw.sh build-image
-```
-
-Builds `openclaw-himalaya:local` (OpenClaw + Himalaya). Does **not** create the app directory — you should have run `init` already.
-
-### 7. TLS for nginx
-
-```bash
-./identyclaw.sh generate-certs
-```
-
-Uses SANs from Passport-derived hostnames (or `AGENT_*_PUBLIC_HOST` if set). Or place CA-issued `fullchain.pem` + `privkey.pem` in `../identyclaw-agents-app/certs/`.
-
-### 8. Deploy
-
-**Production layout (recommended)** — Podman pod + nginx sidecar:
-
-```bash
-./scripts/deploy-local-podman.sh
-```
-
-Before DNS points at the host:
-
-```bash
-USE_LOCAL_RESOLVE=1 ./scripts/deploy-local-podman.sh
-```
-
-**Loopback-only (development)** — no nginx pod:
-
-```bash
-# In env.local: IDENTYCLAW_DEPLOY_MODE=standalone
-./identyclaw.sh start all
-```
-
-After deploy, use the operator CLI copied to the app dir:
-
-```bash
-../identyclaw-agents-app/repo/identyclaw.sh restart all
-../identyclaw-agents-app/repo/identyclaw.sh status
+./identyclaw.sh generate-certs --force
+./identyclaw.sh restart agent-name-not-set
 ```
 
 ### 9. Validate
@@ -274,13 +317,16 @@ Enables user linger + `podman-restart.service` so containers survive reboot.
 | `AGENT_IDS` | Space-separated agent slugs (default `agent-name-not-set`) |
 | `IDENTYCLAW_NEAR_RPC_URL` | NEAR RPC for RoditClient / on-chain reads |
 
-### Required on disk (not in `env.local`)
+### Required on disk (not in `env.local`) — after deploy + Passport purchase
 
-| Path | Purpose |
-|------|---------|
-| `agents/<id>/secrets/near-credentials/<implicit-account-id-not-set>.json` | IdentyClaw Passport NEAR credentials |
+| Path / step | Purpose |
+|-------------|---------|
+| `agents/<id>/extensions/identyclaw-tools` | openclaw-identyclaw plugin (installed by deploy) |
+| `./identyclaw.sh generate-near-account <id>` | NEAR implicit account JSON (runs in container) |
+| `agents/<id>/secrets/near-credentials/<implicit-account-id-not-set>.json` | NEAR implicit account + private key (from plugin or post-purchase) |
+| https://purchase.identyclaw.com | Mint IdentyClaw Passport to your `implicit_account_id` |
 | Passport `metadata.webhook_url` | Public HTTPS base for ingress + A2A (e.g. `https://agent-domain-not-set.example.com:9443`) |
-| LLM key via `set-api-key` | OpenRouter / OpenCode auth (`sk-or-OPENROUTER-API-KEY-NOT-SET` placeholder until set) |
+| LLM key via `set-api-key` | OpenRouter / OpenCode auth (`sk-…` via `set-api-key` / `set-opencode-key`) |
 
 ### Optional overrides (leave unset for Passport self-config)
 

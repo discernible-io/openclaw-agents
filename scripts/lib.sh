@@ -337,9 +337,9 @@ is_valid_agent_id() {
   [[ "$1" =~ ^agent-[a-z][a-z0-9-]*$ ]]
 }
 
-# True when ref looks like an LLM API key passed where an agent id was expected.
+# True when ref looks like a bearer API key (sk-…) passed where an agent id was expected.
 looks_like_llm_api_key() {
-  [[ "$1" == sk-or-* || "$1" == sk-* ]]
+  [[ "$1" == sk-* && ${#1} -ge 20 ]]
 }
 
 # Exit with a clear message when the first CLI arg is an API key or invalid agent slug.
@@ -349,13 +349,9 @@ require_agent_id_arg() {
   if looks_like_llm_api_key "$id"; then
     echo "First argument looks like an API key, not an agent id: ${id:0:12}…" >&2
     echo "Usage: ${usage}" >&2
-    if [[ "$id" == sk-or-* ]]; then
-      echo "Example: ./identyclaw.sh set-api-key agent-name-not-set ${id:0:20}…" >&2
-    elif [[ "$usage" == *set-opencode-key* ]]; then
-      echo "Example: ./identyclaw.sh set-opencode-key agent-name-not-set ${id:0:20}…" >&2
-    else
-      echo "Example: ./identyclaw.sh set-api-key agent-name-not-set <sk-or-…>" >&2
-      echo "OpenCode keys (sk-…): ./identyclaw.sh set-opencode-key agent-name-not-set <sk-…>" >&2
+    echo "Example: ./identyclaw.sh set-api-key agent-name-not-set <sk-…>" >&2
+    if [[ "$usage" == *set-opencode-key* ]]; then
+      echo "OpenCode: ./identyclaw.sh set-opencode-key agent-name-not-set <sk-…>" >&2
     fi
     exit 1
   fi
@@ -4622,6 +4618,68 @@ identyclaw_tools_ext_ready() {
   [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]
 }
 
+# Create NEAR implicit account JSON via openclaw-identyclaw plugin (Node inside container — no host npm).
+generate_near_account_for_agent() {
+  local id="$1"
+  local force="${2:-0}"
+  local config_dir container cred_dir_host cred_dir_container ext_container z image
+  local -a extra_args=() podman_args=()
+  load_env
+  require_agent_id_arg "$id" "./identyclaw.sh generate-near-account <agent-id> [--force]"
+  config_dir="$(agent_home "$id")"
+  [[ -d "$config_dir" ]] || {
+    echo "Run ./identyclaw.sh init first (missing ${config_dir})" >&2
+    return 1
+  }
+  container="$(agent_container "$id")"
+  cred_dir_host="${config_dir}/secrets/near-credentials"
+  cred_dir_container="/home/node/.openclaw/secrets/near-credentials"
+  ext_container="$(agent_identyclaw_tools_ext_dir_container)"
+
+  if ! identyclaw_tools_ext_ready "$config_dir" "$container"; then
+    echo "identyclaw-tools plugin not installed for ${id}." >&2
+    echo "Run deploy first: ./scripts/deploy-local-podman.sh" >&2
+    echo "Or refresh plugins: ./identyclaw.sh upgrade-plugins ${id}" >&2
+    return 1
+  fi
+
+  mkdir -p "$cred_dir_host"
+  chmod 700 "$cred_dir_host" 2>/dev/null || true
+  [[ "$force" == "1" ]] && extra_args+=(--force)
+
+  local run_generate
+  run_generate() {
+    podman "$@" bash -c '
+      set -euo pipefail
+      cred_dir=$1
+      ext_dir=$2
+      shift 2
+      mkdir -p "$cred_dir"
+      chmod 700 "$cred_dir"
+      cd "$ext_dir"
+      node ./scripts/generate-near-account.mjs "$cred_dir" "$@"
+    ' _ "$cred_dir_container" "$ext_container" "${extra_args[@]}"
+  }
+
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    link_identyclaw_plugin_deps_in_container "$container"
+    run_generate exec "$container"
+    return $?
+  fi
+
+  if [[ ! -f "${config_dir}/extensions/identyclaw-tools/scripts/generate-near-account.mjs" ]]; then
+    echo "missing ${config_dir}/extensions/identyclaw-tools — run deploy or upgrade-plugins first" >&2
+    return 1
+  fi
+
+  z="$(selinux_mount_suffix)"
+  image="$(openclaw_agent_image)"
+  run_generate run --rm --userns=keep-id \
+    -e HOME=/home/node \
+    -v "${config_dir}:/home/node/.openclaw:rw${z}" \
+    "$image"
+}
+
 install_identyclaw_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
@@ -6510,10 +6568,10 @@ ensure_openclaw_cli_link() {
 
 validate_openrouter_api_key() {
   local key="$1"
-  [[ "$key" == sk-or-* ]] || {
-    echo "OpenRouter API keys start with sk-or- (got something else — check you did not paste a shell command)." >&2
+  if [[ "$key" != sk-* || ${#key} -lt 20 ]]; then
+    echo "OpenRouter API keys start with sk- (got something else — check you did not paste a shell command)." >&2
     return 1
-  }
+  fi
 }
 
 # OpenClaw 2026.6+ reads model auth from openclaw-agent.sqlite; legacy auth-profiles.json alone is ignored.
@@ -6543,7 +6601,7 @@ if (/openrouter:default/.test(out) || /\[openrouter\/api_key\]/.test(out)) {
 const path = "/home/node/.openclaw/agents/main/agent/auth-profiles.json";
 if (!fs.existsSync(path)) process.exit(0);
 const key = JSON.parse(fs.readFileSync(path, "utf8"))?.profiles?.["openrouter:default"]?.key;
-if (!key?.startsWith("sk-or-")) process.exit(0);
+if (!key?.startsWith("sk-")) process.exit(0);
 
 const r = spawnSync(
   "node",
@@ -6644,12 +6702,8 @@ PY
 
 validate_opencode_api_key() {
   local key="$1"
-  if [[ "$key" != sk-* ]]; then
+  if [[ "$key" != sk-* || ${#key} -lt 20 ]]; then
     echo "OpenCode API keys start with sk- (got something else — check you did not paste a shell command)." >&2
-    return 1
-  fi
-  if [[ "$key" == sk-or-* ]]; then
-    echo "That looks like an OpenRouter key (sk-or-...). Use set-api-key for OpenRouter." >&2
     return 1
   fi
 }
@@ -6668,7 +6722,7 @@ if not p.is_file():
     raise SystemExit(0)
 profiles = json.loads(p.read_text(encoding='utf-8')).get('profiles', {})
 k = (profiles.get('opencode:default') or {}).get('key') or (profiles.get('opencode-go:default') or {}).get('key')
-if k and k.startswith('sk-') and not k.startswith('sk-or-'):
+if k and k.startswith('sk-'):
     print(k, end='')
 " 2>/dev/null)" || return 0
   [[ -n "$key" ]] || return 0

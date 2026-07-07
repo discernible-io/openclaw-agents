@@ -28,6 +28,7 @@
 #   respond-mail [id|all]  Poll INBOX, verify inbound HOLA, reply (cron entry point)
 #   enable-mail-responder [interval]  Install user systemd timer for respond-mail
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress
+#   generate-near-account <id> [--force]  NEAR implicit account via identyclaw-tools (in container)
 #   send-rodit-webhook <id> <peer-token-id> [text]  POST signed /hooks/wake to peer
 #   webhook-url <id> [path]  Print public HTTPS webhook URL
 #   set-api-key <id> [key]     Store OpenRouter API key (validated)
@@ -134,12 +135,13 @@ cmd_init() {
   echo ""
   echo "Next:"
   echo "  1. Edit $(identyclaw_env_file) — NEAR RPC URL (and optional env overrides)"
-  echo "  2. Add agents/<id>/secrets/near-credentials/*.json + set Passport metadata.webhook_url"
-  echo "  3. $0 set-api-key ${AGENT_IDS%% *}"
-  echo "  4. $0 build-image"
-  echo "  5. $0 generate-certs   # or install CA PEMs in app/certs/"
-  echo "  6. ./scripts/deploy-local-podman.sh   # or $0 start all for standalone"
-  echo "  7. $0 test"
+  echo "  2. $0 set-api-key ${AGENT_IDS%% *}"
+  echo "  3. $0 build-image"
+  echo "  4. $0 generate-certs   # set AGENT_*_PUBLIC_HOST first if no Passport yet"
+  echo "  5. ./scripts/deploy-local-podman.sh   # installs ClawHub plugins; or $0 start all for standalone"
+  echo "  6. $0 generate-near-account ${AGENT_IDS%% *}   # after deploy (Node runs in container; host npm not required)"
+  echo "  7. Purchase Passport at https://purchase.identyclaw.com — then restart and set metadata.webhook_url"
+  echo "  8. $0 test"
 }
 
 cmd_set_password() {
@@ -553,6 +555,34 @@ EOF
   echo "    Disable: systemctl --user disable --now identyclaw-mail-responder.timer"
 }
 
+cmd_generate_near_account() {
+  local id="${1:?Usage: $0 generate-near-account agent-b [--force]}"
+  local force=0
+  shift || true
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=1 ;;
+      -h|--help)
+        echo "Usage: $0 generate-near-account <agent-id> [--force]"
+        echo "Creates NEAR implicit account JSON under agents/<id>/secrets/near-credentials/."
+        echo "Requires identyclaw-tools plugin (install via deploy or upgrade-plugins)."
+        echo "Host npm is not required — runs Node inside the OpenClaw container/image."
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $arg (try --force)" >&2
+        exit 1
+        ;;
+    esac
+  done
+  require_podman
+  generate_near_account_for_agent "$id" "$force"
+  echo ""
+  echo "Next:"
+  echo "  1. Purchase Passport: https://purchase.identyclaw.com (mint checkout funds the NEAR account)"
+  echo "  2. $0 restart ${id}"
+}
+
 cmd_generate_certs() {
   local force=""
   for arg in "$@"; do
@@ -909,17 +939,17 @@ cmd_ask() {
 }
 
 cmd_set_api_key() {
-  local id="${1:?Usage: $0 set-api-key agent-b [sk-or-...]}"
+  local id="${1:?Usage: $0 set-api-key agent-b [sk-...]}"
   local key="${2:-${OPENROUTER_API_KEY:-}}"
   local dir
-  require_agent_id_arg "$id" "$0 set-api-key <agent-id> [sk-or-...]"
+  require_agent_id_arg "$id" "$0 set-api-key <agent-id> [sk-...]"
   dir="$(agent_home "$id")"
   if ! [[ -d "$dir" ]] && ! agent_container_running "$id"; then
     echo "Run $0 init first (missing ${dir})" >&2
     exit 1
   fi
   if [[ -z "$key" ]]; then
-    read -r -s -p "OpenRouter API key for ${id} (sk-or-...): " key
+    read -r -s -p "OpenRouter API key for ${id} (sk-...): " key
     echo
   fi
   [[ -n "$key" ]] || { echo "empty key" >&2; exit 1; }
@@ -1100,7 +1130,7 @@ cmd_onboard() {
     echo "  - OpenCode auth: choose API key in the wizard, or: $0 set-opencode-key ${id} sk-..."
     echo "  - Or onboard non-interactive: $0 onboard ${id} --auth-choice opencode-zen --opencode-zen-api-key \"\$OPENCODE_API_KEY\""
   else
-    echo "  - OpenRouter auth: choose API key. Key must start with sk-or-"
+    echo "  - OpenRouter auth: choose API key (starts with sk-)"
     echo "  - Or set the key first: $0 set-api-key ${id}"
   fi
   echo "  - Skipping hatch TUI / health checks (identyclaw uses Podman gateways)."
@@ -1170,6 +1200,7 @@ main() {
     respond-mail) cmd_respond_mail "$@" ;;
     enable-mail-responder) cmd_enable_mail_responder "$@" ;;
     generate-certs) cmd_generate_certs "$@" ;;
+    generate-near-account) cmd_generate_near_account "$@" ;;
     test-a2a) cmd_test_a2a "$@" ;;
     test-a2a-auth) cmd_test_a2a_auth "$@" ;;
     test-webhook) cmd_test_webhook "$@" ;;
