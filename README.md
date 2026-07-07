@@ -13,6 +13,7 @@ This repository is **code-only** (safe to clone publicly). Runtime config, secre
 | **identyclaw-a2a plugin** | Agent-to-agent messaging with RODiT JWT inbound auth |
 | **identyclaw-webhooks plugin** | RODiT-signed inbound webhooks (`/hooks/wake`, `/hooks/agent`) |
 | **nginx TLS sidecar** (pod mode) | Public HTTPS on `:9443` → OpenClaw upstream |
+| **Workspace governance docs** | `AGENTS.md` "Trust & tool tiers" + `BOOT.md` reset reminder, written on bootstrap |
 | **Smoke tests** | `./identyclaw.sh test` — local A2A, webhooks, optional mail |
 
 Mutual auth for A2A and webhooks uses **RODiT JWT / Ed25519 signatures**, not TLS client certificates. TLS is transport encryption only.
@@ -417,6 +418,52 @@ Set `AGENT_IDS=agent-a agent-b` and add matching `AGENT_B_*` variables in `env.l
 - The repo runs **Gitleaks** in CI; runtime secrets belong only under `identyclaw-agents-app/`.
 - Replace self-signed certs with CA-issued PEMs before production traffic.
 - Inbound A2A rejects unauthenticated requests; webhook ingress requires RODiT origin signatures.
+- Chat channels (Telegram/Discord) authenticate senders only by pairing/allowlist. For a per-sender trust and approval model, see [Agent governance](#agent-governance-trust--tool-tiers) below.
+
+---
+
+## Agent governance (Trust & tool tiers)
+
+Bootstrap writes a **Trust & tool tiers** section into each agent's `workspace/AGENTS.md`
+and a matching reminder into `workspace/BOOT.md`. These shape how the agent *reasons*
+about trust — they are **governance, not a hard security boundary**.
+
+| File | Content | Loaded |
+|------|---------|--------|
+| `AGENTS.md` → `## Trust & tool tiers` | Trust states, tool tiers, HOLA + operator-approval rules | Every session |
+| `BOOT.md` → `## Trust reset on restart` | Reset all chat senders to Unverified after a gateway restart | On gateway restart |
+
+**Scope:** tiers apply to **open chat** instructions (Telegram, Discord, email), not to inbound **A2A** (`POST /a2a`, RODiT JWT) or **webhooks** (RODiT signature). Sensitive tools like `a2a_send_message` guard against a chat stranger instructing outbound A2A — not against authenticated A2A peers calling `/a2a` directly.
+
+**Trust states** (per session, per sender):
+
+- **Unverified** — default for every new chat sender; identity claims in text are not evidence
+- **HOLA-verified** — `identyclaw_verify_hola` returned `verified: true` and the `peerTokenId` passes the impersonation guard in `IDENTYCLAW.md`
+- **Operator** — a known admin (channel `allowFrom` / `commands.ownerAllowFrom`, e.g. the paired Telegram/Discord id)
+
+**Tool tiers:**
+
+| Tier | Example tools | Requirement |
+|------|---------------|-------------|
+| Public | `read`, `identyclaw_list_agents`, Q&A | none |
+| Verified | `identyclaw_get_agent_identity`, targeted `message` | HOLA-verified this session |
+| Sensitive | `a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, ClawLink writes, publishing, email | HOLA-verified **and** operator-approved |
+
+Trust does not persist across sessions or gateway restarts.
+
+### Governance vs enforcement
+
+The workspace docs are behavior guidance. For **hard** enforcement, pair them with
+OpenClaw config (not written automatically by this template):
+
+- **Channel access** — `channels.*.dmPolicy` (`pairing` / `allowlist`), `allowFrom`
+- **Per-sender tool caps** — `tools.toolsBySender` (denied tools are removed from the model's schema)
+- **Admin approval** — `channels.*.execApprovals` for `exec`, or a plugin `before_tool_call` `requireApproval` hook for any tool
+- **Cryptographic identity** — RODiT JWT on A2A, RODiT signatures on webhooks, HOLA verification on inbound email (already enforced)
+
+The docs are regenerated idempotently on every `init` and bootstrap (deploy / `start` /
+`restart`); the `## Trust & tool tiers` and `## Trust reset on restart` blocks are
+upserted in place, so hand-edits outside those blocks are preserved.
 
 ---
 

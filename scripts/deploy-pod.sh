@@ -134,9 +134,12 @@ start_agent_in_pod() {
     exit 1
   }
   [[ "$env_file" == "${dir}/.env" ]] || tmp_env="$env_file"
-  prepare_agent_state_for_gateway_start "$id" pod
+  # Plugin bootstrap leaves container-namespace ownership; restore host write access
+  # for .env sync, then chown back to the pod uid before podman run.
+  restore_pod_path_for_host "$dir"
   sync_identyclaw_env "$dir" "$container"
   ensure_llm_env_auth "$id"
+  prepare_agent_state_for_gateway_start "$id" pod
 
   podman run -d \
     --pod "$POD_NAME" \
@@ -218,8 +221,15 @@ fi
 for id in $AGENT_IDS; do
   echo "==> Start ${id} in pod"
   start_agent_in_pod "$id"
-  sync_agent_openclaw_json_when_container_running "$id"
-  ensure_discord_plugin_compat_and_restart "$id"
+  # Best-effort post-start steps: the freshly started gateway may still be
+  # initializing, so a transient non-zero here must not abort the deploy before
+  # the nginx sidecar starts. bootstrap re-runs these on the next deploy anyway.
+  ensure_agent_trust_doc "$id" "$(agent_home "$id")" || \
+    echo "    (${id}: ensure_agent_trust_doc deferred — will retry next deploy)" >&2
+  sync_agent_openclaw_json_when_container_running "$id" 0 || \
+    echo "    (${id}: openclaw.json sync deferred — will retry next deploy)" >&2
+  ensure_discord_plugin_compat_and_restart "$id" || \
+    echo "    (${id}: discord plugin compat deferred — will retry next deploy)" >&2
 done
 
 ensure_pod_logs_for_container "$APP_DIR/logs/nginx"

@@ -113,6 +113,7 @@ init_one_agent() {
   ensure_browser_container_config "$dir"
   ensure_telegram_channel_stub "$dir"
   write_agent_publishing_doc "$dir"
+  write_agent_trust_doc "$dir"
   ensure_agent_env "$dir"
 
   if [[ -n "$password" ]]; then
