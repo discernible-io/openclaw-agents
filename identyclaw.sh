@@ -441,6 +441,15 @@ cmd_status() {
       print_agent_ingress_urls "$id"
     done
   fi
+  echo ""
+  echo "IdentyClaw NEAR (plugin + credential files):"
+  for id in $AGENT_IDS; do
+    print_agent_identyclaw_near_summary "$id"
+  done
+  echo ""
+  echo "LLM models (from env.local):"
+  echo "  primary: ${OPENCLAW_MODEL_PRIMARY}"
+  echo "  fallbacks: ${OPENCLAW_MODEL_FALLBACK_1}, ${OPENCLAW_MODEL_FALLBACK_2}"
 }
 
 cmd_logs() {

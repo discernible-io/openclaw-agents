@@ -229,9 +229,9 @@ resolve_openclaw_model_defaults() {
       OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-opencode-go/kimi-k2.6}"
       ;;
     openrouter)
-      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/deepseek/deepseek-v4-flash:free}"
-      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder:free}"
-      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/deepseek/deepseek-v4-flash}"
+      OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/auto}"
+      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/deepseek/deepseek-v4-flash}"
+      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/moonshotai/kimi-k2.5}"
       ;;
     *)
       echo "Unknown OPENCLAW_LLM_PROVIDER: ${provider} (use openrouter or opencode)" >&2
@@ -304,11 +304,12 @@ identyclaw_api_base_url_override() {
 }
 
 identyclaw_api_base_url_for_config_dir() {
-  local config_dir="$1" override probed
+  local config_dir="$1" override probed container
   [[ -n "$config_dir" ]] || return 1
   override="$(identyclaw_api_base_url_override 2>/dev/null || true)"
   [[ -n "$override" ]] && { echo "$override"; return 0; }
-  probed="$(rodit_passport_json_field "$config_dir" "api_base" 2>/dev/null || true)"
+  container="$(agent_container_for_config_dir "$config_dir")"
+  probed="$(rodit_passport_json_field "$config_dir" "api_base" "$container" 2>/dev/null || true)"
   [[ -n "$probed" ]] || return 1
   if [[ "$probed" != http://* && "$probed" != https://* ]]; then
     probed="https://${probed}"
@@ -1353,6 +1354,14 @@ podman_cp_lib_rodit_env() {
   [[ -n "$container" ]] || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-env.mjs" \
     "$container:/tmp/lib-rodit-env.mjs" >/dev/null 2>&1 || return 1
+}
+
+# probe-rodit-passport-urls.mjs also imports lib-peer-identity.mjs.
+podman_cp_passport_probe_libs() {
+  local container="$1"
+  podman_cp_lib_rodit_env "$container" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-identity.mjs" \
+    "$container:/tmp/lib-peer-identity.mjs" >/dev/null 2>&1 || return 1
 }
 
 # Constitution test reporters import ./lib-test-report.mjs beside /tmp/*.mjs runners.
@@ -2469,49 +2478,85 @@ a2a_dynamic_peers_from_jwt_enabled() {
 
 # Passport metadata via RoditClient.getConfigOwnRodit() — webhook_url, api_base, owner_id, host, port,
 # display_name, contact_uri, contact_email (identity /full fallback in probe script).
-probe_rodit_passport_urls_json() {
-  local config_dir="$1"
-  local cred_file ext_dir cache cred_stat probed cached_key cached_json
-  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
-  [[ -n "$cred_file" && -f "$cred_file" ]] || return 1
-  ext_dir="$(agent_a2a_ext_dir "$config_dir")"
-  [[ -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]] || return 1
-
+# api_base is Passport metadata.subjectuniqueidentifier_url (e.g. https://api.identyclaw.com).
+probe_rodit_passport_urls_json_in_container() {
+  local container="$1"
+  local cred ext_dir probed
+  [[ -n "$container" ]] || return 1
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 1
+  cred="$(_agent_near_cred_path_in_container "$container")"
+  [[ -n "$cred" ]] || return 1
+  ext_dir="$(agent_a2a_ext_dir_container)"
+  podman exec "$container" test -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" 2>/dev/null || return 1
+  podman_cp_passport_probe_libs "$container" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/probe-rodit-passport-urls.mjs" \
+    "$container:/tmp/probe-rodit-passport-urls.mjs" >/dev/null 2>&1 || return 1
   load_env
-  sync_quiet_plugin_env "$config_dir" "$(agent_container "${config_dir##*/}")"
-
-  cache="$config_dir/.rodit-passport-urls.json"
-  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
-  if [[ -n "$cred_stat" && -f "$cache" ]]; then
-    read -r cached_key cached_json <"$cache" || true
-    if [[ "$cached_key" == "$cred_stat" && -n "$cached_json" ]]; then
-      echo "$cached_json"
-      return 0
-    fi
-  fi
-
-  command -v node >/dev/null 2>&1 || return 1
   probed="$(
-    NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
-      node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-passport-urls.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
-      || true
+    podman exec -e NODE_TLS_REJECT_UNAUTHORIZED=0 \
+      -e NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+      -e NEAR_RPC_URL="${NEAR_RPC_URL:-}" \
+      "$container" node /tmp/probe-rodit-passport-urls.mjs "$ext_dir" "$cred" 2>/dev/null || true
   )"
   probed="${probed//$'\n'/}"
   probed="${probed//$'\r'/}"
   [[ -n "$probed" && "$probed" == "{"* ]] || return 1
+  echo "$probed"
+}
 
-  if [[ -n "$cred_stat" ]]; then
-    printf '%s %s\n' "$cred_stat" "$probed" >"$cache"
-    chmod 600 "$cache" 2>/dev/null || true
+probe_rodit_passport_urls_json() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local cred_file ext_dir cache cred_stat probed cached_key cached_json
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  cred_file="$(find "$config_dir/secrets/near-credentials" -maxdepth 1 -name '*.json' -type f -readable 2>/dev/null | head -1)"
+  ext_dir="$(agent_a2a_ext_dir "$config_dir")"
+
+  load_env
+  sync_quiet_plugin_env "$config_dir" "$container"
+
+  if [[ -n "$cred_file" && -r "$cred_file" && -f "$ext_dir/node_modules/@rodit/rodit-auth-be/package.json" ]]; then
+    cache="$config_dir/.rodit-passport-urls.json"
+    cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+    if [[ -n "$cred_stat" && -f "$cache" ]]; then
+      read -r cached_key cached_json <"$cache" || true
+      if [[ "$cached_key" == "$cred_stat" && -n "$cached_json" ]]; then
+        echo "$cached_json"
+        return 0
+      fi
+    fi
+
+    if command -v node >/dev/null 2>&1; then
+      probed="$(
+        NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}" \
+        NEAR_RPC_URL="${NEAR_RPC_URL:-}" \
+          node "${IDENTYCLAW_ROOT}/scripts/probe-rodit-passport-urls.mjs" "$ext_dir" "$cred_file" 2>/dev/null \
+          || true
+      )"
+      probed="${probed//$'\n'/}"
+      probed="${probed//$'\r'/}"
+      if [[ -n "$probed" && "$probed" == "{"* ]]; then
+        if [[ -n "$cred_stat" ]]; then
+          printf '%s %s\n' "$cred_stat" "$probed" >"$cache" 2>/dev/null || true
+          chmod 600 "$cache" 2>/dev/null || true
+        fi
+        echo "$probed"
+        return 0
+      fi
+    fi
   fi
+
+  probed="$(probe_rodit_passport_urls_json_in_container "$container" 2>/dev/null || true)"
+  [[ -n "$probed" ]] || return 1
   echo "$probed"
 }
 
 rodit_passport_json_field() {
   local config_dir="$1"
   local field="$2"
+  local container="${3:-}"
   local json value
-  json="$(probe_rodit_passport_urls_json "$config_dir" 2>/dev/null || true)"
+  json="$(probe_rodit_passport_urls_json "$config_dir" "$container" 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
   value="$(RODIT_JSON="$json" RODIT_FIELD="$field" python3 - <<'PY'
 import json, os, sys
@@ -4771,6 +4816,45 @@ print_near_accounts_for_agent() {
   echo "  (none)"
 }
 
+# One-line summary: which NEAR account identyclaw-tools uses and how many credential files exist.
+print_agent_identyclaw_near_summary() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  if ! _agent_container_name_running "$container"; then
+    echo "  ${id}: (container not running)"
+    return 0
+  fi
+  podman exec -i "$container" python3 - "$id" <<'PY'
+import glob, json, sys
+from pathlib import Path
+
+agent_id = sys.argv[1]
+oc = Path("/home/node/.openclaw/openclaw.json")
+cred_dir = "/home/node/.openclaw/secrets/near-credentials"
+files = sorted(glob.glob(f"{cred_dir}/*.json"))
+plugin_cfg = (
+    json.loads(oc.read_text(encoding="utf-8"))
+    .get("plugins", {})
+    .get("entries", {})
+    .get("identyclaw-tools", {})
+    .get("config", {})
+    or {}
+)
+plugin_account = plugin_cfg.get("accountid") or ""
+api_base = plugin_cfg.get("baseUrl") or ""
+file_accounts = [Path(p).stem for p in files]
+print(f"  {agent_id}: plugin account={plugin_account or 'not configured'}")
+if api_base:
+    print(f"    API base (Passport subjectuniqueidentifier_url): {api_base}")
+print(f"    credential files ({len(files)}): {', '.join(file_accounts) if file_accounts else '(none)'}")
+if plugin_account and file_accounts and plugin_account not in file_accounts:
+    print("    warning: plugin accountid does not match any credential file on disk")
+elif len(files) > 1:
+    print("    warning: multiple credential files; remove extras to avoid confusion")
+PY
+}
+
 # Create NEAR implicit account JSON via openclaw-identyclaw plugin (Node inside container — no host npm).
 generate_near_account_for_agent() {
   local id="$1"
@@ -6458,9 +6542,27 @@ if not sessions_path.is_file():
 
 sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
 changed = False
+override_fields = (
+    "modelOverride",
+    "modelOverrideFallbackOriginProvider",
+    "modelOverrideFallbackOriginModel",
+    "fallbackNoticeSelectedModel",
+    "fallbackNoticeActiveModel",
+    "fallbackNoticeReason",
+)
+deprecated_fragments = ("deepseek-v4-flash:free", "qwen/qwen3-coder:free", "qwen3-coder:free")
+
+def is_deprecated(model_s: str) -> bool:
+    return any(frag in model_s for frag in deprecated_fragments)
+
 for entry in sessions.values():
     if not isinstance(entry, dict):
         continue
+    for field in override_fields:
+        val = str(entry.get(field) or "")
+        if field in entry and (not val or is_deprecated(val) or val != primary):
+            entry.pop(field, None)
+            changed = True
     model = entry.get("model")
     if not model:
         continue
@@ -6469,6 +6571,8 @@ for entry in sessions.values():
         model_s == paid_fallback
         or model_s == fb2
         or model_tail(model_s) == paid_fallback
+        or is_deprecated(model_s)
+        or model_s != primary and model_s not in fallbacks
     )
     if "openrouter" not in provider_ids and model_s.startswith("openrouter/"):
         stale = True
