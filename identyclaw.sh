@@ -564,7 +564,7 @@ cmd_generate_near_account() {
       --force) force=1 ;;
       -h|--help)
         echo "Usage: $0 generate-near-account <agent-id> [--force]"
-        echo "Creates NEAR implicit account JSON under agents/<id>/secrets/near-credentials/."
+        echo "Lists existing NEAR accounts, then creates implicit account JSON under agents/<id>/secrets/near-credentials/."
         echo "Requires identyclaw-tools plugin (install via deploy or upgrade-plugins)."
         echo "Host npm is not required — runs Node inside the OpenClaw container/image."
         exit 0

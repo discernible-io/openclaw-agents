@@ -4670,6 +4670,107 @@ identyclaw_tools_ext_ready() {
   [[ -f "$ext_dir/openclaw.plugin.json" && -f "$ext_dir/dist/index.js" ]]
 }
 
+# Print a table of all NEAR credential JSON files for an agent (no private keys).
+_print_near_accounts_table() {
+  local cred_dir="$1"
+  local active_path="${2:-}"
+  local container="${3:-}"
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec -i "$container" python3 - "$cred_dir" "$active_path" <<'PY'
+import json, glob, os, sys
+from pathlib import Path
+
+cred_dir, active_path = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ""
+active_abs = os.path.abspath(active_path) if active_path else ""
+files = sorted(glob.glob(os.path.join(cred_dir, "*.json")))
+
+if not files:
+    print("  (none)")
+    raise SystemExit(0)
+
+def trunc_pk(pk: str) -> str:
+    if not pk:
+        return "—"
+    return (pk[:16] + "...") if len(pk) > 16 else pk
+
+print("┌───┬──────────────────────────────────────────────────────────────────┬──────────────────┬────────┐")
+print("│ # │ Implicit Account ID                                              │ Public Key       │ Active │")
+print("├───┼──────────────────────────────────────────────────────────────────┼──────────────────┼────────┤")
+for i, fpath in enumerate(files, 1):
+    account_id = Path(fpath).stem
+    try:
+        data = json.loads(Path(fpath).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    pk = data.get("public_key") or data.get("publicKey") or ""
+    is_active = "yes" if active_abs and os.path.abspath(fpath) == active_abs else ""
+    print(f"│ {i:<1} │ {account_id:<64} │ {trunc_pk(pk):<16} │ {is_active:<6} │")
+print("└───┴──────────────────────────────────────────────────────────────────┴──────────────────┴────────┘")
+if len(files) > 1:
+    print("Note: identyclaw uses the Active account for Passport/RODiT. Remove extra JSON files to avoid confusion.")
+PY
+    return 0
+  fi
+  python3 - "$cred_dir" "$active_path" <<'PY'
+import json, glob, os, sys
+from pathlib import Path
+
+cred_dir, active_path = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ""
+active_abs = os.path.abspath(active_path) if active_path else ""
+files = sorted(glob.glob(os.path.join(cred_dir, "*.json")))
+
+if not files:
+    print("  (none)")
+    raise SystemExit(0)
+
+def trunc_pk(pk: str) -> str:
+    if not pk:
+        return "—"
+    return (pk[:16] + "...") if len(pk) > 16 else pk
+
+print("┌───┬──────────────────────────────────────────────────────────────────┬──────────────────┬────────┐")
+print("│ # │ Implicit Account ID                                              │ Public Key       │ Active │")
+print("├───┼──────────────────────────────────────────────────────────────────┼──────────────────┼────────┤")
+for i, fpath in enumerate(files, 1):
+    account_id = Path(fpath).stem
+    try:
+        data = json.loads(Path(fpath).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    pk = data.get("public_key") or data.get("publicKey") or ""
+    is_active = "yes" if active_abs and os.path.abspath(fpath) == active_abs else ""
+    print(f"│ {i:<1} │ {account_id:<64} │ {trunc_pk(pk):<16} │ {is_active:<6} │")
+print("└───┴──────────────────────────────────────────────────────────────────┴──────────────────┴────────┘")
+if len(files) > 1:
+    print("Note: identyclaw uses the Active account for Passport/RODiT. Remove extra JSON files to avoid confusion.")
+PY
+}
+
+print_near_accounts_for_agent() {
+  local id="$1"
+  local config_dir container cred_dir_host cred_dir_container active_path
+  config_dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  cred_dir_host="${config_dir}/secrets/near-credentials"
+  cred_dir_container="/home/node/.openclaw/secrets/near-credentials"
+  active_path=""
+
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    active_path="$(_agent_near_cred_path_in_container "$container" 2>/dev/null || true)"
+    echo "Existing NEAR accounts for ${id} (secrets/near-credentials/):"
+    _print_near_accounts_table "$cred_dir_container" "${active_path:-}" "$container"
+    return 0
+  fi
+
+  active_path="$(resolve_near_credentials_file "$config_dir" "$container" 2>/dev/null || true)"
+  echo "Existing NEAR accounts for ${id} (secrets/near-credentials/):"
+  if compgen -G "${cred_dir_host}/*.json" >/dev/null 2>&1; then
+    _print_near_accounts_table "$cred_dir_host" "${active_path:-}" ""
+    return 0
+  fi
+  echo "  (none)"
+}
+
 # Create NEAR implicit account JSON via openclaw-identyclaw plugin (Node inside container — no host npm).
 generate_near_account_for_agent() {
   local id="$1"
@@ -4698,6 +4799,9 @@ generate_near_account_for_agent() {
   mkdir -p "$cred_dir_host"
   chmod 700 "$cred_dir_host" 2>/dev/null || true
   [[ "$force" == "1" ]] && extra_args+=(--force)
+
+  print_near_accounts_for_agent "$id"
+  echo ""
 
   local run_generate
   run_generate() {
