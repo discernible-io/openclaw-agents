@@ -48,13 +48,13 @@ identyclaw-agents-app/
 └── agents/
     └── agent-name-not-set/   # Rename slug in AGENT_IDS + env prefix together
         ├── openclaw.json     # Gateway + plugin config (synced on bootstrap)
-        ├── .env              # Rodit / IdentyClaw env (synced from NEAR creds + Passport)
+        ├── .env              # Gateway token + LLM keys (OPENROUTER_API_KEY / OPENCODE_API_KEY)
         ├── workspace/        # Agent workspace, skills docs
         ├── secrets/
         │   ├── near-credentials/
-        │   │   └── <implicit-account-id-not-set>.json   # IdentyClaw Passport (NEAR key) — required for identity
-        │   ├── imap.pass              # Optional Migadu password (set-password)
-        │   └── openrouter.key         # LLM API key (set-api-key)
+        │   │   └── <implicit-account-id-not-set>.json   # IdentyClaw Passport (NEAR key)
+        │   └── imap.pass              # Optional Migadu password (set-password)
+        ├── agents/main/agent/   # OpenClaw runtime state (no LLM keys here)
         └── extensions/         # ClawHub plugins (built during deploy)
 ```
 
@@ -326,7 +326,7 @@ Enables user linger + `podman-restart.service` so containers survive reboot.
 | `agents/<id>/secrets/near-credentials/<implicit-account-id-not-set>.json` | NEAR implicit account + private key (from plugin or post-purchase) |
 | https://purchase.identyclaw.com | Mint IdentyClaw Passport to your `implicit_account_id` |
 | Passport `metadata.webhook_url` | Public HTTPS base for ingress + A2A (e.g. `https://agent-domain-not-set.example.com:9443`) |
-| LLM key via `set-api-key` | OpenRouter / OpenCode auth (`sk-…` via `set-api-key` / `set-opencode-key`) |
+| LLM key via `set-api-key` | `agents/<id>/.env` (`OPENROUTER_API_KEY`); sqlite holds env ref only (re-synced on deploy/restart) |
 
 ### Optional overrides (leave unset for Passport self-config)
 

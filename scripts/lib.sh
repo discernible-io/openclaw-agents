@@ -397,17 +397,21 @@ a2a_tls_skip_verify_enabled() {
   esac
 }
 
-sync_a2a_tls_env() {
+# Set or replace one key in the agent .env (host path or bind-mounted path in a running container).
+set_agent_env_var() {
   local config_dir="$1"
   local container="${2:-}"
-  local env_file use_container_env key="NODE_TLS_REJECT_UNAUTHORIZED" value="0"
+  local key="$3"
+  local value="$4"
+  local env_file use_container_env
+  [[ -n "$key" && -n "$value" ]] || return 1
   container="$(agent_container_for_config_dir "$config_dir" "$container")"
   read -r use_container_env env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
-  if [[ "$use_container_env" != "1" ]]; then
-    [[ -f "$env_file" ]] || return 0
+  if [[ "$use_container_env" != "1" && ! -f "$env_file" && ! -w "$config_dir" ]] 2>/dev/null; then
+    echo "Cannot write ${key} to ${config_dir}/.env (no write access and ${container} is not running)" >&2
+    return 1
   fi
-  if a2a_tls_skip_verify_enabled; then
-    _agent_env_python "$config_dir" "$container" "$use_container_env" "$env_file" "$key" "$value" <<'PY'
+  _agent_env_python "$config_dir" "$container" "$use_container_env" "$env_file" "$key" "$value" <<'PY'
 import os, sys
 from pathlib import Path
 
@@ -417,13 +421,49 @@ lines = []
 if env_file.is_file():
     with open(env_file, encoding="utf-8") as f:
         lines = [ln for ln in f if not ln.startswith(prefix)]
-lines.append(f"{key}={value}\n")
+lines.append(f"{prefix}{value}\n")
 env_file.parent.mkdir(parents=True, exist_ok=True)
 with open(env_file, "w", encoding="utf-8") as f:
     f.writelines(lines)
 os.chmod(env_file, 0o600)
 PY
+}
+
+# Path for podman --env-file when the host cannot read the bind-mounted agent .env.
+agent_env_file_for_podman_run() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local env_file tmp
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  env_file="${config_dir}/.env"
+  if [[ -r "$env_file" ]]; then
+    echo "$env_file"
+    return 0
+  fi
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container" \
+    && podman exec "$container" test -f /home/node/.openclaw/.env 2>/dev/null; then
+    tmp="$(mktemp)"
+    podman exec "$container" cat /home/node/.openclaw/.env >"$tmp"
+    chmod 600 "$tmp"
+    echo "$tmp"
+    return 0
+  fi
+  return 1
+}
+
+sync_a2a_tls_env() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local key="NODE_TLS_REJECT_UNAUTHORIZED" value="0"
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  if a2a_tls_skip_verify_enabled; then
+    set_agent_env_var "$config_dir" "$container" "$key" "$value"
   else
+    local env_file use_container_env
+    read -r use_container_env env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
+    if [[ "$use_container_env" != "1" && ! -f "$env_file" ]]; then
+      return 0
+    fi
     _agent_env_python "$config_dir" "$container" "$use_container_env" "$env_file" "$key" <<'PY'
 import os, sys
 from pathlib import Path
@@ -3261,7 +3301,7 @@ wait_for_running_agent_container() {
 # Recreate a pod agent container so --env-file picks up .env changes (podman restart does not).
 recreate_pod_agent_container() {
   local id="$1"
-  local dir container gw_port image pod_name z tls_env=()
+  local dir container gw_port image pod_name z tls_env=() env_file tmp_env=""
   load_env
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
@@ -3271,7 +3311,11 @@ recreate_pod_agent_container() {
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
-  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
+  env_file="$(agent_env_file_for_podman_run "$dir" "$container")" || {
+    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
+    return 1
+  }
+  [[ "$env_file" == "${dir}/.env" ]] || tmp_env="$env_file"
 
   image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
   [[ -n "$image" ]] || image="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
@@ -3279,6 +3323,7 @@ recreate_pod_agent_container() {
   # Host must own agent state so .env sync writes container paths before --env-file is read.
   prepare_agent_state_for_gateway_start "$id" pod
   sync_identyclaw_env "$dir" ""
+  ensure_llm_env_auth "$id"
 
   podman rm -f "$container" 2>/dev/null || true
 
@@ -3292,12 +3337,13 @@ recreate_pod_agent_container() {
     -e HOME=/home/node \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
-    --env-file "$dir/.env" \
+    --env-file "$env_file" \
     -v "$dir:/home/node/.openclaw:rw${z}" \
     -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \
     -v "$dir/.config:/home/node/.config:ro${z}" \
     "$image" \
     node dist/index.js gateway --bind lan --port "$gw_port"
+  [[ -n "$tmp_env" ]] && rm -f "$tmp_env"
 }
 
 start_pod_agent() {
@@ -4514,7 +4560,12 @@ recreate_pod_agent_gateway() {
   prepare_agent_state_for_gateway_start "$id" pod
   podman rm -f "$container" 2>/dev/null || true
   restore_pod_path_for_host "$dir"
-  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
+  local env_file tmp_env=""
+  env_file="$(agent_env_file_for_podman_run "$dir" "$container")" || {
+    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
+    return 1
+  }
+  [[ "$env_file" == "${dir}/.env" ]] || tmp_env="$env_file"
   podman run -d \
     --pod "$pod_name" \
     --name "$container" \
@@ -4525,12 +4576,13 @@ recreate_pod_agent_gateway() {
     -e HOME=/home/node \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
-    --env-file "$dir/.env" \
+    --env-file "$env_file" \
     -v "$dir:/home/node/.openclaw:rw${z}" \
     -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \
     -v "$dir/.config:/home/node/.config:ro${z}" \
     "$image" \
     node dist/index.js gateway --bind lan --port "$gw_port"
+  [[ -n "$tmp_env" ]] && rm -f "$tmp_env"
   ensure_pod_agent_state_for_container "$id"
 }
 
@@ -6065,9 +6117,7 @@ ensure_agent_bootstrap() {
   fi
   ensure_a2a_config "$id" "$config_dir" "$container"
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
-  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
-    ensure_llm_sqlite_auth "$id"
-  fi
+  ensure_llm_sqlite_auth "$id"
   write_agent_browser_doc "$config_dir"
   sync_quiet_plugin_env "$config_dir" "$container"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
@@ -6546,19 +6596,20 @@ EOF
 
 ensure_agent_env() {
   local config_dir="$1"
-  local env_file="$config_dir/.env"
-  if [[ -f "$env_file" ]] && grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$env_file" 2>/dev/null; then
+  local container="${2:-}"
+  local env_file token
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  read -r _ env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
+  if [[ -r "$env_file" ]] && grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$env_file" 2>/dev/null; then
     return 0
   fi
-  local token
-  token="$(generate_token)"
-  mkdir -p "$config_dir"
-  if [[ -f "$env_file" ]]; then
-    grep -v '^OPENCLAW_GATEWAY_TOKEN=' "$env_file" >"$env_file.tmp" || true
-    mv "$env_file.tmp" "$env_file"
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    if podman exec "$container" grep -q '^OPENCLAW_GATEWAY_TOKEN=' /home/node/.openclaw/.env 2>/dev/null; then
+      return 0
+    fi
   fi
-  printf 'OPENCLAW_GATEWAY_TOKEN=%s\n' "$token" >>"$env_file"
-  chmod 600 "$env_file"
+  token="$(generate_token)"
+  set_agent_env_var "$config_dir" "$container" OPENCLAW_GATEWAY_TOKEN "$token"
 }
 
 ensure_openclaw_cli_link() {
@@ -6569,135 +6620,421 @@ ensure_openclaw_cli_link() {
 validate_openrouter_api_key() {
   local key="$1"
   if [[ "$key" != sk-* || ${#key} -lt 20 ]]; then
-    echo "OpenRouter API keys start with sk- (got something else — check you did not paste a shell command)." >&2
+    echo "OpenRouter API keys start with sk- or sk-or-v1- (got something else — check you did not paste a shell command)." >&2
     return 1
   fi
 }
 
-# OpenClaw 2026.6+ reads model auth from openclaw-agent.sqlite; legacy auth-profiles.json alone is ignored.
-ensure_openrouter_sqlite_auth() {
-  local id="$1" rc=0
+# LLM API keys: agents/<id>/.env is the podman --env-file source; auth-profiles.json is OpenClaw's
+# original credential file; sqlite holds env keyRef profiles for gateway resolution at runtime.
+
+agent_llm_auth_sqlite_path() {
+  echo "$1/agents/main/agent/openclaw-agent.sqlite"
+}
+
+agent_llm_auth_legacy_json_path() {
+  echo "$1/agents/main/agent/auth-profiles.json"
+}
+
+llm_env_var_for_provider() {
+  case "$1" in
+    openrouter) echo OPENROUTER_API_KEY ;;
+    opencode|opencode-go) echo OPENCODE_API_KEY ;;
+    *) return 1 ;;
+  esac
+}
+
+llm_profile_id_for_provider() {
+  case "$1" in
+    openrouter) echo openrouter:default ;;
+    opencode) echo opencode:default ;;
+    opencode-go) echo opencode-go:default ;;
+    *) return 1 ;;
+  esac
+}
+
+_llm_auth_container_for_agent() {
+  local id="$1"
   local container
   container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
-
-  podman exec "$container" node <<'NODE' 2>/dev/null || rc=$?
-const { spawnSync } = require("child_process");
-const fs = require("fs");
-
-function authList() {
-  return spawnSync("node", ["/app/openclaw.mjs", "models", "auth", "list", "--agent", "main"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-const listed = authList();
-const out = listed.stdout || "";
-if (/openrouter:default/.test(out) || /\[openrouter\/api_key\]/.test(out)) {
-  process.exit(0);
-}
-
-const path = "/home/node/.openclaw/agents/main/agent/auth-profiles.json";
-if (!fs.existsSync(path)) process.exit(0);
-const key = JSON.parse(fs.readFileSync(path, "utf8"))?.profiles?.["openrouter:default"]?.key;
-if (!key?.startsWith("sk-")) process.exit(0);
-
-const r = spawnSync(
-  "node",
-  [
-    "/app/openclaw.mjs",
-    "models",
-    "auth",
-    "paste-api-key",
-    "--provider",
-    "openrouter",
-    "--profile-id",
-    "openrouter:default",
-  ],
-  { input: key, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
-);
-if (r.status !== 0) process.exit(r.status ?? 1);
-NODE
-  if [[ $rc -ne 0 ]]; then
-    echo "    (${id}: OpenRouter sqlite auth sync failed — paste key: openclaw models auth paste-api-key --provider openrouter)" >&2
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    echo "$container"
   fi
+}
+
+# Read one key from the agent .env (host bind mount or in-container path).
+read_agent_env_var() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local key="$3"
+  local env_file use_container_env
+  [[ -n "$key" ]] || return 1
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  read -r use_container_env env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
+  if [[ "$use_container_env" != "1" && -r "$env_file" ]]; then
+    grep -m1 "^${key}=" "$env_file" 2>/dev/null | cut -d= -f2- || true
+    return 0
+  fi
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec "$container" grep -m1 "^${key}=" /home/node/.openclaw/.env 2>/dev/null | cut -d= -f2- || true
+  fi
+}
+
+ensure_openclaw_llm_auth_profile_config() {
+  local config_dir="$1"
+  local container="$2"
+  local provider="$3"
+  local profile_id="$4"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" "$provider" "$profile_id" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, provider, profile_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+data = json.loads(path.read_text(encoding="utf-8"))
+auth = data.setdefault("auth", {})
+profiles = auth.setdefault("profiles", {})
+profiles[profile_id] = {"provider": provider, "mode": "api_key"}
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+}
+
+_llm_sqlite_python() {
+  local config_dir="$1"
+  local container="$2"
+  shift 2
+  local sqlite_host sqlite_container
+  sqlite_host="$(agent_llm_auth_sqlite_path "$config_dir")"
+  sqlite_container="/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite"
+  mkdir -p "$(dirname "$sqlite_host")" 2>/dev/null || true
+  if [[ -r "$sqlite_host" ]] || [[ -w "$(dirname "$sqlite_host")" ]] 2>/dev/null; then
+    python3 - "$sqlite_host" "$@" || return 1
+    return 0
+  fi
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec "$container" mkdir -p /home/node/.openclaw/agents/main/agent 2>/dev/null || true
+    podman exec -i "$container" python3 - "$sqlite_container" "$@" || return 1
+    return 0
+  fi
+  python3 - "$sqlite_host" "$@" 2>/dev/null || true
+}
+
+# OpenClaw resolves keyRef → process.env[OPENROUTER_API_KEY] at gateway runtime.
+_write_llm_sqlite_env_ref_profile() {
+  local config_dir="$1"
+  local container="$2"
+  local provider="$3"
+  local profile_id="$4"
+  local env_var="$5"
+  _llm_sqlite_python "$config_dir" "$container" "$profile_id" "$provider" "$env_var" <<'PY'
+import json, sqlite3, sys, time
+from pathlib import Path
+
+path, profile_id, provider, env_var = sys.argv[1:5]
+Path(path).parent.mkdir(parents=True, exist_ok=True)
+profile = {
+    "type": "api_key",
+    "provider": provider,
+    "keyRef": {"source": "env", "provider": "default", "id": env_var},
+}
+conn = sqlite3.connect(path)
+conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS auth_profile_store (
+      store_key TEXT PRIMARY KEY,
+      store_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+    """
+)
+row = conn.execute(
+    "SELECT store_json FROM auth_profile_store WHERE store_key = ?",
+    ("primary",),
+).fetchone()
+if row:
+    data = json.loads(row[0])
+else:
+    data = {"version": 1, "profiles": {}}
+profiles = data.setdefault("profiles", {})
+profiles[profile_id] = profile
+data["version"] = 1
+payload = json.dumps(data)
+now = int(time.time() * 1000)
+conn.execute(
+    """
+    INSERT INTO auth_profile_store (store_key, store_json, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(store_key) DO UPDATE SET store_json = excluded.store_json, updated_at = excluded.updated_at
+    """,
+    ("primary", payload, now),
+)
+conn.commit()
+PY
+}
+
+_read_llm_keys_from_sqlite() {
+  local config_dir="$1"
+  local container="$2"
+  _llm_sqlite_python "$config_dir" "$container" <<'PY'
+import json, sqlite3, sys
+
+path = sys.argv[1]
+conn = sqlite3.connect(path)
+row = conn.execute(
+    "SELECT store_json FROM auth_profile_store WHERE store_key = ?",
+    ("primary",),
+).fetchone()
+if not row:
+    raise SystemExit(0)
+data = json.loads(row[0])
+for profile_id, prof in (data.get("profiles") or {}).items():
+    key = (prof or {}).get("key") or ""
+    provider = (prof or {}).get("provider") or profile_id.split(":", 1)[0]
+    if key.startswith("sk-"):
+        print(f"{provider}|{profile_id}|{key}")
+PY
+}
+
+# Mirror keys from agents/<id>/.env into auth-profiles.json (OpenClaw paste-api-key format).
+_sync_auth_profiles_from_env() {
+  local config_dir="$1"
+  local container="$2"
+  local use_container env_file json_path container_json
+  read -r use_container env_file <<<"$(agent_env_write_context "$config_dir" "$container" | tr '\t' ' ')"
+  json_path="$(agent_llm_auth_legacy_json_path "$config_dir")"
+  container_json="/home/node/.openclaw/agents/main/agent/auth-profiles.json"
+  mkdir -p "$(dirname "$json_path")" 2>/dev/null || true
+  if [[ "$use_container" == "1" && -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec "$container" mkdir -p /home/node/.openclaw/agents/main/agent 2>/dev/null || true
+    podman exec -i "$container" python3 - "$container_json" "$env_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, env_file = sys.argv[1:3]
+env_path = Path(env_file)
+env = {}
+if env_path.exists():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env[key] = value
+
+providers = [
+    ("openrouter", "openrouter:default", "OPENROUTER_API_KEY"),
+    ("opencode", "opencode:default", "OPENCODE_API_KEY"),
+    ("opencode-go", "opencode-go:default", "OPENCODE_API_KEY"),
+]
+profiles = {}
+for provider, profile_id, env_var in providers:
+    key = env.get(env_var, "")
+    if key.startswith("sk-"):
+        profiles[profile_id] = {"type": "api_key", "provider": provider, "key": key}
+
+if not profiles:
+    raise SystemExit(0)
+
+out = Path(path)
+if out.exists():
+    data = json.loads(out.read_text(encoding="utf-8"))
+else:
+    data = {"version": 1, "profiles": {}}
+store = data.setdefault("profiles", {})
+for profile_id, profile in profiles.items():
+    store[profile_id] = profile
+data["version"] = 1
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+out.chmod(0o600)
+PY
+    return $?
+  fi
+  python3 - "$json_path" "$env_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, env_file = sys.argv[1:3]
+env_path = Path(env_file)
+env = {}
+if env_path.exists():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env[key] = value
+
+providers = [
+    ("openrouter", "openrouter:default", "OPENROUTER_API_KEY"),
+    ("opencode", "opencode:default", "OPENCODE_API_KEY"),
+    ("opencode-go", "opencode-go:default", "OPENCODE_API_KEY"),
+]
+profiles = {}
+for provider, profile_id, env_var in providers:
+    key = env.get(env_var, "")
+    if key.startswith("sk-"):
+        profiles[profile_id] = {"type": "api_key", "provider": provider, "key": key}
+
+if not profiles:
+    raise SystemExit(0)
+
+out = Path(path)
+if out.exists():
+    data = json.loads(out.read_text(encoding="utf-8"))
+else:
+    data = {"version": 1, "profiles": {}}
+store = data.setdefault("profiles", {})
+for profile_id, profile in profiles.items():
+    store[profile_id] = profile
+data["version"] = 1
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+out.chmod(0o600)
+PY
+}
+
+_legacy_auth_profiles_json_readable() {
+  local config_dir="$1"
+  local container="$2"
+  local legacy container_legacy="/home/node/.openclaw/agents/main/agent/auth-profiles.json"
+  legacy="$(agent_llm_auth_legacy_json_path "$config_dir")"
+  [[ -r "$legacy" ]] && return 0
+  [[ -n "$container" ]] && podman exec "$container" test -f "$container_legacy" 2>/dev/null
+}
+
+_read_legacy_auth_profile_entries() {
+  local config_dir="$1"
+  local container="$2"
+  local legacy="${3:-$(agent_llm_auth_legacy_json_path "$config_dir")}"
+  local container_legacy="/home/node/.openclaw/agents/main/agent/auth-profiles.json"
+  local py='import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+for profile_id, prof in (data.get("profiles") or {}).items():
+    key = (prof or {}).get("key") or ""
+    provider = (prof or {}).get("provider") or profile_id.split(":", 1)[0]
+    if key.startswith("sk-"):
+        print(f"{provider}|{profile_id}|{key}")'
+
+  if [[ -r "$legacy" ]]; then
+    python3 - "$legacy" <<PY
+$py
+PY
+    return 0
+  fi
+  if [[ -n "$container" ]] && podman exec "$container" test -f "$container_legacy" 2>/dev/null; then
+    podman exec "$container" python3 - "$container_legacy" <<PY
+$py
+PY
+  fi
+}
+
+_store_llm_key_in_env() {
+  local config_dir="$1"
+  local container="$2"
+  local provider="$3"
+  local key="$4"
+  local env_var
+  env_var="$(llm_env_var_for_provider "$provider")" || return 1
+  set_agent_env_var "$config_dir" "$container" "$env_var" "$key"
+}
+
+_ensure_llm_provider_env_ref_profile() {
+  local config_dir="$1"
+  local container="$2"
+  local provider="$3"
+  local env_var profile_id key
+  env_var="$(llm_env_var_for_provider "$provider")" || return 0
+  profile_id="$(llm_profile_id_for_provider "$provider")" || return 0
+  key="$(read_agent_env_var "$config_dir" "$container" "$env_var")"
+  [[ -n "$key" && "$key" == sk-* ]] || return 0
+  ensure_openclaw_llm_auth_profile_config "$config_dir" "$container" "$provider" "$profile_id" || return 1
+  _write_llm_sqlite_env_ref_profile "$config_dir" "$container" "$provider" "$profile_id" "$env_var"
+}
+
+ensure_llm_env_ref_profiles() {
+  local config_dir="$1"
+  local container="$2"
+  _ensure_llm_provider_env_ref_profile "$config_dir" "$container" openrouter || return 1
+  if read_agent_env_var "$config_dir" "$container" OPENCODE_API_KEY | grep -q '^sk-'; then
+    _ensure_llm_provider_env_ref_profile "$config_dir" "$container" opencode || return 1
+    _ensure_llm_provider_env_ref_profile "$config_dir" "$container" opencode-go || return 1
+  fi
+  return 0
+}
+
+_migrate_legacy_llm_auth_to_env() {
+  local config_dir="$1"
+  local container="$2"
+  local legacy="${3:-$(agent_llm_auth_legacy_json_path "$config_dir")}"
+  local rc=0 provider profile_id key env_var
+  declare -A migrated=()
+
+  while IFS='|' read -r provider profile_id key; do
+    [[ -n "$provider" && -n "$key" ]] || continue
+    env_var="$(llm_env_var_for_provider "$provider")" || continue
+    [[ -n "${migrated[$env_var]:-}" ]] && continue
+    _store_llm_key_in_env "$config_dir" "$container" "$provider" "$key" || rc=1
+    migrated[$env_var]=1
+  done < <(_read_legacy_auth_profile_entries "$config_dir" "$container" "$legacy")
+
+  while IFS='|' read -r provider profile_id key; do
+    [[ -n "$provider" && -n "$key" ]] || continue
+    env_var="$(llm_env_var_for_provider "$provider")" || continue
+    [[ -n "${migrated[$env_var]:-}" ]] && continue
+    _store_llm_key_in_env "$config_dir" "$container" "$provider" "$key" || rc=1
+    migrated[$env_var]=1
+  done < <(_read_llm_keys_from_sqlite "$config_dir" "$container")
+
+  _sync_auth_profiles_from_env "$config_dir" "$container" || rc=1
+  ensure_llm_env_ref_profiles "$config_dir" "$container" || rc=1
+  return $rc
+}
+
+ensure_llm_env_auth() {
+  local id="$1"
+  local config_dir container
+  config_dir="$(agent_home "$id")"
+  [[ -d "$config_dir" ]] || return 0
+  container="$(_llm_auth_container_for_agent "$id")"
+  ensure_agent_env "$config_dir" "$container"
+  _migrate_legacy_llm_auth_to_env "$config_dir" "$container"
+  ensure_llm_env_ref_profiles "$config_dir" "$container"
+  _sync_auth_profiles_from_env "$config_dir" "$container"
+}
+
+# Back-compat alias used by restart/bootstrap/export paths.
+ensure_llm_sqlite_auth() {
+  ensure_llm_env_auth "$1"
+}
+
+ensure_openrouter_sqlite_auth() {
+  ensure_llm_env_auth "$1"
+}
+
+ensure_opencode_sqlite_auth() {
+  ensure_llm_env_auth "$1"
 }
 
 write_openrouter_api_key() {
   local id="$1"
   local key="$2"
-  local config_dir agent_dir
-  config_dir="$(agent_home "$id")"
-  agent_dir="$config_dir/agents/main/agent"
+  local config_dir container rc=0
   validate_openrouter_api_key "$key"
-  if mkdir -p "$agent_dir" 2>/dev/null; then
-    _write_openrouter_auth_profiles_host "$agent_dir" "$key"
-  else
-    _write_openrouter_auth_profiles_in_container "$id" "$key"
-  fi
-}
-
-_write_openrouter_auth_profiles_host() {
-  local agent_dir="$1"
-  local key="$2"
-  python3 - "$agent_dir/auth-profiles.json" "$key" <<'PY'
-import json, sys, os
-path, key = sys.argv[1], sys.argv[2]
-data = {
-    "version": 1,
-    "profiles": {
-        "openrouter:default": {
-            "type": "api_key",
-            "provider": "openrouter",
-            "key": key,
-        }
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-PY
-  printf '{"version":1,"usageStats":{}}\n' >"$agent_dir/auth-state.json"
-  chmod 600 "$agent_dir/auth-state.json"
-}
-
-_write_openrouter_auth_profiles_in_container() {
-  local id="$1"
-  local key="$2"
-  local container
-  container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || {
-    echo "Cannot store OpenRouter key: no access to agent dir and ${container} is not running" >&2
+  config_dir="$(agent_home "$id")"
+  [[ -d "$config_dir" ]] || {
+    echo "Run ./identyclaw.sh init first (missing ${config_dir})" >&2
     return 1
   }
-  podman exec -i "$container" python3 - "$key" <<'PY'
-import json, os, sys
-key = sys.argv[1]
-root = "/home/node/.openclaw/agents/main/agent"
-os.makedirs(root, mode=0o700, exist_ok=True)
-path = os.path.join(root, "auth-profiles.json")
-data = {
-    "version": 1,
-    "profiles": {
-        "openrouter:default": {
-            "type": "api_key",
-            "provider": "openrouter",
-            "key": key,
-        }
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-state = os.path.join(root, "auth-state.json")
-with open(state, "w", encoding="utf-8") as f:
-    f.write('{"version":1,"usageStats":{}}\n')
-os.chmod(state, 0o600)
-PY
-  ensure_openrouter_sqlite_auth "$id"
+  container="$(_llm_auth_container_for_agent "$id")"
+  ensure_agent_env "$config_dir" "$container"
+  _store_llm_key_in_env "$config_dir" "$container" openrouter "$key" || rc=1
+  _ensure_llm_provider_env_ref_profile "$config_dir" "$container" openrouter || rc=1
+  _sync_auth_profiles_from_env "$config_dir" "$container" || rc=1
+  return $rc
 }
 
 validate_opencode_api_key() {
@@ -6708,119 +7045,27 @@ validate_opencode_api_key() {
   fi
 }
 
-ensure_opencode_sqlite_auth() {
-  local id="$1" rc=0
-  local container key listed
-  container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
-
-  key="$(podman exec "$container" python3 -c "
-import json
-from pathlib import Path
-p = Path('/home/node/.openclaw/agents/main/agent/auth-profiles.json')
-if not p.is_file():
-    raise SystemExit(0)
-profiles = json.loads(p.read_text(encoding='utf-8')).get('profiles', {})
-k = (profiles.get('opencode:default') or {}).get('key') or (profiles.get('opencode-go:default') or {}).get('key')
-if k and k.startswith('sk-'):
-    print(k, end='')
-" 2>/dev/null)" || return 0
-  [[ -n "$key" ]] || return 0
-
-  listed="$(podman exec "$container" node /app/openclaw.mjs models auth list 2>/dev/null || true)"
-  if ! grep -qE 'opencode:default|\[opencode/api_key\]' <<<"$listed"; then
-    podman exec -i "$container" node /app/openclaw.mjs models auth paste-api-key \
-      --provider opencode --profile-id opencode:default <<<"$key" >/dev/null 2>&1 || rc=1
-  fi
-  if ! grep -qE 'opencode-go:default|\[opencode-go/api_key\]' <<<"$listed"; then
-    podman exec -i "$container" node /app/openclaw.mjs models auth paste-api-key \
-      --provider opencode-go --profile-id opencode-go:default <<<"$key" >/dev/null 2>&1 || rc=1
-  fi
-  if [[ $rc -ne 0 ]]; then
-    echo "    (${id}: OpenCode sqlite auth sync failed — openclaw models auth paste-api-key --provider opencode)" >&2
-  fi
-}
-
 write_opencode_api_key() {
   local id="$1"
   local key="$2"
-  local config_dir agent_dir
-  config_dir="$(agent_home "$id")"
-  agent_dir="$config_dir/agents/main/agent"
+  local config_dir container rc=0
   validate_opencode_api_key "$key"
-  if mkdir -p "$agent_dir" 2>/dev/null; then
-    _write_opencode_auth_profiles_host "$agent_dir" "$key"
-  else
-    _write_opencode_auth_profiles_in_container "$id" "$key"
-    return $?
-  fi
-  if agent_container_running "$id"; then
-    ensure_opencode_sqlite_auth "$id"
-  fi
-}
-
-_write_opencode_auth_profiles_host() {
-  local agent_dir="$1"
-  local key="$2"
-  python3 - "$agent_dir/auth-profiles.json" "$key" <<'PY'
-import json, sys, os
-path, key = sys.argv[1], sys.argv[2]
-profile = {"type": "api_key", "key": key}
-data = {
-    "version": 1,
-    "profiles": {
-        "opencode:default": {**profile, "provider": "opencode"},
-        "opencode-go:default": {**profile, "provider": "opencode-go"},
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-PY
-  printf '{"version":1,"usageStats":{}}\n' >"$agent_dir/auth-state.json"
-  chmod 600 "$agent_dir/auth-state.json"
-}
-
-_write_opencode_auth_profiles_in_container() {
-  local id="$1"
-  local key="$2"
-  local container
-  container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || {
-    echo "Cannot store OpenCode key: no access to agent dir and ${container} is not running" >&2
+  config_dir="$(agent_home "$id")"
+  [[ -d "$config_dir" ]] || {
+    echo "Run ./identyclaw.sh init first (missing ${config_dir})" >&2
     return 1
   }
-  podman exec -i "$container" python3 - "$key" <<'PY'
-import json, os, sys
-key = sys.argv[1]
-root = "/home/node/.openclaw/agents/main/agent"
-os.makedirs(root, mode=0o700, exist_ok=True)
-path = os.path.join(root, "auth-profiles.json")
-profile = {"type": "api_key", "key": key}
-data = {
-    "version": 1,
-    "profiles": {
-        "opencode:default": {**profile, "provider": "opencode"},
-        "opencode-go:default": {**profile, "provider": "opencode-go"},
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-state = os.path.join(root, "auth-state.json")
-with open(state, "w", encoding="utf-8") as f:
-    f.write('{"version":1,"usageStats":{}}\n')
-os.chmod(state, 0o600)
-PY
-  ensure_opencode_sqlite_auth "$id"
+  container="$(_llm_auth_container_for_agent "$id")"
+  ensure_agent_env "$config_dir" "$container"
+  _store_llm_key_in_env "$config_dir" "$container" opencode "$key" || rc=1
+  _ensure_llm_provider_env_ref_profile "$config_dir" "$container" opencode || rc=1
+  _ensure_llm_provider_env_ref_profile "$config_dir" "$container" opencode-go || rc=1
+  _sync_auth_profiles_from_env "$config_dir" "$container" || rc=1
+  return $rc
 }
 
 ensure_llm_sqlite_auth() {
-  local id="$1"
-  ensure_openrouter_sqlite_auth "$id"
-  ensure_opencode_sqlite_auth "$id"
+  ensure_llm_env_auth "$1"
 }
 
 mirror_agent_config() {
@@ -6835,13 +7080,27 @@ mirror_agent_config() {
   token="$(grep '^OPENCLAW_GATEWAY_TOKEN=' "$to_dir/.env" | cut -d= -f2-)"
   [[ -n "$token" ]] || { echo "Missing OPENCLAW_GATEWAY_TOKEN in $to_dir/.env" >&2; exit 1; }
 
-  if [[ -f "$from_dir/agents/main/agent/auth-profiles.json" ]]; then
-    mkdir -p "$to_dir/agents/main/agent"
-    cp "$from_dir/agents/main/agent/auth-profiles.json" "$to_dir/agents/main/agent/auth-profiles.json"
-    chmod 600 "$to_dir/agents/main/agent/auth-profiles.json"
-    printf '{"version":1,"usageStats":{}}\n' >"$to_dir/agents/main/agent/auth-state.json"
-    chmod 600 "$to_dir/agents/main/agent/auth-state.json"
-  fi
+  local from_container env_key value provider profile_id key
+  from_container="$(agent_container "$from_id")"
+  while IFS='|' read -r provider profile_id key; do
+    [[ -n "$provider" && -n "$key" ]] || continue
+    _store_llm_key_in_env "$to_dir" "" "$provider" "$key" || true
+  done < <(_read_legacy_auth_profile_entries "$from_dir" "$from_container")
+  while IFS='|' read -r provider profile_id key; do
+    [[ -n "$provider" && -n "$key" ]] || continue
+    _store_llm_key_in_env "$to_dir" "" "$provider" "$key" || true
+  done < <(_read_llm_keys_from_sqlite "$from_dir" "$from_container")
+  ensure_llm_env_ref_profiles "$to_dir" ""
+  for env_key in OPENROUTER_API_KEY OPENCODE_API_KEY; do
+    value=""
+    if [[ -r "$from_dir/.env" ]]; then
+      value="$(grep -m1 "^${env_key}=" "$from_dir/.env" 2>/dev/null | cut -d= -f2- || true)"
+    elif podman ps --format '{{.Names}}' | grep -qx "$(agent_container "$from_id")"; then
+      value="$(podman exec "$(agent_container "$from_id")" grep -m1 "^${env_key}=" /home/node/.openclaw/.env 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    [[ -n "$value" ]] || continue
+    set_agent_env_var "$to_dir" "" "$env_key" "$value" || true
+  done
 
   python3 - "$from_dir/openclaw.json" "$to_dir/openclaw.json" "$gw" "$token" <<'PY'
 import json, sys
@@ -6932,6 +7191,7 @@ openclaw.json.bak.*
 openclaw.json.last-good
 .reset-backup
 .a2a-plugin-build
+agents/main/agent/auth-profiles.json
 cache
 logs
 npm
@@ -6948,6 +7208,7 @@ EOF
 sync_agent_secrets_for_export() {
   local id="$1"
   local config_dir="$2"
+  ensure_llm_sqlite_auth "$id"
   sync_discord_env "$config_dir"
   sync_identyclaw_env "$config_dir"
   sync_instagram_env "$config_dir"

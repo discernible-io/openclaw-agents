@@ -954,7 +954,7 @@ cmd_set_api_key() {
   fi
   [[ -n "$key" ]] || { echo "empty key" >&2; exit 1; }
   write_openrouter_api_key "$id" "$key"
-  echo "API key stored for ${id} (auth-profiles.json)"
+  echo "API key stored for ${id} (agents/${id}/.env → OPENROUTER_API_KEY; sqlite env ref synced on restart)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
@@ -974,7 +974,7 @@ cmd_set_opencode_key() {
   fi
   [[ -n "$key" ]] || { echo "empty key" >&2; exit 1; }
   write_opencode_api_key "$id" "$key"
-  echo "API key stored for ${id} (opencode + opencode-go auth-profiles.json)"
+  echo "API key stored for ${id} (agents/${id}/.env → OPENCODE_API_KEY)"
   echo "Restart to apply: $0 restart ${id}"
 }
 

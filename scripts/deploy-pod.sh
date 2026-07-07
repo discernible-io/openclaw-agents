@@ -120,7 +120,7 @@ ensure_agent_runtime() {
 
 start_agent_in_pod() {
   local id="$1"
-  local dir container gw_port z tls_env=()
+  local dir container gw_port z tls_env=() env_file tmp_env=""
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   gw_port="$(agent_internal_gateway_port "$id")"
@@ -129,9 +129,14 @@ start_agent_in_pod() {
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
 
-  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
+  env_file="$(agent_env_file_for_podman_run "$dir" "$container")" || {
+    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
+    exit 1
+  }
+  [[ "$env_file" == "${dir}/.env" ]] || tmp_env="$env_file"
   prepare_agent_state_for_gateway_start "$id" pod
   sync_identyclaw_env "$dir" "$container"
+  ensure_llm_env_auth "$id"
 
   podman run -d \
     --pod "$POD_NAME" \
@@ -143,12 +148,13 @@ start_agent_in_pod() {
     -e HOME=/home/node \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
-    --env-file "$dir/.env" \
+    --env-file "$env_file" \
     -v "$dir:/home/node/.openclaw:rw${z}" \
     -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \
     -v "$dir/.config:/home/node/.config:ro${z}" \
     "$OPENCLAW_IMAGE" \
     node dist/index.js gateway --bind lan --port "$gw_port"
+  [[ -n "$tmp_env" ]] && rm -f "$tmp_env"
 }
 
 require_podman
