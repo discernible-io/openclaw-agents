@@ -444,6 +444,16 @@ agent_env_file_for_podman_run() {
     echo "$env_file"
     return 0
   fi
+  if [[ -f "$env_file" ]]; then
+    tmp="$(mktemp)"
+    if podman run --rm -v "${config_dir}:/data:Z" docker.io/library/alpine cat /data/.env >"$tmp" 2>/dev/null \
+      && [[ -s "$tmp" ]]; then
+      chmod 600 "$tmp"
+      echo "$tmp"
+      return 0
+    fi
+    rm -f "$tmp"
+  fi
   if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container" \
     && podman exec "$container" test -f /home/node/.openclaw/.env 2>/dev/null; then
     tmp="$(mktemp)"
@@ -4610,6 +4620,7 @@ recreate_pod_agent_gateway() {
   prepare_agent_state_for_gateway_start "$id" pod
   podman rm -f "$container" 2>/dev/null || true
   restore_pod_path_for_host "$dir"
+  ensure_agent_bootstrap "$id" "$dir"
   local env_file tmp_env=""
   env_file="$(agent_env_file_for_podman_run "$dir" "$container")" || {
     echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
@@ -6264,13 +6275,44 @@ ensure_instagram_secrets_from_env() {
   fi
 }
 
+ensure_browser_container_config() {
+  local config_dir="$1"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+browser = data.setdefault("browser", {})
+desired = {
+    "enabled": True,
+    "headless": True,
+    "noSandbox": True,
+    "executablePath": "/usr/bin/google-chrome-stable",
+}
+changed = False
+for key, value in desired.items():
+    if browser.get(key) != value:
+        browser[key] = value
+        changed = True
+if changed:
+    data["browser"] = browser
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
 write_agent_browser_doc() {
   local config_dir="$1"
   mkdir -p "$config_dir/workspace"
   cat >"$config_dir/workspace/BROWSER.md" <<'EOF'
 # Browser tool (pod / container deploy)
 
-This gateway runs Chromium **inside the agent container** (host browser). The isolated **sandbox browser** sidecar is **not** enabled here — do not use `target="sandbox"` or `targetId="sandbox"`.
+This gateway runs **Google Chrome headless** inside the agent container (not the
+isolated sandbox browser sidecar). Debian `chromium` crashes on CDP startup in
+Podman; the image ships `google-chrome-stable` instead.
 
 ## Correct usage
 
@@ -6279,12 +6321,29 @@ This gateway runs Chromium **inside the agent container** (host browser). The is
 3. Snapshot: use `action="tabs"` first, then `action="snapshot"` with `targetId` from the tab list (e.g. `t1`) or the same `label`.
 4. Profile: default managed profile is `openclaw` (cookies under `browser/openclaw/user-data/`).
 
+## Required config (synced on bootstrap)
+
+```json
+{
+  "browser": {
+    "enabled": true,
+    "headless": true,
+    "noSandbox": true,
+    "executablePath": "/usr/bin/google-chrome-stable"
+  }
+}
+```
+
+D-Bus warnings in Chrome stderr are normal in containers and are not fatal.
+
 ## If browser times out on first use
 
-Chromium cold-start can take ~30s. Retry `open`, or run inside the container:
+Chrome cold-start can take ~30s. Retry `open`, or run inside the container:
 
 `node /app/openclaw.mjs browser doctor`
 
+For PNG/image URLs, prefer `curl` or `read` on a downloaded file when you only
+need to verify the URL — browser is for interactive pages.
 EOF
   chmod 644 "$config_dir/workspace/BROWSER.md"
 }
@@ -6316,6 +6375,7 @@ ensure_agent_bootstrap() {
   ensure_a2a_config "$id" "$config_dir" "$container"
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
   ensure_llm_sqlite_auth "$id"
+  ensure_browser_container_config "$config_dir"
   write_agent_browser_doc "$config_dir"
   sync_quiet_plugin_env "$config_dir" "$container"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then

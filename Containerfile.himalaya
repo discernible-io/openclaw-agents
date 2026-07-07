@@ -20,17 +20,20 @@ ARG OPENCLAW_BUNDLED_PLUGINS
 USER root
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl sudo chromium \
+      ca-certificates curl sudo wget fonts-liberation libvulkan1 \
  && curl -fsSL -o /tmp/himalaya.tgz \
       "https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/himalaya.${HIMALAYA_ARCH}.tgz" \
  && tar -xzf /tmp/himalaya.tgz -C /usr/local/bin \
  && chmod 755 /usr/local/bin/himalaya \
  && himalaya --version \
- && chromium --version \
- && rm -f /tmp/himalaya.tgz \
+ && wget -q -O /tmp/google-chrome-stable.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/google-chrome-stable.deb \
+ && google-chrome-stable --version \
+ && rm -f /tmp/himalaya.tgz /tmp/google-chrome-stable.deb \
  && rm -rf /var/lib/apt/lists/* \
  && ln -sf /app/openclaw.mjs /openclaw.mjs \
- && ln -sf /usr/bin/chromium /usr/bin/chromium-browser \
+ && ln -sf /usr/bin/google-chrome-stable /usr/bin/chromium \
+ && ln -sf /usr/bin/google-chrome-stable /usr/bin/chromium-browser \
  && echo "node ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/node \
  && chmod 440 /etc/sudoers.d/node
 

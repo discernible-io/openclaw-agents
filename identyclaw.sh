@@ -108,6 +108,7 @@ init_one_agent() {
   write_himalaya_send_script "$email" "$display_name" "$dir"
   write_agent_email_doc "$email" "$display_name" "$dir"
   write_openclaw_json "$dir" "$gateway_port"
+  ensure_browser_container_config "$dir"
   ensure_telegram_channel_stub "$dir"
   write_agent_publishing_doc "$dir"
   ensure_agent_env "$dir"
