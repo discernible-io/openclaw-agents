@@ -175,7 +175,7 @@ cmd_set_discord_token() {
   local token
   read -r -s -p "Discord bot token for ${id}: " token
   echo
-  write_discord_token "$dir" "$token"
+  write_discord_token "$dir" "$token" "$id"
   echo "Discord token stored in ${dir}/secrets/DISCORD_BOT_TOKEN (mode 600)"
   echo "Restart to apply: $0 restart ${id}"
 }
@@ -195,26 +195,28 @@ cmd_set_telegram_token() {
 }
 
 cmd_pairing_list() {
-  local id="${1:?Usage: $0 pairing-list agent-b}"
-  require_agent_id_arg "$id" "$0 pairing-list <agent-id>"
+  local id="${1:?Usage: $0 pairing-list agent-b [telegram|discord]}"
+  local channel="${2:-telegram}"
+  require_agent_id_arg "$id" "$0 pairing-list <agent-id> [telegram|discord]"
   require_podman
   require_agent_running "$id"
   local dir container
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
-  openclaw_agent_exec "$dir" "$container" pairing list telegram
+  openclaw_agent_exec "$dir" "$container" pairing list "$channel"
 }
 
 cmd_pairing_approve() {
-  local id="${1:?Usage: $0 pairing-approve agent-b <code>}"
-  local code="${2:?Usage: $0 pairing-approve agent-b <code>}"
-  require_agent_id_arg "$id" "$0 pairing-approve <agent-id> <code>"
+  local id="${1:?Usage: $0 pairing-approve agent-b <code> [telegram|discord]}"
+  local code="${2:?Usage: $0 pairing-approve agent-b <code> [telegram|discord]}"
+  local channel="${3:-telegram}"
+  require_agent_id_arg "$id" "$0 pairing-approve <agent-id> <code> [telegram|discord]"
   require_podman
   require_agent_running "$id"
   local dir container
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
-  openclaw_agent_exec "$dir" "$container" pairing approve telegram "$code"
+  openclaw_agent_exec "$dir" "$container" pairing approve "$channel" "$code"
 }
 
 cmd_set_socialclaw_key() {

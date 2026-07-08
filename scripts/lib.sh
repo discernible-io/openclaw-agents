@@ -3532,11 +3532,19 @@ write_himalaya_send_script() {
   cat >"$config_dir/workspace/scripts/himalaya-send.sh" <<EOF
 #!/bin/sh
 # Headless outbound mail via Himalaya (no \$EDITOR). Containers have no editor binary.
-# Usage: sh scripts/himalaya-send.sh TO SUBJECT [BODY]
+# Usage: sh scripts/himalaya-send.sh RECIPIENT SUBJECT [BODY]
+#   RECIPIENT = external To address only (NOT ${email} — From is fixed in this script).
 set -eu
-TO="\${1:?usage: himalaya-send.sh TO SUBJECT [BODY]}"
-SUBJECT="\${2:?usage: himalaya-send.sh TO SUBJECT [BODY]}"
+TO="\${1:?usage: himalaya-send.sh RECIPIENT SUBJECT [BODY]}"
+SUBJECT="\${2:?usage: himalaya-send.sh RECIPIENT SUBJECT [BODY]}"
 BODY="\${3:-}"
+LOCAL_MAILBOX="${email}"
+
+if [ "\$TO" = "\$LOCAL_MAILBOX" ]; then
+  echo "error: first argument must be the recipient, not the From address (\$LOCAL_MAILBOX)" >&2
+  echo "usage: sh scripts/himalaya-send.sh someone@example.com \"Subject\" \"Body\"" >&2
+  exit 1
+fi
 
 himalaya message send <<MAIL
 From: ${display_name} <${email}>
@@ -3561,6 +3569,14 @@ write_agent_email_doc() {
   cat >"$config_dir/workspace/EMAIL.md" <<EOF
 # Email (Himalaya / Migadu)
 
+> **Pre-configured.** This agent's Migadu mailbox is already set up in
+> \`/home/node/.config/himalaya/config.toml\` with credentials in
+> \`/home/node/.openclaw/secrets/\`. **Do not** ask the operator for IMAP/SMTP
+> server, username, or password. Use \`exec\` to run the commands below.
+>
+> **Exec:** use plain \`exec\` only — **do not** pass \`elevated: true\` (fails in
+> webchat/TUI; sandbox is off so elevated is unnecessary).
+
 - **Account:** \`${email}\` (${display_name})
 - **Config:** \`/home/node/.config/himalaya/config.toml\`
 - **IMAP/SMTP:** Migadu (\`imap.migadu.com:993\` TLS, \`smtp.migadu.com:${smtp_port}\` STARTTLS)
@@ -3576,12 +3592,15 @@ himalaya message read <ID>
 
 ## Send (headless — required in this container)
 
-There is **no \`\$EDITOR\`** in the gateway container, so \`himalaya message write\` always fails.
-Use the helper or raw send:
+Use plain \`exec\` (no \`elevated: true\`):
 
 \`\`\`bash
-sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
+# RECIPIENT first — never pass ${email} as arg 1 (From is automatic).
+sh scripts/himalaya-send.sh canal@example.com "Subject line" "Email body"
 \`\`\`
+
+There is **no \`\$EDITOR\`** in the gateway container, so \`himalaya message write\` always fails.
+Use the helper or raw send:
 
 Or:
 
@@ -3616,6 +3635,173 @@ tampered probe gets a rejection reply with no credential. If the responder is no
 scheduled, inbound email HOLA tests from peers will time out.
 EOF
   chmod 644 "$config_dir/workspace/EMAIL.md"
+  write_email_workspace_guidance "$config_dir" "$email" "$id"
+}
+
+write_email_workspace_guidance() {
+  local config_dir="$1"
+  local email="$2"
+  local agent_id="${3:-$(basename "$config_dir")}"
+  local tools="$config_dir/workspace/TOOLS.md"
+  local agents="$config_dir/workspace/AGENTS.md"
+  [[ -f "$tools" ]] || return 0
+  python3 - "$tools" "$agents" "$email" "$agent_id" <<'PY'
+import re, sys
+from pathlib import Path
+
+tools_path, agents_path, email, agent_id = sys.argv[1:5]
+tools_block = f"""
+## Email ({agent_id})
+
+- **Mail is pre-configured** — read **`EMAIL.md`** before any inbox task.
+- **Account:** `{email}` (Migadu / Himalaya). Do **not** ask for IMAP/SMTP/password.
+- **Read:** `himalaya envelope list --page-size 10` (plain `exec`, no `elevated`)
+- **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
+- **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
+- If a command fails, run `himalaya account list` via plain `exec` before concluding mail is unconfigured.
+"""
+agents_block = f"""
+## Email
+
+- Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
+- **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
+- Read/send via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `scripts/himalaya-send.sh`.
+- `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
+- The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
+"""
+for path, block, heading in (
+    (Path(tools_path), tools_block, r"\n## Email[^\n]*\n"),
+    (Path(agents_path), agents_block, r"\n## Email\n"),
+):
+    if not path.is_file():
+        continue
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(heading + r".*?(?=\n## |\Z)", "", text, flags=re.S)
+    path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
+_sync_agent_email_docs_in_container() {
+  local container="$1"
+  local email="$2"
+  local display_name="$3"
+  local agent_id="$4"
+  local sales support smtp_port smtp_settings
+  smtp_settings="$(agent_smtp_settings "$agent_id")"
+  smtp_port="${smtp_settings%%|*}"
+  sales="$(identyclaw_service_contact_sales)"
+  support="$(identyclaw_service_contact_support)"
+  ensure_agent_state_for_container_exec "$agent_id"
+  podman exec -i "$container" python3 - "$email" "$display_name" "$agent_id" "$smtp_port" "$sales" "$support" <<'PY'
+import os, re, sys
+
+email, display_name, agent_id, smtp_port, sales, support = sys.argv[1:8]
+workspace = "/home/node/.openclaw/workspace"
+email_doc = f"""# Email (Himalaya / Migadu)
+
+> **Pre-configured.** This agent's Migadu mailbox is already set up in
+> `/home/node/.config/himalaya/config.toml` with credentials in
+> `/home/node/.openclaw/secrets/`. **Do not** ask the operator for IMAP/SMTP
+> server, username, or password. Use `exec` to run the commands below.
+>
+> **Exec:** use plain `exec` only — **do not** pass `elevated: true` (fails in
+> webchat/TUI; sandbox is off so elevated is unnecessary).
+
+- **Account:** `{email}` ({display_name})
+- **Config:** `/home/node/.config/himalaya/config.toml`
+- **IMAP/SMTP:** Migadu (`imap.migadu.com:993` TLS, `smtp.migadu.com:{smtp_port}` STARTTLS)
+- **Sales contact:** `{sales}`
+- **Support contact:** `{support}`
+
+## Read inbox
+
+```bash
+himalaya envelope list --page-size 10
+himalaya message read <ID>
+```
+
+## Send (headless — required in this container)
+
+Use plain `exec` (no `elevated: true`):
+
+```bash
+# RECIPIENT first — never pass {email} as arg 1 (From is automatic).
+sh scripts/himalaya-send.sh canal@example.com "Subject line" "Email body"
+```
+
+There is **no `$EDITOR`** in the gateway container, so `himalaya message write` always fails.
+Use the helper or raw send:
+
+Or:
+
+```bash
+himalaya message send <<MAIL
+From: {display_name} <{email}>
+To: recipient@example.com
+Subject: Your subject
+
+Your body
+MAIL
+```
+
+**Critical:** `From:` must be `{email}`. Migadu rejects other senders (553 *Sender address rejected*).
+
+## Inbound HOLA probes (reciprocal testing)
+
+Peers verify us over email the same way we verify them: they send an
+`IDENTYCLAW_HOLA_PROBE:{{id}}:{{variant}}` email with a HOLA line, and expect a
+`HOLA_RESPONSE:{{id}}:{{variant}}` reply. This is handled automatically by the
+deterministic responder — no LLM action needed:
+
+```bash
+# On the host (single agent or all):
+./identyclaw.sh respond-mail {agent_id}
+# Or run it on a schedule (user systemd timer, default every 5min):
+./identyclaw.sh enable-mail-responder
+```
+
+The responder only replies with a signed HOLA when the inbound HOLA verifies; a
+tampered probe gets a rejection reply with no credential. If the responder is not
+scheduled, inbound email HOLA tests from peers will time out.
+"""
+tools_block = f"""
+## Email ({agent_id})
+
+- **Mail is pre-configured** — read **`EMAIL.md`** before any inbox task.
+- **Account:** `{email}` (Migadu / Himalaya). Do **not** ask for IMAP/SMTP/password.
+- **Read:** `himalaya envelope list --page-size 10` (plain `exec`, no `elevated`)
+- **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
+- **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
+- If a command fails, run `himalaya account list` via plain `exec` before concluding mail is unconfigured.
+"""
+agents_block = f"""
+## Email
+
+- Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
+- **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
+- Read/send via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `scripts/himalaya-send.sh`.
+- `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
+- The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
+"""
+
+email_path = os.path.join(workspace, "EMAIL.md")
+with open(email_path, "w", encoding="utf-8") as f:
+    f.write(email_doc)
+os.chmod(email_path, 0o644)
+
+for path_name, block, heading in (
+    ("TOOLS.md", tools_block, r"\n## Email[^\n]*\n"),
+    ("AGENTS.md", agents_block, r"\n## Email\n"),
+):
+    path = os.path.join(workspace, path_name)
+    if not os.path.isfile(path):
+        continue
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    text = re.sub(heading + r".*?(?=\n## |\Z)", "", text, flags=re.S)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.rstrip() + block + "\n")
+PY
 }
 
 agent_mailbox() {
@@ -3646,57 +3832,69 @@ ensure_mail_secrets_from_env() {
 ensure_agent_email_tooling() {
   local id="$1"
   local config_dir="$2"
-  local mailbox email display_name
+  local mailbox email display_name container=""
   mailbox="$(agent_mailbox "$id")"
   email="${mailbox%%|*}"
   display_name="${mailbox#*|}"
+  restore_pod_path_for_host "$config_dir"
   write_himalaya_config "$email" "$display_name" "$config_dir"
   write_himalaya_send_script "$email" "$display_name" "$config_dir"
   write_agent_email_doc "$email" "$display_name" "$config_dir"
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    _sync_agent_email_docs_in_container "$container" "$email" "$display_name" "$id"
+    ensure_pod_agent_state_for_container "$id"
+  fi
 }
 
 ensure_discord_guild_channels() {
   local config_dir="$1"
   local container="${2:-}"
+  local id guild channel owner settings
+  id="$(basename "$config_dir")"
+  settings="$(agent_discord_channel_settings "$id")"
+  guild="${settings%%|*}"
+  settings="${settings#*|}"
+  channel="${settings%%|*}"
+  owner="${settings#*|}"
+  if [[ -z "$guild" || -z "$channel" || -z "$owner" ]]; then
+    echo "    (${id}: Discord guild/channel/owner not set — set AGENT_*_DISCORD_GUILD_ID, DISCORD_CHANNEL_ID, DISCORD_OWNER_ID in env.local)" >&2
+    return 0
+  fi
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+  _agent_openclaw_json_python "$config_dir" "$container" "$guild" "$channel" "$owner" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+guild_id, channel_id, owner_id = sys.argv[2:5]
 data = json.loads(path.read_text(encoding="utf-8"))
-discord = data.get("channels", {}).get("discord")
-if not isinstance(discord, dict):
-    raise SystemExit(0)
-
-guild_id = "1509561171961708554"
-channel_id = "1509561172725334058"
-owner_id = "1438122032968634408"
+discord = data.setdefault("channels", {}).setdefault("discord", {})
 changed = False
 
 guilds = discord.setdefault("guilds", {})
 guild = guilds.setdefault(guild_id, {})
-if guild.get("requireMention") is not True:
-    guild["requireMention"] = True
-    changed = True
-if guild.get("ignoreOtherMentions") is not True:
-    guild["ignoreOtherMentions"] = True
-    changed = True
+for key, val in (
+    ("requireMention", True),
+    ("ignoreOtherMentions", True),
+):
+    if guild.get(key) is not True:
+        guild[key] = val
+        changed = True
 users = guild.setdefault("users", [])
 if owner_id not in users:
     users.append(owner_id)
     changed = True
 channels = guild.setdefault("channels", {})
 ch = channels.setdefault(channel_id, {})
-if ch.get("enabled") is not True:
-    ch["enabled"] = True
-    changed = True
-if ch.get("requireMention") is not True:
-    ch["requireMention"] = True
-    changed = True
-if ch.get("ignoreOtherMentions") is not True:
-    ch["ignoreOtherMentions"] = True
-    changed = True
+for key, val in (
+    ("enabled", True),
+    ("requireMention", True),
+    ("ignoreOtherMentions", True),
+):
+    if ch.get(key) is not True:
+        ch[key] = val
+        changed = True
 
 allow_from = discord.setdefault("allowFrom", [])
 if owner_id not in allow_from:
@@ -3707,6 +3905,20 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+}
+
+agent_discord_channel_settings() {
+  local id="$1"
+  local guild="" channel="" owner=""
+  load_env
+  is_valid_agent_id "$id" || return 1
+  guild="$(agent_env_value "$id" DISCORD_GUILD_ID "")"
+  channel="$(agent_env_value "$id" DISCORD_CHANNEL_ID "")"
+  owner="$(agent_env_value "$id" DISCORD_OWNER_ID "")"
+  guild="${guild:-${IDENTYCLAW_DISCORD_GUILD_ID:-}}"
+  channel="${channel:-${IDENTYCLAW_DISCORD_CHANNEL_ID:-}}"
+  owner="${owner:-${IDENTYCLAW_DISCORD_OWNER_ID:-}}"
+  echo "${guild}|${channel}|${owner}"
 }
 
 ensure_discord_ready() {
@@ -3741,6 +3953,140 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+}
+
+write_agent_discord_doc() {
+  local config_dir="$1"
+  local id prefix settings guild channel owner
+  id="$(basename "$config_dir")"
+  prefix="$(agent_env_prefix "$id")"
+  settings="$(agent_discord_channel_settings "$id" 2>/dev/null || echo "||")"
+  guild="${settings%%|*}"
+  settings="${settings#*|}"
+  channel="${settings%%|*}"
+  owner="${settings#*|}"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/DISCORD.md" <<EOF
+# Discord (official OpenClaw channel)
+
+Bidirectional chat via the built-in \`@openclaw/discord\` plugin.
+
+## Setup (one-time)
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application** → **Bot** → copy **token**.
+2. Enable **Message Content Intent** (and **Server Members Intent** recommended).
+3. OAuth2 URL Generator: scopes \`bot\` + \`applications.commands\`; permissions: View Channels, Send Messages, Read Message History.
+4. Invite the bot to your server; enable **Developer Mode** in Discord → copy **Server ID**, **Channel ID**, and your **User ID**.
+5. In \`env.local\`:
+
+\`\`\`bash
+${prefix}_DISCORD_GUILD_ID=<server-id>
+${prefix}_DISCORD_CHANNEL_ID=<text-channel-id>
+${prefix}_DISCORD_OWNER_ID=<your-discord-user-id>
+# or global: IDENTYCLAW_DISCORD_GUILD_ID / _CHANNEL_ID / _OWNER_ID
+\`\`\`
+
+6. Store token: \`./identyclaw.sh set-discord-token ${id}\`
+7. Restart: \`./identyclaw.sh restart ${id}\`
+8. **DMs:** default \`dmPolicy: pairing\` — approve like Telegram:
+   - \`./identyclaw.sh pairing-list ${id} discord\`
+   - \`./identyclaw.sh pairing-approve ${id} discord <CODE>\`
+9. **Guild channel:** @mention the bot in the configured channel (\`requireMention: true\`).
+
+## Config
+
+- Token: \`secrets/DISCORD_BOT_TOKEN\` → synced to \`.env\`
+- Channel: \`openclaw.json\` → \`channels.discord\`
+
+## Current env (from bootstrap)
+
+- Guild ID: \`${guild:-not set}\`
+- Channel ID: \`${channel:-not set}\`
+- Owner ID: \`${owner:-not set}\`
+
+## Outbound messages (message tool)
+
+When Telegram is also configured, **always** pass \`channel: "discord"\` on the message tool.
+
+**ID types (do not confuse them):**
+
+- **Guild / server ID** — names the Discord server; not a message recipient.
+- **Channel ID** — post to a text channel with \`target: "channel:<channel-id>"\`.
+- **User ID** — DM a user with \`target: "user:<user-id>"\` (pairing may be required).
+
+Example — say "Hi" in the configured channel:
+
+\`\`\`json
+{
+  "tool": "message",
+  "action": "send",
+  "channel": "discord",
+  "target": "channel:${channel:-<channel-id>}",
+  "message": "Hi"
+}
+\`\`\`
+
+CLI equivalent: \`openclaw message send --channel discord --target channel:${channel:-<channel-id>} --message "Hi"\`
+
+Raw numeric IDs without a \`channel:\` or \`user:\` prefix are treated as channel IDs on Discord.
+EOF
+  chmod 644 "$config_dir/workspace/DISCORD.md"
+  write_discord_workspace_guidance "$config_dir" "$id"
+}
+
+write_discord_workspace_guidance() {
+  local config_dir="$1"
+  local agent_id="${2:-$(basename "$config_dir")}"
+  local tools="$config_dir/workspace/TOOLS.md"
+  [[ -f "$tools" ]] || return 0
+  python3 - "$tools" "$agent_id" <<'PY'
+import re, sys
+from pathlib import Path
+
+path, agent_id = Path(sys.argv[1]), sys.argv[2]
+block = f"""
+## Discord ({agent_id})
+
+- **Chat on Discord** — read **DISCORD.md** before any Discord task.
+- Token via `./identyclaw.sh set-discord-token {agent_id}`; guild/channel/owner IDs in `env.local`.
+- DMs use pairing (`pairing-list` / `pairing-approve` with channel `discord`).
+- In guild channels, users must @mention the bot unless configured otherwise.
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## Discord[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
+ensure_discord_channel_stub() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  container="$(agent_container_for_config_dir "$config_dir" "$container")"
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec "$container" node /app/openclaw.mjs plugins enable discord >/dev/null 2>&1 || true
+  fi
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+changed = False
+if plugins.get("discord", {}).get("enabled") is not True:
+    plugins["discord"] = {"enabled": True}
+    changed = True
+discord = data.setdefault("channels", {}).setdefault("discord", {})
+if "dmPolicy" not in discord:
+    discord["dmPolicy"] = "pairing"
+    changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+  write_agent_discord_doc "$config_dir"
 }
 
 sync_identyclaw_env() {
@@ -6368,6 +6714,7 @@ ensure_agent_bootstrap() {
   ensure_telegram_ready "$id" "$config_dir"
   write_agent_publishing_doc "$config_dir"
   ensure_near_credentials_layout "$config_dir"
+  ensure_discord_channel_stub "$config_dir" "$container"
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
@@ -6450,11 +6797,29 @@ PY
 write_discord_token() {
   local config_dir="$1"
   local token="$2"
+  local id="${3:-$(basename "$config_dir")}"
   [[ -n "$token" ]] || { echo "empty Discord bot token" >&2; return 1; }
-  mkdir -p "$config_dir/secrets"
-  printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN"
-  chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
-  sync_discord_env "$config_dir"
+  restore_pod_path_for_host "$config_dir"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null \
+    && printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN" 2>/dev/null; then
+    chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
+    sync_discord_env "$config_dir"
+    _enable_discord_channel_in_json "$config_dir"
+    ensure_discord_channel_stub "$config_dir" "$(agent_container "$id")"
+    ensure_discord_guild_channels "$config_dir" "$(agent_container "$id")"
+    write_agent_discord_doc "$config_dir"
+    local container
+    container="$(agent_container "$id")"
+    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      ensure_pod_agent_state_for_container "$id"
+    fi
+    return 0
+  fi
+  _write_discord_token_in_container "$id" "$token"
+}
+
+_enable_discord_channel_in_json() {
+  local config_dir="$1"
   python3 - "$config_dir/openclaw.json" <<'PY'
 import json, sys
 from pathlib import Path
@@ -6467,6 +6832,35 @@ if not discord.get("enabled"):
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+}
+
+_write_discord_token_in_container() {
+  local id="$1"
+  local token="$2"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Cannot write Discord token: no access to agent dir and ${container} is not running" >&2
+    return 1
+  }
+  podman exec -i "$container" python3 - "$token" <<'PY'
+import os, sys
+
+token = sys.argv[1]
+secrets = "/home/node/.openclaw/secrets"
+os.makedirs(secrets, mode=0o700, exist_ok=True)
+path = os.path.join(secrets, "DISCORD_BOT_TOKEN")
+with open(path, "w", encoding="utf-8") as f:
+    f.write(token)
+os.chmod(path, 0o600)
+PY
+  local config_dir
+  config_dir="$(agent_home "$id")"
+  sync_discord_env "$config_dir"
+  _enable_discord_channel_in_json "$config_dir"
+  ensure_discord_channel_stub "$config_dir" "$container"
+  ensure_discord_guild_channels "$config_dir" "$container"
+  write_agent_discord_doc "$config_dir"
 }
 
 # Gateway reads DISCORD_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
@@ -6738,7 +7132,7 @@ stack below for outbound posts. Read the linked workspace docs before any write.
 
 | Platform | Mode | Tooling |
 |----------|------|---------|
-| Discord | Chat (inbound/outbound) | Official \`@openclaw/discord\` — \`set-discord-token\` |
+| Discord | Chat (inbound/outbound) | Official \`@openclaw/discord\` — \`DISCORD.md\` / \`set-discord-token\` |
 | Telegram | Chat (inbound/outbound) | Official \`channels.telegram\` — \`TELEGRAM.md\` / \`set-telegram-token\` |
 | X / Twitter | Publish | ClawHub \`${twitter_slug}\` + \`@steipete/bird\` — \`TWITTER.md\` / \`set-twitter-cookies\` |
 | LinkedIn | Publish | \`${linkedin_slug}\` + ClawLink — \`LINKEDIN.md\` / [claw-link.dev](https://claw-link.dev/dashboard?add=linkedin) |
