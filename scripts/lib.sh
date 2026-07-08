@@ -6391,17 +6391,60 @@ ensure_agent_bootstrap() {
 write_secret_helpers() {
   local config_dir="$1"
   local password="$2"
-  mkdir -p "$config_dir/secrets"
-  printf '%s\n' "$password" >"$config_dir/secrets/imap.pass"
-  cp "$config_dir/secrets/imap.pass" "$config_dir/secrets/smtp.pass"
-  cat >"$config_dir/secrets/imap.sh" <<'EOF'
+  local id="${3:-$(basename "$config_dir")}"
+  local container=""
+
+  restore_pod_path_for_host "$config_dir"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null \
+    && printf '%s\n' "$password" >"$config_dir/secrets/imap.pass" 2>/dev/null; then
+    cp "$config_dir/secrets/imap.pass" "$config_dir/secrets/smtp.pass"
+    cat >"$config_dir/secrets/imap.sh" <<'EOF'
 #!/bin/sh
 cat /home/node/.openclaw/secrets/imap.pass
 EOF
-  cp "$config_dir/secrets/imap.sh" "$config_dir/secrets/smtp.sh"
-  chmod 700 "$config_dir/secrets"
-  chmod 700 "$config_dir/secrets"/*.sh
-  chmod 600 "$config_dir/secrets"/*.pass
+    cp "$config_dir/secrets/imap.sh" "$config_dir/secrets/smtp.sh"
+    chmod 700 "$config_dir/secrets"
+    chmod 700 "$config_dir/secrets"/*.sh
+    chmod 600 "$config_dir/secrets"/*.pass
+    container="$(agent_container "$id")"
+    if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      ensure_pod_agent_state_for_container "$id"
+    fi
+    return 0
+  fi
+  _write_mail_secrets_in_container "$id" "$password"
+}
+
+_write_mail_secrets_in_container() {
+  local id="$1"
+  local password="$2"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Cannot write mail secrets: no access to agent dir and ${container} is not running" >&2
+    return 1
+  }
+  podman exec -i "$container" python3 - "$password" <<'PY'
+import os, shutil, sys
+
+password = sys.argv[1] + "\n"
+secrets = "/home/node/.openclaw/secrets"
+os.makedirs(secrets, mode=0o700, exist_ok=True)
+imap_pass = os.path.join(secrets, "imap.pass")
+smtp_pass = os.path.join(secrets, "smtp.pass")
+with open(imap_pass, "w", encoding="utf-8") as f:
+    f.write(password)
+shutil.copy2(imap_pass, smtp_pass)
+os.chmod(imap_pass, 0o600)
+os.chmod(smtp_pass, 0o600)
+script_body = "#!/bin/sh\ncat /home/node/.openclaw/secrets/imap.pass\n"
+for name in ("imap.sh", "smtp.sh"):
+    path = os.path.join(secrets, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(script_body)
+    os.chmod(path, 0o700)
+os.chmod(secrets, 0o700)
+PY
 }
 
 write_discord_token() {

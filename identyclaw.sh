@@ -162,7 +162,7 @@ cmd_set_password() {
   read -r -s -p "Migadu password for ${id}: " pw
   echo
   [[ -n "$pw" ]] || { echo "empty password" >&2; exit 1; }
-  write_secret_helpers "$dir" "$pw"
+  write_secret_helpers "$dir" "$pw" "$id"
   echo "Password stored in ${dir}/secrets/ (mode 600)"
 }
 
