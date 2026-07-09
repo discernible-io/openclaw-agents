@@ -157,7 +157,7 @@ start_agent_in_pod() {
     -v "$dir/.config:/home/node/.config:ro${z}" \
     "$OPENCLAW_IMAGE" \
     node dist/index.js gateway --bind lan --port "$gw_port"
-  [[ -n "$tmp_env" ]] && rm -f "$tmp_env"
+  if [[ -n "$tmp_env" ]]; then rm -f "$tmp_env"; fi
 }
 
 require_podman
