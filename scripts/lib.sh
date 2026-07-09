@@ -3907,6 +3907,9 @@ allow_from = discord.setdefault("allowFrom", [])
 if owner_id not in allow_from:
     allow_from.append(owner_id)
     changed = True
+if discord.get("dmPolicy") == "open" and "*" not in allow_from:
+    allow_from.append("*")
+    changed = True
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -6815,7 +6818,7 @@ ensure_agent_bootstrap() {
   ensure_mail_secrets_from_env "$id" "$config_dir"
   ensure_agent_email_tooling "$id" "$config_dir"
   ensure_telegram_secrets_from_env "$id" "$config_dir"
-  ensure_telegram_channel_stub "$config_dir"
+  ensure_telegram_channel_stub "$config_dir" "$container"
   ensure_telegram_ready "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
   ensure_discord_channel_stub "$config_dir" "$container"
