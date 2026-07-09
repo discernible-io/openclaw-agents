@@ -4759,7 +4759,7 @@ desired_card = {
         {
             "id": "verify_hola_explainer",
             "name": "HOLA mutual authentication",
-            "description": "Send a live HOLA demo; verify at verify.identyclaw.com or npx @identyclaw/verify-hola report --rpc",
+            "description": "Send a live HOLA demo; verify at verify.identyclaw.com or npx @rodit/verify-hola report --rpc",
             "tags": ["hola", "security"],
         },
         {
@@ -4778,7 +4778,7 @@ desired_card = {
             "passportTokenId": token_id,
             "did": f"did:rodit:{token_id}",
             "verifyUrl": "https://verify.identyclaw.com",
-            "verifyRpcDocs": "npx @identyclaw/verify-hola report --rpc",
+            "verifyRpcDocs": "npx @rodit/verify-hola report --rpc",
             "channels": ["a2a", "email", "discord", "telegram"],
             "contactUris": [
                 f"a2a:identyclaw.com:{card_url}",
