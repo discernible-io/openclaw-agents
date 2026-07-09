@@ -189,6 +189,12 @@ load_env() {
   IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
   IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
+  # Knowledge skill: local document RAG (synced to openclaw.json on bootstrap).
+  IDENTYCLAW_KNOWLEDGE_ENABLED="${IDENTYCLAW_KNOWLEDGE_ENABLED:-1}"
+  IDENTYCLAW_KNOWLEDGE_PATH="${IDENTYCLAW_KNOWLEDGE_PATH:-./knowledge}"
+  IDENTYCLAW_KNOWLEDGE_CHUNK_SIZE="${IDENTYCLAW_KNOWLEDGE_CHUNK_SIZE:-512}"
+  IDENTYCLAW_KNOWLEDGE_CHUNK_OVERLAP="${IDENTYCLAW_KNOWLEDGE_CHUNK_OVERLAP:-64}"
+  IDENTYCLAW_KNOWLEDGE_CITE_SOURCES="${IDENTYCLAW_KNOWLEDGE_CITE_SOURCES:-1}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.3}"
@@ -3427,6 +3433,7 @@ start_pod_agent() {
     ensure_agent_state_for_container_exec "$id"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
+    ensure_knowledge_config "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
@@ -3446,6 +3453,7 @@ start_pod_agent() {
     wait_for_running_agent_container "$container" || return 1
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
+    ensure_knowledge_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"
@@ -4006,7 +4014,11 @@ ${prefix}_DISCORD_OWNER_ID=<your-discord-user-id>
 
 ## Outbound messages (message tool)
 
-When Telegram is also configured, **always** pass \`channel: "discord"\` on the message tool.
+Cross-provider sends are **enabled** for this agent — read **CHAT_CHANNELS.md** first.
+You may post to Discord from a Telegram session (or vice versa) via the \`message\` tool.
+**Never** use Discord HTTP APIs via \`exec\`/\`curl\`.
+
+When sending to Discord (especially from another channel), pass \`channel: "discord"\`.
 
 **ID types (do not confuse them):**
 
@@ -4047,7 +4059,8 @@ path, agent_id = Path(sys.argv[1]), sys.argv[2]
 block = f"""
 ## Discord ({agent_id})
 
-- **Chat on Discord** — read **DISCORD.md** before any Discord task.
+- **Chat on Discord** — read **DISCORD.md** and **CHAT_CHANNELS.md** before any Discord task.
+- Cross-channel sends are enabled — use the `message` tool; never raw Discord HTTP APIs.
 - Token via `./identyclaw.sh set-discord-token {agent_id}`; guild/channel/owner IDs in `env.local`.
 - DMs use pairing (`pairing-list` / `pairing-approve` with channel `discord`).
 - In guild channels, users must @mention the bot unless configured otherwise.
@@ -6720,6 +6733,10 @@ ensure_agent_bootstrap() {
   ensure_identyclaw_config "$config_dir" "$container"
   ensure_openclaw_model_defaults "$config_dir" "$container"
   ensure_memory_config "$config_dir" "$container"
+  ensure_knowledge_config "$config_dir" "$container"
+  ensure_cross_context_messaging "$config_dir" "$container"
+  write_agent_chat_channels_doc "$config_dir"
+  ensure_knowledge_workspace "$id" "$config_dir"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
   fi
@@ -7130,6 +7147,8 @@ write_agent_publishing_doc() {
 Use **official OpenClaw channels** for chat (Discord, Telegram) and the publishing
 stack below for outbound posts. Read the linked workspace docs before any write.
 
+**Multi-channel:** cross-provider chat sends are enabled — see \`CHAT_CHANNELS.md\`.
+
 | Platform | Mode | Tooling |
 |----------|------|---------|
 | Discord | Chat (inbound/outbound) | Official \`@openclaw/discord\` — \`DISCORD.md\` / \`set-discord-token\` |
@@ -7360,9 +7379,42 @@ Bidirectional chat via the built-in Telegram channel plugin.
 - Token: `secrets/TELEGRAM_BOT_TOKEN` → synced to `.env` as `TELEGRAM_BOT_TOKEN`
 - Channel config: `openclaw.json` → `channels.telegram`
 
+## Outbound messages (message tool)
+
+Cross-provider sends are **enabled** — read **CHAT_CHANNELS.md** first.
+You may post to Telegram from a Discord session (or vice versa) via the `message` tool.
+**Never** use Telegram HTTP APIs via `exec`/`curl`.
+
+When sending to Telegram from another channel, pass `channel: "telegram"` and `target`
+(numeric chat id or `@username`).
+
 For publishing to a Telegram **channel** (not chat), prefer SocialClaw — see `PUBLISHING.md`.
 EOF
   chmod 644 "$config_dir/workspace/TELEGRAM.md"
+  write_telegram_workspace_guidance "$config_dir"
+}
+
+write_telegram_workspace_guidance() {
+  local config_dir="$1"
+  local agent_id="${2:-$(basename "$config_dir")}"
+  local tools="$config_dir/workspace/TOOLS.md"
+  [[ -f "$tools" ]] || return 0
+  python3 - "$tools" "$agent_id" <<'PY'
+import re, sys
+from pathlib import Path
+
+path, agent_id = Path(sys.argv[1]), sys.argv[2]
+block = f"""
+## Telegram ({agent_id})
+
+- **Chat on Telegram** — read **TELEGRAM.md** and **CHAT_CHANNELS.md** before any Telegram task.
+- Cross-channel sends are enabled — use the `message` tool; never raw Telegram HTTP APIs.
+- Token via `./identyclaw.sh set-telegram-token {agent_id}`; DMs use pairing (`pairing-list` / `pairing-approve`).
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## Telegram[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
 }
 
 ensure_telegram_channel_stub() {
@@ -7708,6 +7760,288 @@ if changed:
 PY
 }
 
+ensure_knowledge_config() {
+  local config_dir="$1"
+  local container="${2:-}"
+  load_env
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "$IDENTYCLAW_KNOWLEDGE_ENABLED" \
+    "$IDENTYCLAW_KNOWLEDGE_PATH" \
+    "$IDENTYCLAW_KNOWLEDGE_CHUNK_SIZE" \
+    "$IDENTYCLAW_KNOWLEDGE_CHUNK_OVERLAP" \
+    "$IDENTYCLAW_KNOWLEDGE_CITE_SOURCES" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+enabled = sys.argv[2] == "1"
+workspace_path = sys.argv[3]
+chunk_size = int(sys.argv[4])
+chunk_overlap = int(sys.argv[5])
+cite_sources = sys.argv[6] == "1"
+
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+
+if enabled:
+    entry = skills.setdefault("knowledge", {})
+    if entry.get("enabled") is not True:
+        entry["enabled"] = True
+        changed = True
+    cfg = entry.setdefault("config", {})
+    desired_cfg = {
+        "workspacePath": workspace_path,
+        "chunkSize": chunk_size,
+        "chunkOverlap": chunk_overlap,
+        "citeSources": cite_sources,
+    }
+    for key, val in desired_cfg.items():
+        if cfg.get(key) != val:
+            cfg[key] = val
+            changed = True
+else:
+    entry = skills.get("knowledge", {})
+    if entry.get("enabled") is not False:
+        skills["knowledge"] = {"enabled": False}
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+ensure_knowledge_workspace() {
+  local id="$1"
+  local config_dir="$2"
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  local knowledge_dir="$config_dir/workspace/knowledge"
+  mkdir -p "$knowledge_dir"
+  if [[ ! -f "$knowledge_dir/README.md" ]]; then
+    cat >"$knowledge_dir/README.md" <<EOF
+# Product & service knowledge base
+
+Drop **local** product and service documentation here for the OpenClaw knowledge
+skill to index. The agent searches these files before answering factual questions
+and cites the source file when \`citeSources\` is enabled.
+
+## Supported formats
+
+\`.md\`, \`.txt\`, \`.pdf\`, \`.csv\`, \`.json\`
+
+## Tips
+
+- Prefer topic-focused Markdown files over one giant PDF.
+- Keep network-published IdentyClaw resources out of this folder — the agent
+  should use \`identyclaw_list_resources\` / \`identyclaw_get_resource\` for those.
+- Conversational memory (preferences, session notes) belongs in \`MEMORY.md\` and
+  \`memory/YYYY-MM-DD.md\`, not here.
+
+## Re-index after bulk changes
+
+\`\`\`bash
+./identyclaw.sh knowledge-reindex ${id}
+\`\`\`
+EOF
+    chmod 644 "$knowledge_dir/README.md"
+  fi
+  write_agent_knowledge_doc "$config_dir" "$id"
+  write_knowledge_workspace_guidance "$config_dir" "$id"
+}
+
+write_agent_knowledge_doc() {
+  local config_dir="$1"
+  local id="$2"
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  local app_dir knowledge_host_path
+  app_dir="$(identyclaw_app_dir)"
+  knowledge_host_path="${app_dir}/agents/${id}/workspace/knowledge"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/KNOWLEDGE.md" <<EOF
+# Local knowledge base (document RAG)
+
+This agent has the OpenClaw **knowledge** skill enabled for **local** product and
+service documentation. QMD memory (\`MEMORY.md\`, \`memory/*.md\`, session recall)
+handles conversational context separately.
+
+## Where operators upload docs
+
+On the host (bind-mounted into the container):
+
+\`\`\`text
+${knowledge_host_path}/
+\`\`\`
+
+Relative to the agent workspace: \`${IDENTYCLAW_KNOWLEDGE_PATH:-./knowledge}/\`
+
+Supported formats: \`.md\`, \`.txt\`, \`.pdf\`, \`.csv\`, \`.json\`
+
+After adding or changing many files, ask the operator to run:
+
+\`\`\`bash
+./identyclaw.sh knowledge-reindex ${id}
+\`\`\`
+
+Or restart the gateway (re-indexes on startup).
+
+## Network-published content (IdentyClaw resources)
+
+Do **not** duplicate IdentyClaw-published resources in \`knowledge/\`. For content
+published on the IdentyClaw network, use:
+
+| Tool | Purpose |
+|------|---------|
+| \`identyclaw_list_resources\` | Discover published resources |
+| \`identyclaw_get_resource\` | Fetch a specific resource by id |
+
+Resource reads may require HOLA verification per \`AGENTS.md\` → "Trust & tool tiers".
+
+## Answering questions
+
+Search indexed docs first for product/service facts. Cite the source file and
+location when \`citeSources\` is enabled. If nothing relevant is indexed, say so —
+do not guess from general training data for company-specific policies or specs.
+EOF
+  chmod 644 "$config_dir/workspace/KNOWLEDGE.md"
+}
+
+write_knowledge_workspace_guidance() {
+  local config_dir="$1"
+  local id="$2"
+  local tools="$config_dir/workspace/TOOLS.md"
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  [[ -f "$tools" ]] || return 0
+  python3 - "$tools" "$id" <<'PY'
+import re, sys
+from pathlib import Path
+
+path, agent_id = Path(sys.argv[1]), sys.argv[2]
+block = f"""
+## Knowledge base ({agent_id})
+
+- **Local docs:** read **KNOWLEDGE.md** — product/service files live in `workspace/knowledge/`.
+- **Network resources:** `identyclaw_list_resources` / `identyclaw_get_resource` (not `knowledge/`).
+- **Conversational memory:** `memory_search` / `MEMORY.md` / `memory/YYYY-MM-DD.md` (QMD).
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## Knowledge base[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
+# OpenClaw blocks cross-provider message tool sends by default ("Cross-context messaging
+# denied"). This template enables free routing across Telegram, Discord, email, etc.
+ensure_cross_context_messaging() {
+  local config_dir="$1"
+  local container="${2:-}"
+  load_env
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+tools = data.setdefault("tools", {})
+message = tools.setdefault("message", {})
+cross = message.setdefault("crossContext", {})
+desired = {
+    "allowAcrossProviders": True,
+    "marker": {"enabled": True, "prefix": "[from {channel}] "},
+}
+changed = False
+for key, val in desired.items():
+    if cross.get(key) != val:
+        cross[key] = val
+        changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+write_agent_chat_channels_doc() {
+  local config_dir="$1"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/CHAT_CHANNELS.md" <<'EOF'
+# Multi-channel chat routing
+
+This agent may use **any configured chat channel** (Telegram, Discord, email, …) in any
+combination. Cross-provider sends are **enabled** in `openclaw.json` via
+`tools.message.crossContext.allowAcrossProviders`.
+
+## Session origin ≠ send destination
+
+Where the user messaged you from (e.g. a Telegram DM) does **not** lock outbound sends.
+You may freely post to Discord while in a Telegram session, notify on Telegram from a
+Discord thread, or fan out to several channels in one task.
+
+## Always use the `message` tool
+
+Use the built-in **`message`** tool for every outbound chat send. **Never** call Discord
+or Telegram HTTP APIs via `exec`, `curl`, or browser — that bypasses routing, pairing,
+and governance.
+
+## Explicit `channel` when crossing providers
+
+When the destination provider differs from the session you are in, pass **`channel`**
+explicitly on the `message` tool:
+
+| Destination | `channel` | `target` examples |
+|-------------|-----------|-------------------|
+| Discord text channel | `discord` | `channel:<channel-id>` |
+| Discord DM | `discord` | `user:<user-id>` |
+| Telegram chat | `telegram` | numeric chat id or `@username` |
+| Same provider as session | optional | defaults to the active session |
+
+Examples:
+
+```json
+{"tool": "message", "action": "send", "channel": "discord", "target": "channel:123", "message": "Hi"}
+{"tool": "message", "action": "send", "channel": "telegram", "target": "123456789", "message": "Done on Discord"}
+```
+
+Replies in the **same** channel as the inbound message may omit `channel` (normal reply).
+
+## Mixing channels is expected
+
+Operators may ask you to coordinate across channels (confirm on Telegram after acting on
+Discord, post summaries to multiple places, etc.). Do it via the `message` tool — do not
+claim you are "stuck" in one channel.
+
+See also: `DISCORD.md`, `TELEGRAM.md`, `PUBLISHING.md`.
+EOF
+  chmod 644 "$config_dir/workspace/CHAT_CHANNELS.md"
+  write_chat_channels_workspace_guidance "$config_dir"
+}
+
+write_chat_channels_workspace_guidance() {
+  local config_dir="$1"
+  local tools="$config_dir/workspace/TOOLS.md"
+  [[ -f "$tools" ]] || return 0
+  python3 - "$tools" <<'PY'
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+block = """
+## Chat channels (multi-channel routing)
+
+- Read **CHAT_CHANNELS.md** before any cross-channel or outbound chat task.
+- Cross-provider sends are enabled — use the `message` tool with explicit `channel` when needed.
+- Never use raw Discord/Telegram HTTP APIs (`exec`/`curl`); always `message`.
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## Chat channels[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
 # Pod agents may own openclaw.json on the host — sync repo-managed settings after the gateway is up.
 sync_agent_openclaw_json_when_container_running() {
   local id="$1"
@@ -7719,6 +8053,8 @@ sync_agent_openclaw_json_when_container_running() {
   wait_for_running_agent_container "$container" || return 1
   ensure_openclaw_model_defaults "$dir" "$container"
   ensure_memory_config "$dir" "$container"
+  ensure_knowledge_config "$dir" "$container"
+  ensure_cross_context_messaging "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
   if [[ "$restart" == "1" ]]; then
     podman restart "$container" >/dev/null
@@ -7766,6 +8102,15 @@ write_openclaw_json() {
       "sessions_history",
       "sessions_send"
     ],
+    "message": {
+      "crossContext": {
+        "allowAcrossProviders": true,
+        "marker": {
+          "enabled": true,
+          "prefix": "[from {channel}] "
+        }
+      }
+    },
     "sessions": {
       "visibility": "agent"
     }
@@ -7837,6 +8182,7 @@ EOF
   chmod 600 "$config_dir/openclaw.json"
   ensure_openclaw_model_defaults "$config_dir" ""
   ensure_memory_config "$config_dir" ""
+  ensure_knowledge_config "$config_dir" ""
 }
 
 ensure_agent_env() {

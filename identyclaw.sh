@@ -44,6 +44,7 @@
 #   upgrade-plugins [id|all]  Refresh IdentyClaw plugins from ClawHub
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered inbound peers
 #   discover-a2a-peers [id|all]  Discover live peers via GET /api/agents
+#   knowledge-reindex <id>  Rebuild the local knowledge/ document index
 #   token <id>           Print Control UI gateway token
 #   chat <id>            OpenClaw TUI against running gateway
 #   ask <id> "message"   One-shot agent message
@@ -112,6 +113,8 @@ init_one_agent() {
   write_openclaw_json "$dir" "$gateway_port"
   ensure_browser_container_config "$dir"
   ensure_telegram_channel_stub "$dir"
+  write_agent_chat_channels_doc "$dir"
+  ensure_knowledge_workspace "$id" "$dir"
   write_agent_publishing_doc "$dir"
   write_agent_trust_doc "$dir"
   ensure_agent_env "$dir"
@@ -1181,6 +1184,28 @@ cmd_discover_a2a_peers() {
   echo "Updated openclaw.json outbound.agents — restart to load: $0 restart ${target}"
 }
 
+cmd_knowledge_reindex() {
+  require_podman
+  require_rootless_user
+  local id="${1:?Usage: $0 knowledge-reindex <agent-id>}"
+  local dir container
+  load_env
+  is_valid_agent_id "$id" || {
+    echo "Usage: $0 knowledge-reindex <agent-id>" >&2
+    exit 1
+  }
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || {
+    echo "Knowledge skill disabled (IDENTYCLAW_KNOWLEDGE_ENABLED=0 in env.local)" >&2
+    exit 1
+  }
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  ensure_knowledge_config "$dir" "$container"
+  ensure_knowledge_workspace "$id" "$dir"
+  echo "==> Re-indexing knowledge base for ${id}"
+  openclaw_agent_exec "$dir" "$container" knowledge reindex
+}
+
 cmd_onboard() {
   local id="${1:?Usage: $0 onboard agent-b}"
   shift
@@ -1289,6 +1314,7 @@ main() {
     upgrade-plugins) cmd_upgrade_plugins "$@" ;;
     sync-a2a-peers) cmd_sync_a2a_peers "$@" ;;
     discover-a2a-peers) cmd_discover_a2a_peers "$@" ;;
+    knowledge-reindex) cmd_knowledge_reindex "$@" ;;
     -h|--help|help|"") usage ;;
     *)
       echo "Unknown command: $cmd" >&2

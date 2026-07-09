@@ -14,6 +14,8 @@ This repository is **code-only** (safe to clone publicly). Runtime config, secre
 | **identyclaw-webhooks plugin** | RODiT-signed inbound webhooks (`/hooks/wake`, `/hooks/agent`) |
 | **nginx TLS sidecar** (pod mode) | Public HTTPS on `:9443` → OpenClaw upstream |
 | **Workspace governance docs** | `AGENTS.md` "Trust & tool tiers" + `BOOT.md` reset reminder, written on bootstrap |
+| **Knowledge base (RAG)** | OpenClaw `knowledge` skill — index product/service docs in `workspace/knowledge/` |
+| **QMD memory** | Session recall + `MEMORY.md` / daily notes via `memory_search` |
 | **Smoke tests** | `./identyclaw.sh test` — local A2A, webhooks, optional mail |
 
 Mutual auth for A2A and webhooks uses **RODiT JWT / Ed25519 signatures**, not TLS client certificates. TLS is transport encryption only.
@@ -51,6 +53,7 @@ identyclaw-agents-app/
         ├── openclaw.json     # Gateway + plugin config (synced on bootstrap)
         ├── .env              # Gateway token + LLM keys (OPENROUTER_API_KEY / OPENCODE_API_KEY)
         ├── workspace/        # Agent workspace, skills docs
+        │   └── knowledge/  # Product/service docs for RAG (see Knowledge base below)
         ├── secrets/
         │   ├── near-credentials/
         │   │   └── <implicit-account-id-not-set>.json   # IdentyClaw Passport (NEAR key)
@@ -338,6 +341,8 @@ Enables user linger + `podman-restart.service` so containers survive reboot.
 | `AGENT_*_EMAIL` / `AGENT_*_DISPLAY_NAME` | Force mailbox / agent card name |
 | `AGENT_*_PASSWORD` | Migadu IMAP/SMTP password |
 | `IDENTYCLAW_API_BASE_URL` | Override IdentyClaw API base (default: Passport `subjectuniqueidentifier_url`) |
+| `IDENTYCLAW_KNOWLEDGE_ENABLED` | Set `0` to disable local document RAG (default `1`) |
+| `IDENTYCLAW_KNOWLEDGE_PATH` | Knowledge folder relative to workspace (default `./knowledge`) |
 | `A2A_PEER_AGENTS` | Space-separated remote peer `token_id` list |
 | `IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` | Auto-discover peers from `GET /api/agents` |
 | `IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1` | Learn peers from inbound P2P JWT logins |
@@ -385,6 +390,7 @@ Run from the repo root (or `../identyclaw-agents-app/repo/` after deploy):
 | `./identyclaw.sh test [id]` | Full local smoke suite |
 | `./identyclaw.sh upgrade-plugins [id\|all]` | Refresh IdentyClaw plugins from ClawHub |
 | `./identyclaw.sh discover-a2a-peers [id\|all]` | Refresh outbound peers from API |
+| `./identyclaw.sh knowledge-reindex <id>` | Rebuild local `workspace/knowledge/` index |
 | `./identyclaw.sh set-password <id>` | Migadu mailbox password |
 | `./identyclaw.sh set-discord-token <id>` | Discord bot token |
 | `./identyclaw.sh onboard <id>` | OpenClaw interactive setup |
@@ -419,6 +425,42 @@ Set `AGENT_IDS=agent-a agent-b` and add matching `AGENT_B_*` variables in `env.l
 - Replace self-signed certs with CA-issued PEMs before production traffic.
 - Inbound A2A rejects unauthenticated requests; webhook ingress requires RODiT origin signatures.
 - Chat channels (Telegram/Discord) authenticate senders only by pairing/allowlist. For a per-sender trust and approval model, see [Agent governance](#agent-governance-trust--tool-tiers) below.
+
+---
+
+## Knowledge base (local document RAG)
+
+Bootstrap enables OpenClaw's bundled **knowledge** skill (synced to `openclaw.json` from
+`env.local`). Use it for **local** product and service documentation — FAQs, API references,
+pricing sheets, runbooks, and similar static material.
+
+**Upload path on the host:**
+
+```text
+identyclaw-agents-app/agents/<agent-id>/workspace/knowledge/
+```
+
+Supported formats: `.md`, `.txt`, `.pdf`, `.csv`, `.json`. Prefer topic-focused Markdown
+files over one large PDF. After bulk changes:
+
+```bash
+./identyclaw.sh knowledge-reindex <agent-id>
+```
+
+The gateway also re-indexes on restart. Answers cite source files when
+`IDENTYCLAW_KNOWLEDGE_CITE_SOURCES=1` (default).
+
+### What goes where
+
+| Content | Location / tool |
+|---------|-----------------|
+| Product & service docs (local) | `workspace/knowledge/` — knowledge skill RAG |
+| Network-published IdentyClaw resources | `identyclaw_list_resources` / `identyclaw_get_resource` |
+| Preferences, session notes, learned facts | `MEMORY.md`, `memory/YYYY-MM-DD.md` — QMD memory |
+| Agent behavior & trust rules | `AGENTS.md`, `IDENTYCLAW.md`, `KNOWLEDGE.md` |
+
+QMD memory (`IDENTYCLAW_MEMORY_BACKEND=qmd`, session recall on) stays enabled alongside the
+knowledge skill. Disable local RAG with `IDENTYCLAW_KNOWLEDGE_ENABLED=0` in `env.local`.
 
 ---
 
@@ -476,6 +518,7 @@ upserted in place, so hand-edits outside those blocks are preserved.
 | `/a2a` 401 | Passport creds, inbound audience (`owner_id`), peer JWT |
 | Health check fails | `generate-certs` or CA PEMs, firewall on `:9443`, DNS vs `USE_LOCAL_RESOLVE=1` |
 | Plugin build errors | Node 22+, npm, network; retry deploy or `upgrade-plugins` |
+| Agent can't send Telegram→Discord (or mixes channels / uses raw API) | Restart after deploy so `openclaw.json` gets `tools.message.crossContext.allowAcrossProviders`; agent should read `CHAT_CHANNELS.md` and use the `message` tool with explicit `channel` |
 
 For unit tests on webhook URL resolution:
 
