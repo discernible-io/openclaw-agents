@@ -48,8 +48,13 @@ for overrides outside bootstrap.
 | `identyclaw_create_hola` | Outbound HOLA lines (e.g. MUNDO probes) |
 | `identyclaw_get_nonce` | Fresh nonce before each signed HOLA |
 
-Denied for public senders (invisible to the model): `exec`, `browser`, `write`,
-`message`, A2A outbound, webhooks, etc.
+Denied for public **Telegram/Discord** senders (invisible to the model): `exec`,
+`browser`, `write`, `message`, A2A outbound, webhooks, etc. Caps are scoped to
+`channel:telegram:*` and `channel:discord:*` — local console (`identyclaw.sh chat` /
+`ask`, session `console`) is not capped.
+
+Set operator IDs (`AGENT_*_TELEGRAM_OWNER_ID`, `AGENT_*_DISCORD_OWNER_ID`) for
+full tools on those channels.
 
 ## Verify
 

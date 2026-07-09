@@ -501,7 +501,7 @@ OpenClaw config (bootstrap writes `tools.toolsBySender` automatically on every
 `start` / `restart` / deploy):
 
 - **Channel access** — `channels.*.dmPolicy` (`pairing` / `allowlist`), `allowFrom`
-- **Per-sender tool caps** — `tools.toolsBySender` (denied tools are removed from the model's schema; public senders get HOLA create/verify, operators get full tools)
+- **Per-sender tool caps** — `tools.toolsBySender` (denied tools are removed from the model's schema; public Telegram/Discord senders get HOLA create/verify; operators get full tools; local `console` session is independent — see `IDENTYCLAW_CONSOLE_SESSION_KEY`)
 - **Admin approval** — `channels.*.execApprovals` for `exec`, or a plugin `before_tool_call` `requireApproval` hook for any tool
 - **Cryptographic identity** — RODiT JWT on A2A, RODiT signatures on webhooks, HOLA verification on inbound email (already enforced)
 
@@ -521,6 +521,7 @@ upserted in place, so hand-edits outside those blocks are preserved.
 | Health check fails | `generate-certs` or CA PEMs, firewall on `:9443`, DNS vs `USE_LOCAL_RESOLVE=1` |
 | Plugin build errors | Node 22+, npm, network; retry deploy or `upgrade-plugins` |
 | Agent can't send Telegram→Discord (or mixes channels / uses raw API) | Restart after deploy so `openclaw.json` gets `tools.message.crossContext.allowAcrossProviders`; agent should read `CHAT_CHANNELS.md` and use the `message` tool with explicit `channel` |
+| Bash console / Control UI can't read email (`exec` missing) | Use session `console` (`./identyclaw.sh chat` / `ask` do this automatically). In Control UI, switch off `main` (Telegram/Discord). Set `AGENT_*_TELEGRAM_OWNER_ID` / `DISCORD_OWNER_ID` for full tools on those channels. Restart after env changes. |
 
 For unit tests on webhook URL resolution:
 

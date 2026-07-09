@@ -905,17 +905,18 @@ cmd_chat() {
   require_podman
   require_agent_running "$id"
   load_env
-  local display ui_base container gw_port token
+  local display ui_base container gw_port token session_key
   display="$(agent_display_name "$id")"
   ui_base="$(agent_ui_base_url "$id")"
   container="$(agent_container "$id")"
   gw_port="$(agent_internal_gateway_port "$id")"
   token="$(agent_gateway_token "$id")"
+  session_key="$(identyclaw_console_session_key)"
   [[ -n "$token" ]] || { echo "Missing OPENCLAW_GATEWAY_TOKEN for ${id}" >&2; exit 1; }
   printf '\033]0;%s (%s) — identyclaw chat\007' "$display" "$id"
-  echo "=== ${display} · ${id} · ${ui_base}/ · session main ==="
+  echo "=== ${display} · ${id} · ${ui_base}/ · session ${session_key} (local console — not Telegram/Discord main) ==="
   echo ""
-  # Connect to the running gateway (not tui --local) — same session as Control UI, no second runtime.
+  # Connect to the running gateway (not tui --local). Uses console session — independent of channel main.
   podman exec -it \
     -e LOG_LEVEL=error \
     -e SUPPRESS_NO_CONFIG_WARNING=true \
@@ -923,18 +924,19 @@ cmd_chat() {
     "$container" node dist/index.js tui \
     --url "ws://127.0.0.1:${gw_port}" \
     --token "$token" \
-    --session main \
+    --session "$session_key" \
     "$@"
 }
 
 cmd_ask() {
   local id="${1:?Usage: $0 ask agent-b \"message\"}"
   local message="${2:?Usage: $0 ask agent-b \"message\"}"
-  local container tls_env=()
+  local container tls_env=() session_key
   require_podman
   require_agent_running "$id"
   load_env
   container="$(agent_container "$id")"
+  session_key="$(identyclaw_console_session_key)"
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
@@ -944,7 +946,7 @@ cmd_ask() {
     -e SUPPRESS_STRICTNESS_CHECK=true \
     "${tls_env[@]}" \
     "$container" node dist/index.js agent \
-    --agent main -m "$message"
+    --agent main --session-key "$session_key" -m "$message"
 }
 
 cmd_set_api_key() {

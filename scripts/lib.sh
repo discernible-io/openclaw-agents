@@ -210,6 +210,10 @@ load_env() {
   IDENTYCLAW_CLAWHUB_SOCIALCLAW_SKILL="${IDENTYCLAW_CLAWHUB_SOCIALCLAW_SKILL:-socialclaw}"
   IDENTYCLAW_SERVICE_CONTACT_SALES="${IDENTYCLAW_SERVICE_CONTACT_SALES:-sales@identyclaw.com}"
   IDENTYCLAW_SERVICE_CONTACT_SUPPORT="${IDENTYCLAW_SERVICE_CONTACT_SUPPORT:-support@identyclaw.com}"
+  # Bash TUI / ask use this session key (not main) so local console is independent of Telegram/Discord.
+  IDENTYCLAW_CONSOLE_SESSION_KEY="${IDENTYCLAW_CONSOLE_SESSION_KEY:-console}"
+  # When 1 (default), public tool caps apply only on telegram:/discord: senders — console/webchat/cli keep full tools.
+  IDENTYCLAW_CHANNEL_SCOPED_PUBLIC_TOOLS="${IDENTYCLAW_CHANNEL_SCOPED_PUBLIC_TOOLS:-1}"
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-pod}"
   IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
@@ -3431,6 +3435,7 @@ start_pod_agent() {
     ensure_memory_embedding_config "$dir" "$container"
     ensure_memory_tools_config "$dir" "$container"
     ensure_knowledge_config "$dir" "$container"
+    ensure_tools_by_sender_policy "$id" "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
@@ -3454,6 +3459,7 @@ start_pod_agent() {
     ensure_memory_embedding_config "$dir" "$container"
     ensure_memory_tools_config "$dir" "$container"
     ensure_knowledge_config "$dir" "$container"
+    ensure_tools_by_sender_policy "$id" "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"
@@ -3934,6 +3940,7 @@ agent_discord_channel_settings() {
 }
 
 # Operator sender keys for tools.toolsBySender (Discord owner, Telegram owner).
+# OpenClaw matches channel-prefixed keys (channel:telegram:… / channel:discord:…) before the wildcard.
 agent_operator_sender_keys() {
   local id="$1"
   local settings="" owner="" tg_owner=""
@@ -3942,14 +3949,19 @@ agent_operator_sender_keys() {
   settings="$(agent_discord_channel_settings "$id" 2>/dev/null || true)"
   owner="${settings##*|}"
   if [[ -n "$owner" ]]; then
-    printf 'id:%s\n' "$owner"
+    printf 'channel:discord:%s\n' "$owner"
   fi
   tg_owner="$(agent_env_value "$id" TELEGRAM_OWNER_ID "")"
   tg_owner="${tg_owner:-${IDENTYCLAW_TELEGRAM_OWNER_ID:-}}"
   if [[ -n "$tg_owner" ]]; then
     tg_owner="${tg_owner#telegram:}"
-    printf 'telegram:%s\n' "$tg_owner"
+    printf 'channel:telegram:%s\n' "$tg_owner"
   fi
+}
+
+identyclaw_console_session_key() {
+  load_env
+  echo "${IDENTYCLAW_CONSOLE_SESSION_KEY:-console}"
 }
 
 ensure_discord_ready() {
@@ -4447,11 +4459,15 @@ PY
 
 # Per-sender tool caps: public chat senders get KB + HOLA tools; operators get full access.
 # Re-applied on every bootstrap so a full rebuild does not drop identyclaw_create_hola.
+# With IDENTYCLAW_CHANNEL_SCOPED_PUBLIC_TOOLS=1 (default), caps apply only on telegram/discord
+# channel senders — identyclaw.sh chat/ask (console session) and other non-channel surfaces keep exec.
 ensure_tools_by_sender_policy() {
   local id="$1"
   local config_dir="$2"
   local container="${3:-}"
-  local operators_json="" line
+  local operators_json="" line channel_scoped
+  load_env
+  channel_scoped="${IDENTYCLAW_CHANNEL_SCOPED_PUBLIC_TOOLS:-1}"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   operators_json="$(
     {
@@ -4460,12 +4476,13 @@ ensure_tools_by_sender_policy() {
       done < <(agent_operator_sender_keys "$id")
     } | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))'
   )"
-  _agent_openclaw_json_python "$config_dir" "$container" "$operators_json" <<'PY'
+  _agent_openclaw_json_python "$config_dir" "$container" "$operators_json" "$channel_scoped" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 operators = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else []
+channel_scoped = (sys.argv[3] if len(sys.argv) > 3 else "1") != "0"
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
@@ -4485,7 +4502,11 @@ for op in operators:
     key = str(op).strip()
     if key:
         desired_by_sender[key] = {}
-desired_by_sender["*"] = {"allow": PUBLIC_SENDER_ALLOW}
+if channel_scoped:
+    desired_by_sender["channel:telegram:*"] = {"allow": PUBLIC_SENDER_ALLOW}
+    desired_by_sender["channel:discord:*"] = {"allow": PUBLIC_SENDER_ALLOW}
+else:
+    desired_by_sender["*"] = {"allow": PUBLIC_SENDER_ALLOW}
 
 tools = data.setdefault("tools", {})
 if tools.get("toolsBySender") != desired_by_sender:
@@ -4496,7 +4517,17 @@ commands = data.setdefault("commands", {})
 owner_allow = list(commands.get("ownerAllowFrom") or [])
 for op in operators:
     key = str(op).strip()
-    if key.startswith("telegram:") and key not in owner_allow:
+    if key.startswith("channel:telegram:"):
+        tg_key = "telegram:" + key[len("channel:telegram:"):]
+        if tg_key not in owner_allow:
+            owner_allow.append(tg_key)
+            changed = True
+    elif key.startswith("channel:discord:"):
+        discord_key = "discord:" + key[len("channel:discord:"):]
+        if discord_key not in owner_allow:
+            owner_allow.append(discord_key)
+            changed = True
+    elif key.startswith("telegram:") and key not in owner_allow:
         owner_allow.append(key)
         changed = True
     elif key.startswith("id:"):
@@ -8854,6 +8885,7 @@ sync_agent_openclaw_json_when_container_running() {
   ensure_memory_tools_config "$dir" "$container"
   ensure_knowledge_config "$dir" "$container"
   ensure_cross_context_messaging "$dir" "$container"
+  ensure_tools_by_sender_policy "$id" "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
   ensure_agent_knowledge_governance "$id" "$dir"
   if [[ "$restart" == "1" ]]; then
