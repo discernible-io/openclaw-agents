@@ -194,7 +194,7 @@ load_env() {
   IDENTYCLAW_KNOWLEDGE_PATH="${IDENTYCLAW_KNOWLEDGE_PATH:-./knowledge}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
-  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.3}"
+  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.5}"
   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.6}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
@@ -4733,15 +4733,65 @@ for key, value in desired_login.items():
         rodit_login[key] = value
         changed = True
 
-card = inbound.setdefault("agentCard", {})
-if card.get("name") != display_name:
-    card["name"] = display_name
-    changed = True
-card_desc = f"{display_name} (IdentyClaw A2A)"
-if own_token_id:
-    card_desc = f"{display_name} (IdentyClaw A2A, token_id={own_token_id})"
-if card.get("description") != card_desc:
-    card["description"] = card_desc
+token_id = (own_token_id or "").strip() or "REPLACE_WITH_LOBBY_TOKEN_ID"
+card_url = (public_base_url or "").strip() or "https://identyclaw-concierge.identyclaw.com:7443"
+desired_card = {
+    "name": display_name,
+    "description": (
+        f"{display_name} (IdentyClaw A2A) — identity onboarding, Passport guidance, "
+        "live HOLA demos, and agent-to-agent assistance. Channels: A2A, email, Discord, Telegram."
+    ),
+    "version": "1.0.0",
+    "skills": [
+        {
+            "id": "concierge",
+            "name": "IdentyClaw Concierge",
+            "description": "Identity onboarding, Passport guidance, and agent-to-agent assistance via IdentyClaw.",
+            "tags": ["identyclaw", "concierge", "a2a", "passport", "hola"],
+            "examples": [
+                "Help me understand IdentyClaw Passport setup",
+                "What can you do over A2A?",
+                "Send me a HOLA I can verify",
+            ],
+            "inputModes": ["text"],
+            "outputModes": ["text"],
+        },
+        {
+            "id": "verify_hola_explainer",
+            "name": "HOLA mutual authentication",
+            "description": "Send a live HOLA demo; verify at verify.identyclaw.com or npx @identyclaw/verify-hola report --rpc",
+            "tags": ["hola", "security"],
+        },
+        {
+            "id": "enrollment_checklist",
+            "name": "Enrollment checklist",
+            "description": "Step-by-step: NEAR key → mint at purchase.identyclaw.com → plugin → identyclaw_get_my_identity",
+            "tags": ["identity", "enrollment", "openclaw", "near"],
+        },
+    ],
+    "defaultInputModes": ["text/plain"],
+    "defaultOutputModes": ["text/plain"],
+    "extensions": {
+        "identyclaw": {
+            "registryId": "com.identyclaw.lemuel_gulliver",
+            "registryUrl": "https://www.a2a-registry.org/agent/com.identyclaw.lemuel_gulliver",
+            "passportTokenId": token_id,
+            "did": f"did:rodit:{token_id}",
+            "verifyUrl": "https://verify.identyclaw.com",
+            "verifyRpcDocs": "npx @identyclaw/verify-hola report --rpc",
+            "channels": ["a2a", "email", "discord", "telegram"],
+            "contactUris": [
+                f"a2a:identyclaw.com:{card_url}",
+                "email:identyclaw.com:concierge@identyclaw.com",
+                "discord:identyclaw.com:identyclaw",
+                "telegram:identyclaw.com:@identyclaw",
+            ],
+        }
+    },
+}
+existing_card = inbound.get("agentCard") or {}
+if json.dumps(existing_card, sort_keys=True) != json.dumps(desired_card, sort_keys=True):
+    inbound["agentCard"] = desired_card
     changed = True
 
 if public_base_url:
