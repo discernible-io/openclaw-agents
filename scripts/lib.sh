@@ -3428,6 +3428,8 @@ start_pod_agent() {
     ensure_agent_state_for_container_exec "$id"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
+    ensure_memory_embedding_config "$dir" "$container"
+    ensure_memory_tools_config "$dir" "$container"
     ensure_knowledge_config "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
@@ -3448,6 +3450,8 @@ start_pod_agent() {
     wait_for_running_agent_container "$container" || return 1
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
+    ensure_memory_embedding_config "$dir" "$container"
+    ensure_memory_tools_config "$dir" "$container"
     ensure_knowledge_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
@@ -6728,6 +6732,7 @@ ensure_agent_bootstrap() {
   ensure_identyclaw_config "$config_dir" "$container"
   ensure_openclaw_model_defaults "$config_dir" "$container"
   ensure_memory_config "$config_dir" "$container"
+  ensure_memory_tools_config "$config_dir" "$container"
   ensure_knowledge_config "$config_dir" "$container"
   ensure_cross_context_messaging "$config_dir" "$container"
   write_agent_chat_channels_doc "$config_dir"
@@ -7815,6 +7820,112 @@ if changed:
 PY
 }
 
+ensure_memory_tools_config() {
+  local config_dir="$1"
+  local container="${2:-}"
+  load_env
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "$IDENTYCLAW_KNOWLEDGE_ENABLED" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+knowledge_enabled = sys.argv[2] == "1"
+
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+tools = data.setdefault("tools", {})
+allow = tools.setdefault("allow", [])
+for tool in ("memory_search", "memory_get"):
+    if tool not in allow:
+        allow.append(tool)
+        changed = True
+
+if knowledge_enabled:
+    agents = data.setdefault("agents", {})
+    defaults = agents.setdefault("defaults", {})
+    memory_search = defaults.setdefault("memorySearch", {})
+    if memory_search.get("autoRecall") is not True:
+        memory_search["autoRecall"] = True
+        changed = True
+    plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+    active_memory = plugins.setdefault("active-memory", {})
+    if active_memory.get("enabled") is not True:
+        active_memory["enabled"] = True
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+  write_knowledge_agents_guidance "$config_dir" "$container"
+}
+
+_write_knowledge_agents_guidance_in_container() {
+  local container="$1"
+  podman exec -i "$container" python3 - <<'PY'
+import re
+from pathlib import Path
+
+path = Path("/home/node/.openclaw/workspace/AGENTS.md")
+if not path.is_file():
+    raise SystemExit(0)
+block = """
+## Product & service knowledge (local docs)
+
+For IdentyClaw product, Passport, HOLA, policies, pricing, or service questions:
+
+1. Run `memory_search` first (indexed `workspace/knowledge/`).
+2. Use `memory_get` for full passages when needed.
+3. Answer from retrieved docs and cite the source file.
+4. Do **not** guess from general training data when indexed docs exist.
+
+Network-published IdentyClaw resources use `identyclaw_list_resources` /
+`identyclaw_get_resource` — not `knowledge/`.
+"""
+text = path.read_text(encoding="utf-8")
+text = re.sub(r"\n## Product & service knowledge[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
+write_knowledge_agents_guidance() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local agents="$config_dir/workspace/AGENTS.md"
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_knowledge_agents_guidance_in_container "$container"
+    return 0
+  fi
+  [[ -f "$agents" ]] || return 0
+  python3 - "$agents" <<'PY'
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+block = """
+## Product & service knowledge (local docs)
+
+For IdentyClaw product, Passport, HOLA, policies, pricing, or service questions:
+
+1. Run `memory_search` first (indexed `workspace/knowledge/`).
+2. Use `memory_get` for full passages when needed.
+3. Answer from retrieved docs and cite the source file.
+4. Do **not** guess from general training data when indexed docs exist.
+
+Network-published IdentyClaw resources use `identyclaw_list_resources` /
+`identyclaw_get_resource` — not `knowledge/`.
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## Product & service knowledge[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
 ensure_knowledge_config() {
   local config_dir="$1"
   local container="${2:-}"
@@ -8306,6 +8417,7 @@ sync_agent_openclaw_json_when_container_running() {
   ensure_openclaw_model_defaults "$dir" "$container"
   ensure_memory_config "$dir" "$container"
   ensure_memory_embedding_config "$dir" "$container"
+  ensure_memory_tools_config "$dir" "$container"
   ensure_knowledge_config "$dir" "$container"
   ensure_cross_context_messaging "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
@@ -8354,6 +8466,8 @@ write_openclaw_json() {
       "sessions_list",
       "sessions_history",
       "sessions_send",
+      "memory_search",
+      "memory_get",
       "a2a_get_agents",
       "a2a_get_agent",
       "a2a_send_message",
@@ -8461,6 +8575,7 @@ EOF
   chmod 600 "$config_dir/openclaw.json"
   ensure_openclaw_model_defaults "$config_dir" ""
   ensure_memory_config "$config_dir" ""
+  ensure_memory_tools_config "$config_dir" ""
   ensure_knowledge_config "$config_dir" ""
 }
 

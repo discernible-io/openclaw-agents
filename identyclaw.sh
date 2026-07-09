@@ -1135,7 +1135,7 @@ cmd_knowledge_reindex() {
   container="$(agent_container "$id")"
   ensure_knowledge_config "$dir" "$container"
   ensure_knowledge_workspace "$id" "$dir"
-  ensure_memory_embedding_config "$dir" "$container"
+  ensure_memory_tools_config "$dir" "$container"
   echo "==> Re-indexing knowledge base for ${id}"
   openclaw_agent_exec "$dir" "$container" memory index --force
 }
