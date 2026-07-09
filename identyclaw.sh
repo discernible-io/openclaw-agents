@@ -10,12 +10,8 @@
 #   set-password <id>    Set Migadu mailbox password (agent-{slug})
 #   set-discord-token <id>  Store Discord bot token in secrets/
 #   set-telegram-token <id> Store Telegram bot token in secrets/
-#   pairing-list <id>      List pending Telegram DM pairing requests
-#   pairing-approve <id> <code>  Approve a Telegram pairing code
-#   set-socialclaw-key <id> Store SocialClaw workspace API key in secrets/
-#   set-instagram <id>      Store Instagram username/password in secrets/
-#   set-twitter <id>        Store X/Twitter login + enable hourly DM polling
-#   set-twitter-cookies <id>  Store X session cookies for bird-twitter skill
+#   pairing-list <id>      List pending DM pairing requests (only if dmPolicy is pairing)
+#   pairing-approve <id> <code>  Approve a pairing code (only if dmPolicy is pairing)
 #   start [id|all]       Start one or all agents in AGENT_IDS
 #   stop [id|all]        Stop containers
 #   restart [id|all]     Restart
@@ -112,10 +108,12 @@ init_one_agent() {
   write_agent_email_doc "$email" "$display_name" "$dir"
   write_openclaw_json "$dir" "$gateway_port"
   ensure_browser_container_config "$dir"
+  ensure_discord_channel_stub "$dir"
   ensure_telegram_channel_stub "$dir"
+  ensure_webhooks_plugin_config "$dir" ""
+  ensure_a2a_config "$id" "$dir" ""
   write_agent_chat_channels_doc "$dir"
   ensure_knowledge_workspace "$id" "$dir"
-  write_agent_publishing_doc "$dir"
   write_agent_trust_doc "$dir"
   ensure_agent_env "$dir"
 
@@ -220,71 +218,6 @@ cmd_pairing_approve() {
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   openclaw_agent_exec "$dir" "$container" pairing approve "$channel" "$code"
-}
-
-cmd_set_socialclaw_key() {
-  local id="${1:?Usage: $0 set-socialclaw-key agent-b}"
-  require_agent_id_arg "$id" "$0 set-socialclaw-key <agent-id>"
-  local dir
-  dir="$(agent_home "$id")"
-  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
-  local api_key
-  read -r -s -p "SocialClaw workspace API key for ${id}: " api_key
-  echo
-  [[ -n "$api_key" ]] || { echo "empty API key" >&2; exit 1; }
-  write_socialclaw_api_key "$dir" "$api_key"
-  ensure_socialclaw_skill "$id" "$dir"
-  echo "SocialClaw API key stored in ${dir}/secrets/SOCIALCLAW_API_KEY (mode 600)"
-  echo "Restart to apply: $0 restart ${id}"
-}
-
-cmd_set_instagram() {
-  local id="${1:?Usage: $0 set-instagram agent-b}"
-  local dir username password
-  dir="$(agent_home "$id")"
-  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
-  read -r -p "Instagram username for ${id}: " username
-  read -r -s -p "Instagram password for ${id}: " password
-  echo
-  write_instagram_secrets "$dir" "$username" "$password"
-  echo "Instagram credentials stored in ${dir}/secrets/instagram.* (mode 600)"
-  echo "Restart to apply: $0 restart ${id}"
-}
-
-cmd_set_twitter() {
-  local id="${1:?Usage: $0 set-twitter agent-b [username]}"
-  local dir username password
-  dir="$(agent_home "$id")"
-  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
-  if [[ -n "${2:-}" ]]; then
-    username="$2"
-    read -r -s -p "Twitter/X password for ${id}: " password
-    echo
-  else
-    read -r -p "Twitter/X login (email or username) for ${id}: " username
-    read -r -s -p "Twitter/X password for ${id}: " password
-    echo
-  fi
-  write_twitter_secrets "$id" "$dir" "$username" "$password"
-  echo "Twitter credentials stored; hourly heartbeat polling enabled (HEARTBEAT.md + agents.defaults.heartbeat.every=1h)"
-  echo "For posting, set session cookies: $0 set-twitter-cookies ${id}"
-  echo "Restart to apply env: $0 restart ${id}"
-}
-
-cmd_set_twitter_cookies() {
-  local id="${1:?Usage: $0 set-twitter-cookies agent-b}"
-  local dir auth_token ct0
-  dir="$(agent_home "$id")"
-  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
-  read -r -s -p "Twitter auth_token cookie for ${id}: " auth_token
-  echo
-  read -r -s -p "Twitter ct0 cookie for ${id}: " ct0
-  echo
-  [[ -n "$auth_token" && -n "$ct0" ]] || { echo "empty cookie values" >&2; exit 1; }
-  write_twitter_bird_cookies "$id" "$dir" "$auth_token" "$ct0"
-  ensure_twitter_clawhub_skill "$id" "$dir"
-  echo "Twitter session cookies stored; bird-twitter skill enabled for ${id}"
-  echo "Restart to apply env: $0 restart ${id}"
 }
 
 start_one() {
@@ -1202,8 +1135,9 @@ cmd_knowledge_reindex() {
   container="$(agent_container "$id")"
   ensure_knowledge_config "$dir" "$container"
   ensure_knowledge_workspace "$id" "$dir"
+  ensure_memory_embedding_config "$dir" "$container"
   echo "==> Re-indexing knowledge base for ${id}"
-  openclaw_agent_exec "$dir" "$container" knowledge reindex
+  openclaw_agent_exec "$dir" "$container" memory index --force
 }
 
 cmd_onboard() {
@@ -1278,10 +1212,6 @@ main() {
     set-telegram-token) cmd_set_telegram_token "$@" ;;
     pairing-list) cmd_pairing_list "$@" ;;
     pairing-approve) cmd_pairing_approve "$@" ;;
-    set-socialclaw-key) cmd_set_socialclaw_key "$@" ;;
-    set-instagram) cmd_set_instagram "$@" ;;
-    set-twitter) cmd_set_twitter "$@" ;;
-    set-twitter-cookies) cmd_set_twitter_cookies "$@" ;;
     set-api-key) cmd_set_api_key "$@" ;;
     set-opencode-key) cmd_set_opencode_key "$@" ;;
     mirror) cmd_mirror "$@" ;;

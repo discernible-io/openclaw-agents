@@ -186,15 +186,12 @@ load_env() {
   OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-30}"
   OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-60000}"
   # Memory: QMD backend + optional session transcript recall (synced to openclaw.json on bootstrap).
-  IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
+  IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-builtin}"
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
   IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
-  # Knowledge skill: local document RAG (synced to openclaw.json on bootstrap).
+  # Knowledge base: QMD indexes workspace/knowledge/ (synced to openclaw.json on bootstrap).
   IDENTYCLAW_KNOWLEDGE_ENABLED="${IDENTYCLAW_KNOWLEDGE_ENABLED:-1}"
   IDENTYCLAW_KNOWLEDGE_PATH="${IDENTYCLAW_KNOWLEDGE_PATH:-./knowledge}"
-  IDENTYCLAW_KNOWLEDGE_CHUNK_SIZE="${IDENTYCLAW_KNOWLEDGE_CHUNK_SIZE:-512}"
-  IDENTYCLAW_KNOWLEDGE_CHUNK_OVERLAP="${IDENTYCLAW_KNOWLEDGE_CHUNK_OVERLAP:-64}"
-  IDENTYCLAW_KNOWLEDGE_CITE_SOURCES="${IDENTYCLAW_KNOWLEDGE_CITE_SOURCES:-1}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.3}"
@@ -755,10 +752,8 @@ sync_agent_plugin_configs() {
   local container
   container="$(agent_container "$id")"
   ensure_identyclaw_config "$config_dir" "$container" || return 1
-  if agent_has_near_credentials "$config_dir" "$container"; then
-    ensure_a2a_config "$id" "$config_dir" "$container" || return 1
-    ensure_webhooks_plugin_config "$config_dir" "$container" || return 1
-  fi
+  ensure_webhooks_plugin_config "$config_dir" "$container" || return 1
+  ensure_a2a_config "$id" "$config_dir" "$container" || return 1
 }
 
 openclaw_gateway_version_from_image() {
@@ -3315,7 +3310,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|respond-mail|enable-mail-responder|test-a2a|test-a2a-auth|test-webhook|test|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|respond-mail|enable-mail-responder|test-a2a|test-a2a-auth|test-webhook|test|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|knowledge-reindex|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -3996,9 +3991,7 @@ ${prefix}_DISCORD_OWNER_ID=<your-discord-user-id>
 
 6. Store token: \`./identyclaw.sh set-discord-token ${id}\`
 7. Restart: \`./identyclaw.sh restart ${id}\`
-8. **DMs:** default \`dmPolicy: pairing\` — approve like Telegram:
-   - \`./identyclaw.sh pairing-list ${id} discord\`
-   - \`./identyclaw.sh pairing-approve ${id} discord <CODE>\`
+8. **DMs:** \`dmPolicy: open\` — any user may DM the bot (no pairing).
 9. **Guild channel:** @mention the bot in the configured channel (\`requireMention: true\`).
 
 ## Config
@@ -4062,7 +4055,7 @@ block = f"""
 - **Chat on Discord** — read **DISCORD.md** and **CHAT_CHANNELS.md** before any Discord task.
 - Cross-channel sends are enabled — use the `message` tool; never raw Discord HTTP APIs.
 - Token via `./identyclaw.sh set-discord-token {agent_id}`; guild/channel/owner IDs in `env.local`.
-- DMs use pairing (`pairing-list` / `pairing-approve` with channel `discord`).
+- DMs are open (`dmPolicy: open`) — no pairing required.
 - In guild channels, users must @mention the bot unless configured otherwise.
 """
 text = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -4092,8 +4085,8 @@ if plugins.get("discord", {}).get("enabled") is not True:
     plugins["discord"] = {"enabled": True}
     changed = True
 discord = data.setdefault("channels", {}).setdefault("discord", {})
-if "dmPolicy" not in discord:
-    discord["dmPolicy"] = "pairing"
+if discord.get("dmPolicy") != "open":
+    discord["dmPolicy"] = "open"
     changed = True
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -4529,21 +4522,28 @@ ensure_a2a_config() {
   local config_dir="$2"
   local container="${3:-}"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  agent_has_near_credentials "$config_dir" || return 0
 
   load_env
   [[ -n "$container" ]] || container="$(agent_container "$id")"
-  sync_identyclaw_env "$config_dir" "$container"
+  if agent_has_near_credentials "$config_dir"; then
+    sync_identyclaw_env "$config_dir" "$container"
+  fi
 
   a2a_warn_legacy_auth_mode_env "$id"
 
   local audience display_name public_base_url peers_json dynamic_peers_from_jwt own_token_id api_base
-  audience="$(agent_a2a_audience "$id" "$config_dir" "$container")"
+  audience=""
+  public_base_url=""
+  own_token_id=""
+  api_base=""
+  if agent_has_near_credentials "$config_dir"; then
+    audience="$(agent_a2a_audience "$id" "$config_dir" "$container")"
+    public_base_url="$(agent_a2a_public_base_url "$id")"
+    own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+    api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
+    sync_rodit_token_id_env "$config_dir" "$container"
+  fi
   display_name="$(agent_display_name "$id")"
-  public_base_url="$(agent_a2a_public_base_url "$id")"
-  own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
-  api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
-  sync_rodit_token_id_env "$config_dir" "$container"
   peers_json="$(build_a2a_peer_map "$id")"
   dynamic_peers_from_jwt="0"
   if a2a_dynamic_peers_from_jwt_enabled; then
@@ -6718,14 +6718,9 @@ ensure_agent_bootstrap() {
   container="$(agent_container "$id")"
   ensure_mail_secrets_from_env "$id" "$config_dir"
   ensure_agent_email_tooling "$id" "$config_dir"
-  ensure_instagram_secrets_from_env "$id" "$config_dir"
-  ensure_twitter_secrets_from_env "$id" "$config_dir"
-  ensure_linkedin_clawlink_skill "$id" "$config_dir"
-  ensure_socialclaw_skill "$id" "$config_dir"
   ensure_telegram_secrets_from_env "$id" "$config_dir"
   ensure_telegram_channel_stub "$config_dir"
   ensure_telegram_ready "$id" "$config_dir"
-  write_agent_publishing_doc "$config_dir"
   ensure_near_credentials_layout "$config_dir"
   ensure_discord_channel_stub "$config_dir" "$container"
   ensure_discord_guild_channels "$config_dir" "$container"
@@ -6737,6 +6732,7 @@ ensure_agent_bootstrap() {
   ensure_cross_context_messaging "$config_dir" "$container"
   write_agent_chat_channels_doc "$config_dir"
   ensure_knowledge_workspace "$id" "$config_dir"
+  ensure_webhooks_plugin_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
   fi
@@ -6986,7 +6982,7 @@ session after a gateway restart (see `BOOT.md`) — with all chat senders Unveri
 
 - **Public** (`read`, `identyclaw_list_agents`, general Q&A): no verification needed.
 - **Verified** (`identyclaw_get_agent_identity`, targeted `message`, resource reads): sender must be HOLA-verified this session.
-- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, ClawLink writes, publishing to LinkedIn/X/SocialClaw, sending email): sender must be HOLA-verified **and** an operator must approve the specific action.
+- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email): sender must be HOLA-verified **and** an operator must approve the specific action.
 
 If a request needs a tool above the sender's current tier, don't do it. Say what
 is required (verify HOLA, or wait for operator approval) and stop.
@@ -7370,9 +7366,7 @@ Bidirectional chat via the built-in Telegram channel plugin.
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the bot token.
 2. On the host: `./identyclaw.sh set-telegram-token <agent-id>`
 3. Restart the gateway: `./identyclaw.sh restart <agent-id>`
-4. DM the bot — approve pairing if `dmPolicy` requires it (default: pairing):
-   - List pending: `./identyclaw.sh pairing-list <agent-id>`
-   - Approve: `./identyclaw.sh pairing-approve <agent-id> <CODE>`
+4. DM the bot — DMs are open (\`dmPolicy: open\`; no pairing).
 
 ## Config
 
@@ -7387,8 +7381,6 @@ You may post to Telegram from a Discord session (or vice versa) via the `message
 
 When sending to Telegram from another channel, pass `channel: "telegram"` and `target`
 (numeric chat id or `@username`).
-
-For publishing to a Telegram **channel** (not chat), prefer SocialClaw — see `PUBLISHING.md`.
 EOF
   chmod 644 "$config_dir/workspace/TELEGRAM.md"
   write_telegram_workspace_guidance "$config_dir"
@@ -7409,7 +7401,7 @@ block = f"""
 
 - **Chat on Telegram** — read **TELEGRAM.md** and **CHAT_CHANNELS.md** before any Telegram task.
 - Cross-channel sends are enabled — use the `message` tool; never raw Telegram HTTP APIs.
-- Token via `./identyclaw.sh set-telegram-token {agent_id}`; DMs use pairing (`pairing-list` / `pairing-approve`).
+- Token via `./identyclaw.sh set-telegram-token {agent_id}`; DMs are open (`dmPolicy: open`).
 """
 text = path.read_text(encoding="utf-8") if path.is_file() else ""
 text = re.sub(r"\n## Telegram[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
@@ -7438,8 +7430,8 @@ if plugins.get("telegram", {}).get("enabled") is not True:
     plugins["telegram"] = {"enabled": True}
     changed = True
 telegram = data.setdefault("channels", {}).setdefault("telegram", {})
-if "dmPolicy" not in telegram:
-    telegram["dmPolicy"] = "pairing"
+if telegram.get("dmPolicy") != "open":
+    telegram["dmPolicy"] = "open"
     changed = True
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -7758,6 +7750,69 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+  ensure_memory_embedding_config "$config_dir" "$container"
+}
+
+ensure_memory_embedding_config() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local llm_provider env_file
+  load_env
+  llm_provider="$(openclaw_llm_provider)"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  env_file="$config_dir/.env"
+  if agent_config_use_container "$config_dir" "$container"; then
+    env_file="/home/node/.openclaw/.env"
+  fi
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "$llm_provider" "$env_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+llm_provider = sys.argv[2]
+env_file = Path(sys.argv[3])
+
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+def read_env_key(name: str) -> str:
+    if not env_file.is_file():
+        return ""
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == name:
+            return value.strip().strip('"').strip("'")
+    return ""
+
+agents = data.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+memory_search = defaults.setdefault("memorySearch", {})
+
+if llm_provider == "openrouter":
+    api_key = read_env_key("OPENROUTER_API_KEY")
+    desired_remote = {
+        "baseUrl": "https://openrouter.ai/api/v1",
+    }
+    if api_key:
+        desired_remote["apiKey"] = api_key
+    desired = {
+        "provider": "openai-compatible",
+        "model": "openai/text-embedding-3-small",
+        "remote": desired_remote,
+    }
+    for key, val in desired.items():
+        if memory_search.get(key) != val:
+            memory_search[key] = val
+            changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
 }
 
 ensure_knowledge_config() {
@@ -7767,45 +7822,70 @@ ensure_knowledge_config() {
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$IDENTYCLAW_KNOWLEDGE_ENABLED" \
-    "$IDENTYCLAW_KNOWLEDGE_PATH" \
-    "$IDENTYCLAW_KNOWLEDGE_CHUNK_SIZE" \
-    "$IDENTYCLAW_KNOWLEDGE_CHUNK_OVERLAP" \
-    "$IDENTYCLAW_KNOWLEDGE_CITE_SOURCES" <<'PY'
+    "$IDENTYCLAW_KNOWLEDGE_PATH" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 enabled = sys.argv[2] == "1"
 workspace_path = sys.argv[3]
-chunk_size = int(sys.argv[4])
-chunk_overlap = int(sys.argv[5])
-cite_sources = sys.argv[6] == "1"
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
+
 skills = data.setdefault("skills", {}).setdefault("entries", {})
+if "knowledge" in skills:
+    del skills["knowledge"]
+    changed = True
+
+agents = data.get("agents", {})
+defaults = agents.get("defaults", {}) if isinstance(agents, dict) else {}
+workspace = defaults.get("workspace", "/home/node/.openclaw/workspace")
+rel = workspace_path.removeprefix("./").lstrip("/")
+abs_knowledge = rel if workspace_path.startswith("/") else f"{workspace.rstrip('/')}/{rel}"
+
+memory = data.setdefault("memory", {})
+qmd = memory.setdefault("qmd", {})
+paths = qmd.get("paths")
+if not isinstance(paths, list):
+    paths = []
+    qmd["paths"] = paths
+    changed = True
+
+filtered = [p for p in paths if not (isinstance(p, dict) and p.get("name") == "knowledge")]
+if filtered != paths:
+    paths[:] = filtered
+    changed = True
 
 if enabled:
-    entry = skills.setdefault("knowledge", {})
-    if entry.get("enabled") is not True:
-        entry["enabled"] = True
-        changed = True
-    cfg = entry.setdefault("config", {})
-    desired_cfg = {
-        "workspacePath": workspace_path,
-        "chunkSize": chunk_size,
-        "chunkOverlap": chunk_overlap,
-        "citeSources": cite_sources,
+    desired = {
+        "name": "knowledge",
+        "path": abs_knowledge,
+        "pattern": "**/*",
     }
-    for key, val in desired_cfg.items():
-        if cfg.get(key) != val:
-            cfg[key] = val
-            changed = True
-else:
-    entry = skills.get("knowledge", {})
-    if entry.get("enabled") is not False:
-        skills["knowledge"] = {"enabled": False}
+    existing = next((p for p in paths if isinstance(p, dict) and p.get("name") == "knowledge"), None)
+    if existing != desired:
+        paths.append(desired)
         changed = True
+
+agents_cfg = data.setdefault("agents", {})
+defaults_cfg = agents_cfg.setdefault("defaults", {})
+memory_search = defaults_cfg.setdefault("memorySearch", {})
+extra_paths = memory_search.get("extraPaths")
+if not isinstance(extra_paths, list):
+    extra_paths = []
+    memory_search["extraPaths"] = extra_paths
+    changed = True
+filtered_extra = [p for p in extra_paths if p != abs_knowledge]
+if filtered_extra != extra_paths:
+    extra_paths[:] = filtered_extra
+    changed = True
+if enabled and abs_knowledge not in extra_paths:
+    extra_paths.append(abs_knowledge)
+    changed = True
+elif not enabled and abs_knowledge in extra_paths:
+    extra_paths.remove(abs_knowledge)
+    changed = True
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -7816,6 +7896,20 @@ PY
 ensure_knowledge_workspace() {
   local id="$1"
   local config_dir="$2"
+  local container
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _ensure_knowledge_workspace_in_container "$container" "$id"
+  else
+    write_knowledge_workspace_host "$config_dir" "$id"
+  fi
+}
+
+write_knowledge_workspace_host() {
+  local config_dir="$1"
+  local id="$2"
   load_env
   [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
   local knowledge_dir="$config_dir/workspace/knowledge"
@@ -7852,6 +7946,147 @@ EOF
   write_knowledge_workspace_guidance "$config_dir" "$id"
 }
 
+_ensure_knowledge_workspace_in_container() {
+  local container="$1"
+  local id="$2"
+  local app_dir knowledge_host_path
+  load_env
+  app_dir="$(identyclaw_app_dir)"
+  knowledge_host_path="${app_dir}/agents/${id}/workspace/knowledge"
+  podman exec -i "$container" env \
+    KNOWLEDGE_AGENT_ID="$id" \
+    KNOWLEDGE_CONTAINER="$container" \
+    KNOWLEDGE_HOST_PATH="$knowledge_host_path" \
+    KNOWLEDGE_REL_PATH="${IDENTYCLAW_KNOWLEDGE_PATH:-./knowledge}" \
+    python3 - <<'PY'
+import os, re
+from pathlib import Path
+
+workspace = Path("/home/node/.openclaw/workspace")
+knowledge_dir = workspace / "knowledge"
+knowledge_dir.mkdir(parents=True, exist_ok=True)
+
+agent_id = os.environ["KNOWLEDGE_AGENT_ID"]
+container = os.environ["KNOWLEDGE_CONTAINER"]
+host_path = os.environ["KNOWLEDGE_HOST_PATH"]
+rel_path = os.environ["KNOWLEDGE_REL_PATH"]
+
+readme = knowledge_dir / "README.md"
+if not readme.is_file():
+    readme.write_text(
+        f"""# Product & service knowledge base
+
+Drop **local** product and service documentation here for the OpenClaw knowledge
+skill to index. The agent searches these files before answering factual questions
+and cites the source file when `citeSources` is enabled.
+
+## Supported formats
+
+`.md`, `.txt`, `.pdf`, `.csv`, `.json`
+
+## Tips
+
+- Prefer topic-focused Markdown files over one giant PDF.
+- Keep network-published IdentyClaw resources out of this folder — the agent
+  should use `identyclaw_list_resources` / `identyclaw_get_resource` for those.
+- Conversational memory (preferences, session notes) belongs in `MEMORY.md` and
+  `memory/YYYY-MM-DD.md`, not here.
+
+## Re-index after bulk changes
+
+```bash
+./identyclaw.sh knowledge-reindex {agent_id}
+```
+""",
+        encoding="utf-8",
+    )
+    readme.chmod(0o644)
+
+(workspace / "KNOWLEDGE.md").write_text(
+    f"""# Local knowledge base (document RAG via QMD)
+
+This agent indexes **local** product and service documentation under
+`workspace/knowledge/` through **QMD** (`memory.qmd.paths` → `memory_search`).
+QMD memory (`MEMORY.md`, `memory/*.md`, session recall) handles conversational
+context separately.
+
+## Where operators upload docs
+
+Host path (bind-mounted here):
+
+```text
+{host_path}/
+```
+
+In-container path: `{rel_path}/`
+
+While the gateway is running, pod userns may block direct host writes. Use either:
+
+```bash
+podman cp ./faq.md {container}:/home/node/.openclaw/workspace/knowledge/
+./identyclaw.sh knowledge-reindex {agent_id}
+```
+
+Or stop the gateway, copy on the host, then restart:
+
+```bash
+./identyclaw.sh restore-host-access {agent_id}
+# copy files into {host_path}/
+./identyclaw.sh start {agent_id}
+```
+
+Supported formats: `.md`, `.txt`, `.pdf`, `.csv`, `.json`
+
+After adding or changing many files, ask the operator to run:
+
+```bash
+./identyclaw.sh knowledge-reindex {agent_id}
+```
+
+Or restart the gateway (re-indexes on startup).
+
+## Network-published content (IdentyClaw resources)
+
+Do **not** duplicate IdentyClaw-published resources in `knowledge/`. For content
+published on the IdentyClaw network, use:
+
+| Tool | Purpose |
+|------|---------|
+| `identyclaw_list_resources` | Discover published resources |
+| `identyclaw_get_resource` | Fetch a specific resource by id |
+
+Resource reads may require HOLA verification per `AGENTS.md` → "Trust & tool tiers".
+
+## Answering questions
+
+Search indexed docs first for product/service facts. Cite the source file and
+location when `citeSources` is enabled. If nothing relevant is indexed, say so —
+do not guess from general training data for company-specific policies or specs.
+""".format(
+        agent_id=agent_id,
+        container=container,
+        host_path=host_path,
+        rel_path=rel_path,
+    ),
+    encoding="utf-8",
+)
+(workspace / "KNOWLEDGE.md").chmod(0o644)
+
+tools = workspace / "TOOLS.md"
+if tools.is_file():
+    block = f"""
+## Knowledge base ({agent_id})
+
+- **Local docs:** read **KNOWLEDGE.md** — product/service files live in `workspace/knowledge/`.
+- **Network resources:** `identyclaw_list_resources` / `identyclaw_get_resource` (not `knowledge/`).
+- **Conversational memory:** `memory_search` / `MEMORY.md` / `memory/YYYY-MM-DD.md` (QMD).
+"""
+    text = tools.read_text(encoding="utf-8")
+    text = re.sub(r"\n## Knowledge base[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+    tools.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
 write_agent_knowledge_doc() {
   local config_dir="$1"
   local id="$2"
@@ -7862,11 +8097,12 @@ write_agent_knowledge_doc() {
   knowledge_host_path="${app_dir}/agents/${id}/workspace/knowledge"
   mkdir -p "$config_dir/workspace"
   cat >"$config_dir/workspace/KNOWLEDGE.md" <<EOF
-# Local knowledge base (document RAG)
+# Local knowledge base (document RAG via QMD)
 
-This agent has the OpenClaw **knowledge** skill enabled for **local** product and
-service documentation. QMD memory (\`MEMORY.md\`, \`memory/*.md\`, session recall)
-handles conversational context separately.
+This agent indexes **local** product and service documentation under
+\`workspace/knowledge/\` through **QMD** (\`memory.qmd.paths\` → \`memory_search\`).
+QMD memory (\`MEMORY.md\`, \`memory/*.md\`, session recall) handles conversational
+context separately.
 
 ## Where operators upload docs
 
@@ -7877,6 +8113,22 @@ ${knowledge_host_path}/
 \`\`\`
 
 Relative to the agent workspace: \`${IDENTYCLAW_KNOWLEDGE_PATH:-./knowledge}/\`
+
+While the gateway is running in pod mode, the host user may not be able to write
+directly into this path (container userns ownership). Use either:
+
+\`\`\`bash
+podman cp ./faq.md openclaw-${id}:/home/node/.openclaw/workspace/knowledge/
+./identyclaw.sh knowledge-reindex ${id}
+\`\`\`
+
+Or stop the gateway, copy on the host, then start again:
+
+\`\`\`bash
+./identyclaw.sh restore-host-access ${id}
+# copy files into ${knowledge_host_path}/
+./identyclaw.sh start ${id}
+\`\`\`
 
 Supported formats: \`.md\`, \`.txt\`, \`.pdf\`, \`.csv\`, \`.json\`
 
@@ -8014,7 +8266,7 @@ Operators may ask you to coordinate across channels (confirm on Telegram after a
 Discord, post summaries to multiple places, etc.). Do it via the `message` tool — do not
 claim you are "stuck" in one channel.
 
-See also: `DISCORD.md`, `TELEGRAM.md`, `PUBLISHING.md`.
+See also: `DISCORD.md`, `TELEGRAM.md`.
 EOF
   chmod 644 "$config_dir/workspace/CHAT_CHANNELS.md"
   write_chat_channels_workspace_guidance "$config_dir"
@@ -8053,6 +8305,7 @@ sync_agent_openclaw_json_when_container_running() {
   wait_for_running_agent_container "$container" || return 1
   ensure_openclaw_model_defaults "$dir" "$container"
   ensure_memory_config "$dir" "$container"
+  ensure_memory_embedding_config "$dir" "$container"
   ensure_knowledge_config "$dir" "$container"
   ensure_cross_context_messaging "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
@@ -8100,7 +8353,15 @@ write_openclaw_json() {
       "browser",
       "sessions_list",
       "sessions_history",
-      "sessions_send"
+      "sessions_send",
+      "a2a_get_agents",
+      "a2a_get_agent",
+      "a2a_send_message",
+      "a2a_get_task",
+      "a2a_view_text_artifact",
+      "a2a_view_data_artifact",
+      "a2a_update_agent_card",
+      "send_rodit_webhook"
     ],
     "message": {
       "crossContext": {
@@ -8126,9 +8387,27 @@ write_openclaw_json() {
       "telegram": {
         "enabled": true
       },
+      "identyclaw-a2a": {
+        "enabled": true
+      },
+      "identyclaw-webhooks": {
+        "enabled": true,
+        "config": {
+          "endpoints": ["/hooks/wake", "/hooks/agent"],
+          "logLevel": "error"
+        }
+      },
       "openrouter": {
         "enabled": true
       }
+    }
+  },
+  "channels": {
+    "discord": {
+      "dmPolicy": "open"
+    },
+    "telegram": {
+      "dmPolicy": "open"
     }
   },
   "agents": {
@@ -8161,7 +8440,7 @@ write_openclaw_json() {
     }
   },
   "memory": {
-    "backend": "${IDENTYCLAW_MEMORY_BACKEND:-qmd}",
+    "backend": "${IDENTYCLAW_MEMORY_BACKEND:-builtin}",
     "qmd": {
       "sessions": {
         "enabled": true,

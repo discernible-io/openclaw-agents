@@ -14,7 +14,7 @@ This repository is **code-only** (safe to clone publicly). Runtime config, secre
 | **identyclaw-webhooks plugin** | RODiT-signed inbound webhooks (`/hooks/wake`, `/hooks/agent`) |
 | **nginx TLS sidecar** (pod mode) | Public HTTPS on `:9443` → OpenClaw upstream |
 | **Workspace governance docs** | `AGENTS.md` "Trust & tool tiers" + `BOOT.md` reset reminder, written on bootstrap |
-| **Knowledge base (RAG)** | OpenClaw `knowledge` skill — index product/service docs in `workspace/knowledge/` |
+| **Knowledge base (local docs)** | QMD indexes `workspace/knowledge/` for `memory_search` |
 | **QMD memory** | Session recall + `MEMORY.md` / daily notes via `memory_search` |
 | **Smoke tests** | `./identyclaw.sh test` — local A2A, webhooks, optional mail |
 
@@ -424,15 +424,15 @@ Set `AGENT_IDS=agent-a agent-b` and add matching `AGENT_B_*` variables in `env.l
 - The repo runs **Gitleaks** in CI; runtime secrets belong only under `identyclaw-agents-app/`.
 - Replace self-signed certs with CA-issued PEMs before production traffic.
 - Inbound A2A rejects unauthenticated requests; webhook ingress requires RODiT origin signatures.
-- Chat channels (Telegram/Discord) authenticate senders only by pairing/allowlist. For a per-sender trust and approval model, see [Agent governance](#agent-governance-trust--tool-tiers) below.
+- Chat channels (Telegram/Discord) use `dmPolicy: open` by default in this template. For a per-sender trust and approval model, see [Agent governance](#agent-governance-trust--tool-tiers) below.
 
 ---
 
 ## Knowledge base (local document RAG)
 
-Bootstrap enables OpenClaw's bundled **knowledge** skill (synced to `openclaw.json` from
-`env.local`). Use it for **local** product and service documentation — FAQs, API references,
-pricing sheets, runbooks, and similar static material.
+Bootstrap indexes **local** product and service documentation from `workspace/knowledge/`
+via **QMD** (`memory.qmd.paths` → `memory_search`). Use this for FAQs, API references,
+pricing sheets, and runbooks.
 
 **Upload path on the host:**
 
@@ -447,20 +447,21 @@ files over one large PDF. After bulk changes:
 ./identyclaw.sh knowledge-reindex <agent-id>
 ```
 
-The gateway also re-indexes on restart. Answers cite source files when
-`IDENTYCLAW_KNOWLEDGE_CITE_SOURCES=1` (default).
+The gateway also re-indexes periodically (QMD default ~5m). Force a rebuild with
+`./identyclaw.sh knowledge-reindex <agent-id>` (runs `openclaw memory index --force`).
 
 ### What goes where
 
 | Content | Location / tool |
 |---------|-----------------|
-| Product & service docs (local) | `workspace/knowledge/` — knowledge skill RAG |
+| Product & service docs (local) | `workspace/knowledge/` — QMD `memory_search` |
 | Network-published IdentyClaw resources | `identyclaw_list_resources` / `identyclaw_get_resource` |
 | Preferences, session notes, learned facts | `MEMORY.md`, `memory/YYYY-MM-DD.md` — QMD memory |
 | Agent behavior & trust rules | `AGENTS.md`, `IDENTYCLAW.md`, `KNOWLEDGE.md` |
 
-QMD memory (`IDENTYCLAW_MEMORY_BACKEND=qmd`, session recall on) stays enabled alongside the
-knowledge skill. Disable local RAG with `IDENTYCLAW_KNOWLEDGE_ENABLED=0` in `env.local`.
+QMD memory (`IDENTYCLAW_MEMORY_BACKEND=builtin` by default; set `qmd` only if the
+`qmd` binary is installed in your OpenClaw image) indexes `workspace/knowledge/`
+alongside session recall. Disable local doc indexing with `IDENTYCLAW_KNOWLEDGE_ENABLED=0`.
 
 ---
 
@@ -489,7 +490,7 @@ about trust — they are **governance, not a hard security boundary**.
 |------|---------------|-------------|
 | Public | `read`, `identyclaw_list_agents`, Q&A | none |
 | Verified | `identyclaw_get_agent_identity`, targeted `message` | HOLA-verified this session |
-| Sensitive | `a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, ClawLink writes, publishing, email | HOLA-verified **and** operator-approved |
+| Sensitive | `a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email | HOLA-verified **and** operator-approved |
 
 Trust does not persist across sessions or gateway restarts.
 
