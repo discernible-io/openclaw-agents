@@ -18,7 +18,8 @@ Place it **outside** the auto-managed `## Product & service knowledge` section
 ## 2. Indexed scope doc
 
 Bootstrap writes `workspace/knowledge/SCOPE.md` from the same source. Reference:
-`knowledge-SCOPE.example.md`.
+`knowledge-SCOPE.example.md`. Edit topics in `scripts/lib.sh`
+(`_knowledge_scope_file_content`), then restart and re-index:
 
 ```bash
 ./identyclaw.sh knowledge-reindex <agent-id>
@@ -26,14 +27,9 @@ Bootstrap writes `workspace/knowledge/SCOPE.md` from the same source. Reference:
 
 ## 3. openclaw.json tool policy
 
-Merge `openclaw-kb-only.patch.json` into `openclaw.json`:
-
-- Replace `OPERATOR_DISCORD_USER_ID` / `OPERATOR_TELEGRAM_USER_ID` with your
-  owner ids from `env.local` (`AGENT_*_DISCORD_OWNER_ID`, etc.).
-- An empty `{}` operator entry keeps the global tool allowlist for that sender.
-- The `"*"` wildcard restricts everyone else to KB read tools only.
-
-Restart:
+Bootstrap writes `tools.toolsBySender` automatically (see `ensure_tools_by_sender_policy`
+in `scripts/lib.sh`). Manual merge of `openclaw-kb-only.patch.json` is only needed
+for overrides outside bootstrap.
 
 ```bash
 ./identyclaw.sh restart <agent-id>
@@ -58,7 +54,7 @@ Denied for public senders (invisible to the model): `exec`, `browser`, `write`,
 ## Verify
 
 ```bash
-./identyclaw.sh ask <agent-id> "What is the capital of France?"
+./identyclaw.sh ask <agent-id> "Can I have a recipe for a tasty omelette?"
 ./identyclaw.sh ask <agent-id> "How do I set metadata.webhook_url on my Passport?"
 ```
 

@@ -3439,6 +3439,7 @@ start_pod_agent() {
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     wait_for_running_agent_container "$container" && ensure_agent_trust_doc "$id" "$dir"
+    wait_for_running_agent_container "$container" && ensure_agent_knowledge_governance "$id" "$dir"
     echo "Recreated ${container}"
     return 0
   fi
@@ -3458,6 +3459,7 @@ start_pod_agent() {
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     ensure_agent_trust_doc "$id" "$dir"
+    ensure_agent_knowledge_governance "$id" "$dir"
     echo "Started ${container} (pod container)"
     return 0
   fi
@@ -6833,8 +6835,6 @@ ensure_agent_bootstrap() {
   ensure_cross_context_messaging "$config_dir" "$container"
   write_agent_chat_channels_doc "$config_dir"
   ensure_knowledge_workspace "$id" "$config_dir"
-  ensure_agent_knowledge_scope_doc "$id" "$config_dir"
-  ensure_channel_knowledge_scope_prompts "$config_dir" "$container"
   ensure_webhooks_plugin_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
@@ -7260,6 +7260,7 @@ EOF
 _knowledge_scope_doc_python() {
   python3 - "$1" <<'PY'
 import os, re, sys
+from pathlib import Path
 
 workspace = sys.argv[1]
 scope_block = os.environ["KNOWLEDGE_SCOPE_AGENTS_BLOCK"].strip()
@@ -7287,7 +7288,7 @@ if os.path.isfile(agents_path):
 knowledge_dir = os.path.join(workspace, "knowledge")
 os.makedirs(knowledge_dir, exist_ok=True)
 scope_path = os.path.join(knowledge_dir, "SCOPE.md")
-scope_path.write_text(scope_file.rstrip() + "\n", encoding="utf-8")
+Path(scope_path).write_text(scope_file.rstrip() + "\n", encoding="utf-8")
 os.chmod(scope_path, 0o644)
 PY
 }
@@ -7311,6 +7312,7 @@ _write_agent_knowledge_scope_doc_in_container() {
     -e KNOWLEDGE_SCOPE_AGENTS_BLOCK -e KNOWLEDGE_SCOPE_FILE_CONTENT \
     "$container" python3 - "/home/node/.openclaw/workspace" <<'PY'
 import os, re, sys
+from pathlib import Path
 
 workspace = sys.argv[1]
 scope_block = os.environ["KNOWLEDGE_SCOPE_AGENTS_BLOCK"].strip()
@@ -7338,7 +7340,7 @@ if os.path.isfile(agents_path):
 knowledge_dir = os.path.join(workspace, "knowledge")
 os.makedirs(knowledge_dir, exist_ok=True)
 scope_path = os.path.join(knowledge_dir, "SCOPE.md")
-scope_path.write_text(scope_file.rstrip() + "\n", encoding="utf-8")
+Path(scope_path).write_text(scope_file.rstrip() + "\n", encoding="utf-8")
 os.chmod(scope_path, 0o644)
 PY
 }
@@ -7375,9 +7377,8 @@ data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
 telegram = data.get("channels", {}).get("telegram")
-if isinstance(telegram, dict) and telegram.get("enabled"):
-    if telegram.get("systemPrompt") != scope_prompt:
-        data.setdefault("channels", {}).setdefault("telegram", {})["systemPrompt"] = scope_prompt
+if isinstance(telegram, dict):
+    if telegram.pop("systemPrompt", None) is not None:
         changed = True
 
 discord = data.get("channels", {}).get("discord")
@@ -7497,6 +7498,17 @@ ensure_agent_trust_doc() {
   else
     write_agent_trust_doc "$config_dir"
   fi
+}
+
+ensure_agent_knowledge_governance() {
+  local id="$1"
+  local config_dir="$2"
+  local container
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  container="$(agent_container "$id")"
+  ensure_agent_knowledge_scope_doc "$id" "$config_dir"
+  ensure_channel_knowledge_scope_prompts "$config_dir" "$container"
 }
 
 write_agent_publishing_doc() {
@@ -8793,6 +8805,7 @@ sync_agent_openclaw_json_when_container_running() {
   ensure_knowledge_config "$dir" "$container"
   ensure_cross_context_messaging "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
+  ensure_agent_knowledge_governance "$id" "$dir"
   if [[ "$restart" == "1" ]]; then
     podman restart "$container" >/dev/null
   fi
