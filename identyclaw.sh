@@ -115,6 +115,7 @@ init_one_agent() {
   write_agent_chat_channels_doc "$dir"
   ensure_knowledge_workspace "$id" "$dir"
   write_agent_trust_doc "$dir"
+  ensure_agent_knowledge_scope_doc "$id" "$dir"
   ensure_agent_env "$dir"
 
   if [[ -n "$password" ]]; then

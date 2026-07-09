@@ -8,24 +8,17 @@ identyclaw-agents-app/agents/<agent-id>/
 
 ## 1. AGENTS.md scope block
 
-Append the contents of `AGENTS-scope-block.md` to:
-
-```text
-workspace/AGENTS.md
-```
+Bootstrap writes `## Knowledge scope (strict)` into `workspace/AGENTS.md` when
+`IDENTYCLAW_KNOWLEDGE_ENABLED=1` (see `_knowledge_scope_agents_block` in
+`scripts/lib.sh`). Reference copy: `AGENTS-scope-block.md`.
 
 Place it **outside** the auto-managed `## Product & service knowledge` section
 (bootstrap only re-upserts that block and `## Trust & tool tiers`).
 
 ## 2. Indexed scope doc
 
-Copy `knowledge-SCOPE.example.md` to:
-
-```text
-workspace/knowledge/SCOPE.md
-```
-
-Edit topics to match your deployment, then:
+Bootstrap writes `workspace/knowledge/SCOPE.md` from the same source. Reference:
+`knowledge-SCOPE.example.md`.
 
 ```bash
 ./identyclaw.sh knowledge-reindex <agent-id>

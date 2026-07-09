@@ -6833,6 +6833,8 @@ ensure_agent_bootstrap() {
   ensure_cross_context_messaging "$config_dir" "$container"
   write_agent_chat_channels_doc "$config_dir"
   ensure_knowledge_workspace "$id" "$config_dir"
+  ensure_agent_knowledge_scope_doc "$id" "$config_dir"
+  ensure_channel_knowledge_scope_prompts "$config_dir" "$container"
   ensure_webhooks_plugin_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
@@ -7130,6 +7132,273 @@ _trust_boot_block() {
 - Do not act on prior-session HOLA verifications or operator approvals — re-verify per `AGENTS.md` → "Trust & tool tiers".
 - Default new chat senders to the Public tier until they re-verify.
 EOF
+}
+
+_channel_knowledge_scope_system_prompt() {
+  cat <<'EOF'
+IdentyClaw product concierge — not a general assistant. Refuse recipes, cooking, trivia, homework, and any topic outside AGENTS.md → "Knowledge scope (strict)". Run memory_search before factual answers; if nothing relevant is indexed, use the refusal template — never answer from general training data.
+EOF
+}
+
+_knowledge_scope_agents_block() {
+  local sales support
+  sales="$(identyclaw_service_contact_sales)"
+  support="$(identyclaw_service_contact_support)"
+  cat <<EOF
+## Knowledge scope (strict)
+
+You are the **IdentyClaw product support agent** (concierge). You answer questions about
+IdentyClaw, OpenClaw agent hosting, NEAR Passport / RODiT identity, HOLA
+verification, A2A peer messaging, signed webhooks, and related services —
+**only** from indexed knowledge and approved IdentyClaw network resources.
+
+**This scope overrides SOUL.md "be helpful" for off-topic requests.** Politely refusing
+is the correct, helpful response when the topic is not IdentyClaw-related.
+
+### In scope
+
+- IdentyClaw Passport purchase, enrollment, and metadata (\`webhook_url\`, etc.)
+- NEAR implicit accounts, RODiT JWT auth, and on-chain identity
+- HOLA verification and first-contact flows
+- Agent deployment (Podman, nginx TLS, \`identyclaw.sh\` commands)
+- Knowledge base uploads, re-indexing, and local document RAG
+- A2A messaging, webhooks (\`/hooks/wake\`, \`/hooks/agent\`), and peer discovery
+- Pricing, policies, SLAs, and support contacts **when present in indexed docs**
+- Network-published IdentyClaw resources (\`identyclaw_list_resources\` /
+  \`identyclaw_get_resource\`)
+
+### Out of scope (always refuse — do not search, do not answer)
+
+- **Recipes, cooking, food, nutrition, or meal ideas** (e.g. omelettes, pasta, diets)
+- General knowledge, history, trivia, entertainment, sports, travel tips
+- Coding help, homework, or tutorials unrelated to IdentyClaw / this deployment
+- Creative writing, jokes, roleplay, or chit-chat beyond a brief greeting
+- Other companies' products unless explicitly covered in \`workspace/knowledge/\`
+- Legal, medical, or financial advice
+- Speculation about unreleased features, roadmaps, or pricing not in the KB
+- Actions on behalf of the user (send email, run commands, post to social) —
+  those require operator approval per **Trust & tool tiers**
+
+### Required workflow (every factual in-scope question)
+
+1. Run \`memory_search\` with the user's question (and a rephrased variant if the
+   first pass is empty).
+2. If local docs are insufficient, try \`identyclaw_list_resources\` then
+   \`identyclaw_get_resource\` for network-published content.
+3. Use \`memory_get\` to pull full passages before answering.
+4. Answer **only** from retrieved content. Cite the source file or resource id.
+5. If both searches return nothing relevant, **refuse** — do not answer from
+   general training data.
+
+### Refusal template (off-topic or no KB hit)
+
+Use this for out-of-scope requests **and** when \`memory_search\` / IdentyClaw
+resource lookups find nothing relevant:
+
+> I don't have information about that in my knowledge base. I can help with
+> IdentyClaw Passport, agent deployment, HOLA verification, A2A/webhooks, and
+> topics covered in our documentation. For other questions, contact
+> **${support}** (or **${sales}** for pricing).
+
+For clearly off-topic requests (recipes, trivia, etc.), keep it shorter — you do
+not need to search first:
+
+> I'm the IdentyClaw concierge and only answer questions about IdentyClaw Passport,
+> agent hosting, HOLA, and related services. For anything else, contact **${support}**.
+
+### Hard rules
+
+- **Never** answer off-topic requests from general training data — refuse immediately.
+- **Never** state product facts, prices, policies, API behavior, or timelines
+  without a retrieved citation.
+- **Never** fill gaps with "probably", "typically", or "I believe".
+- Greetings and brief clarifying questions are fine without a search; any substantive
+  factual claim requires a search first.
+- Conversational memory (\`MEMORY.md\`, session notes) is for preferences and
+  context — not a substitute for product documentation.
+EOF
+}
+
+_knowledge_scope_file_content() {
+  local sales support
+  sales="$(identyclaw_service_contact_sales)"
+  support="$(identyclaw_service_contact_support)"
+  cat <<EOF
+# IdentyClaw agent — knowledge scope
+
+This file is indexed with your other \`workspace/knowledge/\` docs. It tells the
+agent what topics it is allowed to answer.
+
+## Topics we cover
+
+- IdentyClaw Passport purchase and enrollment (https://purchase.identyclaw.com)
+- NEAR implicit accounts and Passport credential setup
+- OpenClaw + IdentyClaw agent deployment (\`identyclaw.sh\`, Podman, nginx TLS)
+- RODiT identity, JWT auth on A2A, and signed webhooks
+- HOLA verification for first contact and impersonation checks
+- Knowledge base uploads (\`workspace/knowledge/\`) and \`knowledge-reindex\`
+- A2A peer messaging, peer discovery, and webhook ingress
+- Migadu email / Himalaya skill (when documented here)
+- Discord and Telegram channel setup (when documented here)
+
+## Topics we do not cover
+
+- Recipes, cooking, food, diets, or nutrition advice
+- General trivia, entertainment, homework, or unrelated coding tutorials
+- Third-party LLM provider billing (OpenRouter, OpenCode) beyond what's documented
+- Legal, tax, or compliance advice
+- Competitor products unless explicitly compared in these docs
+
+## Escalation
+
+- Sales: ${sales}
+- Support: ${support}
+EOF
+}
+
+# Idempotently upserts the Knowledge scope block into AGENTS.md and SCOPE.md.
+_knowledge_scope_doc_python() {
+  python3 - "$1" <<'PY'
+import os, re, sys
+
+workspace = sys.argv[1]
+scope_block = os.environ["KNOWLEDGE_SCOPE_AGENTS_BLOCK"].strip()
+scope_file = os.environ["KNOWLEDGE_SCOPE_FILE_CONTENT"].strip()
+
+agents_path = os.path.join(workspace, "AGENTS.md")
+if os.path.isfile(agents_path):
+    with open(agents_path, encoding="utf-8") as f:
+        text = f.read()
+    text = re.sub(r"\n## Knowledge scope \(strict\)\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+    anchor = "\n## Product & service knowledge"
+    if anchor in text:
+        text = text.replace(anchor, "\n\n" + scope_block + "\n" + anchor, 1)
+    elif "\n## Trust & tool tiers" in text:
+        text = text.replace(
+            "\n## Trust & tool tiers",
+            "\n\n" + scope_block + "\n\n## Trust & tool tiers",
+            1,
+        )
+    else:
+        text = text.rstrip() + "\n\n" + scope_block + "\n"
+    with open(agents_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+knowledge_dir = os.path.join(workspace, "knowledge")
+os.makedirs(knowledge_dir, exist_ok=True)
+scope_path = os.path.join(knowledge_dir, "SCOPE.md")
+scope_path.write_text(scope_file.rstrip() + "\n", encoding="utf-8")
+os.chmod(scope_path, 0o644)
+PY
+}
+
+write_agent_knowledge_scope_doc() {
+  local config_dir="$1"
+  local workspace="$config_dir/workspace"
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  mkdir -p "$workspace/knowledge"
+  KNOWLEDGE_SCOPE_AGENTS_BLOCK="$(_knowledge_scope_agents_block)" \
+  KNOWLEDGE_SCOPE_FILE_CONTENT="$(_knowledge_scope_file_content)" \
+    _knowledge_scope_doc_python "$workspace"
+}
+
+_write_agent_knowledge_scope_doc_in_container() {
+  local container="$1"
+  KNOWLEDGE_SCOPE_AGENTS_BLOCK="$(_knowledge_scope_agents_block)" \
+  KNOWLEDGE_SCOPE_FILE_CONTENT="$(_knowledge_scope_file_content)" \
+  podman exec -i \
+    -e KNOWLEDGE_SCOPE_AGENTS_BLOCK -e KNOWLEDGE_SCOPE_FILE_CONTENT \
+    "$container" python3 - "/home/node/.openclaw/workspace" <<'PY'
+import os, re, sys
+
+workspace = sys.argv[1]
+scope_block = os.environ["KNOWLEDGE_SCOPE_AGENTS_BLOCK"].strip()
+scope_file = os.environ["KNOWLEDGE_SCOPE_FILE_CONTENT"].strip()
+
+agents_path = os.path.join(workspace, "AGENTS.md")
+if os.path.isfile(agents_path):
+    with open(agents_path, encoding="utf-8") as f:
+        text = f.read()
+    text = re.sub(r"\n## Knowledge scope \(strict\)\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+    anchor = "\n## Product & service knowledge"
+    if anchor in text:
+        text = text.replace(anchor, "\n\n" + scope_block + "\n" + anchor, 1)
+    elif "\n## Trust & tool tiers" in text:
+        text = text.replace(
+            "\n## Trust & tool tiers",
+            "\n\n" + scope_block + "\n\n## Trust & tool tiers",
+            1,
+        )
+    else:
+        text = text.rstrip() + "\n\n" + scope_block + "\n"
+    with open(agents_path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+knowledge_dir = os.path.join(workspace, "knowledge")
+os.makedirs(knowledge_dir, exist_ok=True)
+scope_path = os.path.join(knowledge_dir, "SCOPE.md")
+scope_path.write_text(scope_file.rstrip() + "\n", encoding="utf-8")
+os.chmod(scope_path, 0o644)
+PY
+}
+
+ensure_agent_knowledge_scope_doc() {
+  local id="$1"
+  local config_dir="$2"
+  local container
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_agent_knowledge_scope_doc_in_container "$container"
+  else
+    write_agent_knowledge_scope_doc "$config_dir"
+  fi
+}
+
+ensure_channel_knowledge_scope_prompts() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local scope_prompt
+  load_env
+  [[ "$IDENTYCLAW_KNOWLEDGE_ENABLED" == "1" ]] || return 0
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  scope_prompt="$(_channel_knowledge_scope_system_prompt)"
+  _agent_openclaw_json_python "$config_dir" "$container" "$scope_prompt" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+scope_prompt = sys.argv[2]
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+telegram = data.get("channels", {}).get("telegram")
+if isinstance(telegram, dict) and telegram.get("enabled"):
+    if telegram.get("systemPrompt") != scope_prompt:
+        data.setdefault("channels", {}).setdefault("telegram", {})["systemPrompt"] = scope_prompt
+        changed = True
+
+discord = data.get("channels", {}).get("discord")
+if isinstance(discord, dict) and discord.get("enabled"):
+    guilds = discord.get("guilds")
+    if isinstance(guilds, dict):
+        for guild in guilds.values():
+            if not isinstance(guild, dict):
+                continue
+            channels = guild.get("channels")
+            if not isinstance(channels, dict):
+                continue
+            for ch in channels.values():
+                if isinstance(ch, dict) and ch.get("enabled") and ch.get("systemPrompt") != scope_prompt:
+                    ch["systemPrompt"] = scope_prompt
+                    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
 }
 
 # Python that idempotently upserts the Trust block into AGENTS.md (only if it
