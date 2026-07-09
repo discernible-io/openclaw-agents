@@ -3530,11 +3530,10 @@ message.send.backend.login = "${email}"
 message.send.backend.auth.type = "password"
 message.send.backend.auth.cmd = "/home/node/.openclaw/secrets/smtp.sh"
 
-[accounts.default.folder.alias]
-inbox = "INBOX"
-sent = "Sent"
-drafts = "Drafts"
-trash = "Trash"
+folder.aliases.inbox = "INBOX"
+folder.aliases.sent = "Sent"
+folder.aliases.drafts = "Drafts"
+folder.aliases.trash = "Trash"
 EOF
   chmod 600 "$config_dir/.config/himalaya/config.toml"
 }
@@ -3605,6 +3604,12 @@ himalaya envelope list --page-size 10
 himalaya message read <ID>
 \`\`\`
 
+## Delete
+
+\`\`\`bash
+himalaya message delete <ID>
+\`\`\`
+
 ## Send (headless — required in this container)
 
 Use plain \`exec\` (no \`elevated: true\`):
@@ -3671,6 +3676,7 @@ tools_block = f"""
 - **Mail is pre-configured** — read **`EMAIL.md`** before any inbox task.
 - **Account:** `{email}` (Migadu / Himalaya). Do **not** ask for IMAP/SMTP/password.
 - **Read:** `himalaya envelope list --page-size 10` (plain `exec`, no `elevated`)
+- **Delete:** `himalaya message delete <ID>` (plain `exec`, no `elevated`)
 - **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
 - **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
 - If a command fails, run `himalaya account list` via plain `exec` before concluding mail is unconfigured.
@@ -3680,7 +3686,7 @@ agents_block = f"""
 
 - Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
 - **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
-- Read/send via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `scripts/himalaya-send.sh`.
+- Read/delete/send via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `himalaya message delete <ID>`, `scripts/himalaya-send.sh`.
 - `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
 - The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
 """
@@ -3735,6 +3741,12 @@ himalaya envelope list --page-size 10
 himalaya message read <ID>
 ```
 
+## Delete
+
+```bash
+himalaya message delete <ID>
+```
+
 ## Send (headless — required in this container)
 
 Use plain `exec` (no `elevated: true`):
@@ -3785,6 +3797,7 @@ tools_block = f"""
 - **Mail is pre-configured** — read **`EMAIL.md`** before any inbox task.
 - **Account:** `{email}` (Migadu / Himalaya). Do **not** ask for IMAP/SMTP/password.
 - **Read:** `himalaya envelope list --page-size 10` (plain `exec`, no `elevated`)
+- **Delete:** `himalaya message delete <ID>` (plain `exec`, no `elevated`)
 - **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
 - **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
 - If a command fails, run `himalaya account list` via plain `exec` before concluding mail is unconfigured.
@@ -3794,7 +3807,7 @@ agents_block = f"""
 
 - Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
 - **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
-- Read/send via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `scripts/himalaya-send.sh`.
+- Read/delete/send via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `himalaya message delete <ID>`, `scripts/himalaya-send.sh`.
 - `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
 - The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
 """
