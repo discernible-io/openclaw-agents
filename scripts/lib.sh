@@ -3928,6 +3928,25 @@ agent_discord_channel_settings() {
   echo "${guild}|${channel}|${owner}"
 }
 
+# Operator sender keys for tools.toolsBySender (Discord owner, Telegram owner).
+agent_operator_sender_keys() {
+  local id="$1"
+  local settings="" owner="" tg_owner=""
+  load_env
+  is_valid_agent_id "$id" || return 0
+  settings="$(agent_discord_channel_settings "$id" 2>/dev/null || true)"
+  owner="${settings##*|}"
+  if [[ -n "$owner" ]]; then
+    printf 'id:%s\n' "$owner"
+  fi
+  tg_owner="$(agent_env_value "$id" TELEGRAM_OWNER_ID "")"
+  tg_owner="${tg_owner:-${IDENTYCLAW_TELEGRAM_OWNER_ID:-}}"
+  if [[ -n "$tg_owner" ]]; then
+    tg_owner="${tg_owner#telegram:}"
+    printf 'telegram:%s\n' "$tg_owner"
+  fi
+}
+
 ensure_discord_ready() {
   local id="$1"
   local config_dir="$2"
@@ -4091,6 +4110,10 @@ if plugins.get("discord", {}).get("enabled") is not True:
 discord = data.setdefault("channels", {}).setdefault("discord", {})
 if discord.get("dmPolicy") != "open":
     discord["dmPolicy"] = "open"
+    changed = True
+allow_from = discord.setdefault("allowFrom", [])
+if "*" not in allow_from:
+    allow_from.append("*")
     changed = True
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -4273,7 +4296,7 @@ This agent uses **two** published integrations. Use the right one for the job:
 ## IdentyClaw (ClawHub skill + plugin)
 
 - **Skill:** \`identyclaw\` — workflows for JWT login, HOLA create/verify, DID resolution, agent discovery. Read \`SKILL.md\` when handling identity.
-- **Plugin:** \`identyclaw-tools\` — typed tools (\`identyclaw_verify_hola\`, \`identyclaw_list_agents\`, …). Passport signing key stays local; never paste keys into chat.
+- **Plugin:** \`identyclaw-tools\` — typed tools (\`identyclaw_create_hola\`, \`identyclaw_verify_hola\`, \`identyclaw_list_agents\`, …). Passport signing key stays local; never paste keys into chat.
 - **API base:** \`${api_base:-Passport subjectuniqueidentifier_url}\` (synced to \`IDENTYCLAW_BASE_URL\` in \`.env\`)
 - **Credentials:** \`secrets/near-credentials/*.json\` → synced to \`.env\` as \`IDENTYCLAW_*\` plus \`RODIT_NEAR_CREDENTIALS_SOURCE=file\` and \`NEAR_CREDENTIALS_FILE_PATH\` for \`@rodit/rodit-auth-be\`.
 
@@ -4410,6 +4433,75 @@ for tool in identyclaw_tools:
     if tool not in allow:
         allow.append(tool)
         changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+# Per-sender tool caps: public chat senders get KB + HOLA tools; operators get full access.
+# Re-applied on every bootstrap so a full rebuild does not drop identyclaw_create_hola.
+ensure_tools_by_sender_policy() {
+  local id="$1"
+  local config_dir="$2"
+  local container="${3:-}"
+  local operators_json="" line
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  operators_json="$(
+    {
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && printf '%s\n' "$line"
+      done < <(agent_operator_sender_keys "$id")
+    } | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))'
+  )"
+  _agent_openclaw_json_python "$config_dir" "$container" "$operators_json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+operators = json.loads(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else []
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+PUBLIC_SENDER_ALLOW = [
+    "read",
+    "group:memory",
+    "identyclaw_list_agents",
+    "identyclaw_list_resources",
+    "identyclaw_get_resource",
+    "identyclaw_verify_hola",
+    "identyclaw_create_hola",
+    "identyclaw_get_nonce",
+]
+
+desired_by_sender = {}
+for op in operators:
+    key = str(op).strip()
+    if key:
+        desired_by_sender[key] = {}
+desired_by_sender["*"] = {"allow": PUBLIC_SENDER_ALLOW}
+
+tools = data.setdefault("tools", {})
+if tools.get("toolsBySender") != desired_by_sender:
+    tools["toolsBySender"] = desired_by_sender
+    changed = True
+
+commands = data.setdefault("commands", {})
+owner_allow = list(commands.get("ownerAllowFrom") or [])
+for op in operators:
+    key = str(op).strip()
+    if key.startswith("telegram:") and key not in owner_allow:
+        owner_allow.append(key)
+        changed = True
+    elif key.startswith("id:"):
+        discord_key = f"discord:{key[3:]}"
+        if discord_key not in owner_allow:
+            owner_allow.append(discord_key)
+            changed = True
+if owner_allow != (commands.get("ownerAllowFrom") or []):
+    commands["ownerAllowFrom"] = owner_allow
+    changed = True
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -6730,6 +6822,7 @@ ensure_agent_bootstrap() {
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
+  ensure_tools_by_sender_policy "$id" "$config_dir" "$container"
   ensure_openclaw_model_defaults "$config_dir" "$container"
   ensure_memory_config "$config_dir" "$container"
   ensure_memory_tools_config "$config_dir" "$container"
@@ -6985,7 +7078,7 @@ session after a gateway restart (see `BOOT.md`) — with all chat senders Unveri
 
 ### Tiers
 
-- **Public** (`read`, `identyclaw_list_agents`, general Q&A): no verification needed.
+- **Public** (`read`, `identyclaw_list_agents`, `identyclaw_create_hola` / `identyclaw_verify_hola`, general Q&A): no verification needed.
 - **Verified** (`identyclaw_get_agent_identity`, targeted `message`, resource reads): sender must be HOLA-verified this session.
 - **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email): sender must be HOLA-verified **and** an operator must approve the specific action.
 
@@ -7423,7 +7516,8 @@ ensure_telegram_channel_stub() {
   if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
     podman exec "$container" node /app/openclaw.mjs plugins enable telegram >/dev/null 2>&1 || true
   fi
-  python3 - "$config" <<'PY'
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -7437,6 +7531,10 @@ if plugins.get("telegram", {}).get("enabled") is not True:
 telegram = data.setdefault("channels", {}).setdefault("telegram", {})
 if telegram.get("dmPolicy") != "open":
     telegram["dmPolicy"] = "open"
+    changed = True
+allow_from = telegram.setdefault("allowFrom", [])
+if "*" not in allow_from:
+    allow_from.append("*")
     changed = True
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -8520,10 +8618,12 @@ write_openclaw_json() {
   },
   "channels": {
     "discord": {
-      "dmPolicy": "open"
+      "dmPolicy": "open",
+      "allowFrom": ["*"]
     },
     "telegram": {
-      "dmPolicy": "open"
+      "dmPolicy": "open",
+      "allowFrom": ["*"]
     }
   },
   "agents": {

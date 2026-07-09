@@ -56,6 +56,8 @@ Restart:
 | `identyclaw_list_resources` | Network-published KB |
 | `identyclaw_get_resource` | Fetch network resources |
 | `identyclaw_verify_hola` | Trust escalation per AGENTS.md |
+| `identyclaw_create_hola` | Outbound HOLA lines (e.g. MUNDO probes) |
+| `identyclaw_get_nonce` | Fresh nonce before each signed HOLA |
 
 Denied for public senders (invisible to the model): `exec`, `browser`, `write`,
 `message`, A2A outbound, webhooks, etc.

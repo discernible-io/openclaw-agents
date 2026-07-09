@@ -1,0 +1,20 @@
+{
+  "tools": {
+    "toolsBySender": {
+      "OPERATOR_DISCORD_USER_ID": {},
+      "OPERATOR_TELEGRAM_USER_ID": {},
+      "*": {
+        "allow": [
+          "read",
+          "group:memory",
+          "identyclaw_list_agents",
+          "identyclaw_list_resources",
+          "identyclaw_get_resource",
+          "identyclaw_verify_hola",
+          "identyclaw_create_hola",
+          "identyclaw_get_nonce"
+        ]
+      }
+    }
+  }
+}

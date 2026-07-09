@@ -488,7 +488,7 @@ about trust — they are **governance, not a hard security boundary**.
 
 | Tier | Example tools | Requirement |
 |------|---------------|-------------|
-| Public | `read`, `identyclaw_list_agents`, Q&A | none |
+| Public | `read`, `identyclaw_list_agents`, `identyclaw_create_hola` / `identyclaw_verify_hola`, Q&A | none |
 | Verified | `identyclaw_get_agent_identity`, targeted `message` | HOLA-verified this session |
 | Sensitive | `a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email | HOLA-verified **and** operator-approved |
 
@@ -497,10 +497,11 @@ Trust does not persist across sessions or gateway restarts.
 ### Governance vs enforcement
 
 The workspace docs are behavior guidance. For **hard** enforcement, pair them with
-OpenClaw config (not written automatically by this template):
+OpenClaw config (bootstrap writes `tools.toolsBySender` automatically on every
+`start` / `restart` / deploy):
 
 - **Channel access** — `channels.*.dmPolicy` (`pairing` / `allowlist`), `allowFrom`
-- **Per-sender tool caps** — `tools.toolsBySender` (denied tools are removed from the model's schema)
+- **Per-sender tool caps** — `tools.toolsBySender` (denied tools are removed from the model's schema; public senders get HOLA create/verify, operators get full tools)
 - **Admin approval** — `channels.*.execApprovals` for `exec`, or a plugin `before_tool_call` `requireApproval` hook for any tool
 - **Cryptographic identity** — RODiT JWT on A2A, RODiT signatures on webhooks, HOLA verification on inbound email (already enforced)
 
