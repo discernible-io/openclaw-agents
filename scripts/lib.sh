@@ -7846,10 +7846,12 @@ for tool in ("memory_search", "memory_get"):
 if knowledge_enabled:
     agents = data.setdefault("agents", {})
     defaults = agents.setdefault("defaults", {})
-    memory_search = defaults.setdefault("memorySearch", {})
-    if memory_search.get("autoRecall") is not True:
-        memory_search["autoRecall"] = True
-        changed = True
+    memory_search = defaults.get("memorySearch", {})
+    if isinstance(memory_search, dict):
+        for stale_key in ("autoRecall", "citeSources"):
+            if stale_key in memory_search:
+                del memory_search[stale_key]
+                changed = True
     plugins = data.setdefault("plugins", {}).setdefault("entries", {})
     active_memory = plugins.setdefault("active-memory", {})
     if active_memory.get("enabled") is not True:
