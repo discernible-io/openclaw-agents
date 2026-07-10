@@ -3546,6 +3546,10 @@ restore_host_access_for_agents() {
       echo "==> Stopping ${container}"
       podman stop "$container" >/dev/null || true
     fi
+    # Exited containers still block restore_pod_agent_state_for_host (container exists check).
+    if podman container exists "$container" 2>/dev/null; then
+      podman rm -f "$container" >/dev/null || true
+    fi
   done
   restore_pod_agent_state_for_host "$ids"
   echo "Host ownership restored under ${IDENTYCLAW_AGENT_STATE_ROOT:-$(identyclaw_app_dir)/agents}."
@@ -3619,7 +3623,7 @@ recreate_pod_agent_container() {
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
 
   image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
-  [[ -n "$image" ]] || image="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
+  [[ -n "$image" ]] || image="$(openclaw_agent_image)"
 
   # Host must own agent state so .env sync writes container paths before --env-file is read.
   prepare_agent_state_for_gateway_start "$id" pod
@@ -3692,11 +3696,27 @@ start_pod_agent() {
     return 0
   fi
 
-  # No pod container yet — host must have agent state (readable or not) before first deploy.
+  # No pod container yet — recreate in an existing pod after restore-host-access, or run full deploy.
   [[ -d "$dir" ]] || {
     echo "Missing ${dir} — run deploy or ./identyclaw.sh init ${id}" >&2
     return 1
   }
+  local pod_name="${POD_NAME:-identyclaw-agents-pod}"
+  if podman pod exists "$pod_name" 2>/dev/null && [[ -f "$dir/.env" ]]; then
+    echo "==> Recreating ${container} in pod ${pod_name}"
+    sync_a2a_peers_from_logs "$id" || true
+    recreate_pod_agent_container "$id"
+    container="$(agent_container "$id")"
+    wait_for_running_agent_container "$container" || return 1
+    ensure_openclaw_model_defaults "$dir" "$container"
+    ensure_memory_config "$dir" "$container"
+    sync_agent_plugin_configs "$id" "$dir" || true
+    ensure_llm_sqlite_auth "$id"
+    sync_agent_openclaw_json_when_container_running "$id"
+    ensure_discord_plugin_compat_and_restart "$id"
+    echo "Started ${container} (pod container)"
+    return 0
+  fi
   echo "No pod container for ${id}. Run:" >&2
   echo "  ./scripts/deploy-local-podman.sh" >&2
   return 1
