@@ -212,7 +212,7 @@ load_env() {
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
-  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.4}"
+  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.5}"
   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.7}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
@@ -1706,6 +1706,10 @@ podman_cp_mail_hola_test_libs() {
   [[ -n "$container" ]] || return 1
   podman_cp_mail_responder_libs "$container" || return 1
   podman_cp_lib_test_report "$container" || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-peer-gateway-url.mjs" \
+    "$container:/tmp/lib-peer-gateway-url.mjs" >/dev/null 2>&1 || return 1
+  podman cp "${IDENTYCLAW_ROOT}/scripts/lib-discover-agents.mjs" \
+    "$container:/tmp/lib-discover-agents.mjs" >/dev/null 2>&1 || return 1
   podman cp "${IDENTYCLAW_ROOT}/scripts/lib-rodit-webhook-test.mjs" "$container:/tmp/lib-rodit-webhook-test.mjs" >/dev/null 2>&1 || return 1
 }
 
