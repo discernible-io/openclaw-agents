@@ -193,6 +193,9 @@ for id in $AGENT_IDS; do
     [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
   done < <(pod_agent_ingress_host_args "$id")
 done
+while IFS= read -r host_arg; do
+  [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
+done < <(pod_migadu_smtp_host_args)
 podman pod create "${pod_create_args[@]}"
 
 for id in $AGENT_IDS; do

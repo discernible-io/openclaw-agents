@@ -762,6 +762,8 @@ Also ensure:
 - `message.send.backend.login` and `From:` match the mailbox (e.g. `agent-a@identyclaw.com`)
 - Password is in `~/identyclaw-agents-app/agents/agent-a/secrets/` via `./identyclaw.sh set-password agent-a` (do not paste passwords into `config.toml`)
 
+**Pod deploy — IPv6 SMTP reset:** If IMAP works but SMTP fails with `Connection reset by peer`, glibc may be preferring broken IPv6 records for `smtp.migadu.com`. Pod deploy pins the hostname to Migadu mta1 IPv4 via `--add-host` (override with `MIGADU_SMTP_IPV4` in `env.local`). Recreate the pod after changing: `./scripts/deploy-local-podman.sh --skip-build`.
+
 Quick check: `./identyclaw.sh test-mail agent-a` (IMAP) then send with `sh scripts/himalaya-send.sh …` inside the container.
 
 ### `onboard`: Address already in use (port 18789 / 18793)

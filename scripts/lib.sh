@@ -3231,6 +3231,17 @@ pod_agent_ingress_host_args() {
   [[ -n "$host" ]] && printf '%s\n' "--add-host=${host}:127.0.0.1"
 }
 
+# Migadu publishes multiple A/AAAA records; glibc prefers IPv6 first. On this host IPv6
+# SMTP is reset and mta0 (51.255.82.75) is flaky — pin smtp.migadu.com to mta1 IPv4 so
+# Himalaya STARTTLS succeeds and cert validation keeps the hostname. Override: MIGADU_SMTP_IPV4.
+pod_migadu_smtp_host_args() {
+  local ip="${MIGADU_SMTP_IPV4:-37.59.57.117}"
+  load_env
+  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  [[ -n "$ip" ]] || return 0
+  printf '%s\n' "--add-host=smtp.migadu.com:${ip}"
+}
+
 # HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 7443).
 agent_container_ingress_base_url() {
   local id="$1"
