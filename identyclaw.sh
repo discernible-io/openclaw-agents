@@ -2073,6 +2073,7 @@ cmd_chat() {
   require_podman
   require_agent_running "$id"
   load_env
+  ensure_agent_mail_tooling_refresh "$id"
   local display ui_base container gw_port token
   display="$(agent_display_name "$id")"
   ui_base="$(agent_ui_base_url "$id")"
@@ -2102,6 +2103,7 @@ cmd_ask() {
   require_podman
   require_agent_running "$id"
   load_env
+  ensure_agent_mail_tooling_refresh "$id"
   container="$(agent_container "$id")"
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)

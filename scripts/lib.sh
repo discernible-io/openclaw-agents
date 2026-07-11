@@ -3092,6 +3092,37 @@ agent_display_name() {
   agent_env_value "$1" DISPLAY_NAME "$1"
 }
 
+# Published A2A Agent Card name (/.well-known/agent-card.json). CARD_NAME overrides DISPLAY_NAME.
+agent_card_name() {
+  local id="$1" name
+  load_env
+  is_valid_agent_id "$id" || { echo "$id"; return 0; }
+  name="$(agent_env_value "$id" CARD_NAME "")"
+  [[ -n "$name" ]] || name="$(agent_display_name "$id")"
+  echo "$name"
+}
+
+# Published A2A Agent Card description. CARD_DESCRIPTION overrides the Discernible.io default.
+agent_card_description() {
+  local id="$1" card_name display_name config_dir own_token_id desc
+  load_env
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  desc="$(agent_env_value "$id" CARD_DESCRIPTION "")"
+  [[ -n "$desc" ]] && { echo "$desc"; return 0; }
+  card_name="$(agent_card_name "$id")"
+  display_name="$(agent_display_name "$id")"
+  config_dir="$(agent_home "$id")"
+  own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
+  desc="IdentyClaw agent by Discernible.io (${card_name}). Portable, cryptographically verifiable identity for autonomous agents — mutual HOLA authentication and A2A peer collaboration."
+  if [[ -n "$display_name" && "$display_name" != "$card_name" ]]; then
+    desc+=" Passport holder: ${display_name}."
+  fi
+  if [[ -n "$own_token_id" ]]; then
+    desc+=" Passport: ${own_token_id}."
+  fi
+  echo "$desc"
+}
+
 agent_ports() {
   local id="$1" gw br
   load_env
@@ -3907,6 +3938,123 @@ EOF
   chmod 755 "$config_dir/workspace/scripts/himalaya-read.sh"
 }
 
+# Workspace skill overrides bundled /app/skills/himalaya (which omits sender addresses and concierge reply duty).
+_himalaya_workspace_skill_markdown() {
+  local email="$1"
+  local display_name="$2"
+  local agent_id="$3"
+  cat <<EOF
+---
+name: himalaya
+description: "Migadu/Himalaya email for this Concierge deployment — list, read, reply via workspace scripts."
+---
+
+# Email (IdentyClaw Concierge — ${agent_id})
+
+**This overrides the generic Himalaya skill.** Mail is pre-configured — do **not** run \`himalaya account configure\`.
+
+Read **\`EMAIL.md\`** and **\`AGENTS.md\` → Inbound email (concierge)** before any inbox task.
+
+## List inbox (helpers include sender email addresses)
+
+\`\`\`bash
+sh scripts/himalaya-inbox.sh 10
+\`\`\`
+
+Output columns: \`ID\`, sender **email address**, name, subject, date.
+
+**Never** use plain \`himalaya envelope list\` without \`--output json\` — the default table shows names only, not addresses.
+
+## Read message
+
+\`\`\`bash
+sh scripts/himalaya-read.sh <ID>
+\`\`\`
+
+The \`From:\` header has the reply address.
+
+## Reply (concierge duty — send, do not summarize internally)
+
+When the operator asks you to check/reply to inbox mail, **that is approval**. For each in-scope message:
+
+1. \`sh scripts/himalaya-inbox.sh 10\`
+2. \`sh scripts/himalaya-read.sh <ID>\`
+3. \`memory_search\` / \`identyclaw_get_resource\` for factual answers
+4. \`sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"\`
+
+**You must run step 4 and see \`Message successfully sent!\` before reporting a reply as sent.**
+
+**Never:**
+- Ask the operator for the sender's email (you have it from steps 1–2)
+- Say you will "process internally" instead of emailing the sender
+- Use \`himalaya message reply\` / \`message write\` (no \`\$EDITOR\` in this container)
+- Use \`himalaya envelope view\` (does not exist)
+
+## Send
+
+\`\`\`bash
+sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
+\`\`\`
+
+**Critical:** \`From:\` must be \`${email}\` (${display_name}). Migadu rejects other senders.
+
+## Delete
+
+\`\`\`bash
+himalaya message delete <ID>
+\`\`\`
+EOF
+}
+
+write_himalaya_workspace_skill() {
+  local config_dir="$1"
+  local email="$2"
+  local display_name="$3"
+  local agent_id="$4"
+  mkdir -p "$config_dir/workspace/skills/himalaya"
+  _himalaya_workspace_skill_markdown "$email" "$display_name" "$agent_id" \
+    >"$config_dir/workspace/skills/himalaya/SKILL.md"
+  chmod 644 "$config_dir/workspace/skills/himalaya/SKILL.md"
+}
+
+# SOUL.md defaults warn against email; Concierge agents must reply to inbound mail.
+patch_soul_concierge_inbound_email() {
+  local config_dir="$1"
+  local soul="$config_dir/workspace/SOUL.md"
+  [[ -f "$soul" ]] || return 0
+  python3 - "$soul" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+replacements = [
+    (
+        "**Earn trust through competence.** Your human gave you access to their stuff. Don't make them regret it. Be careful with external actions (emails, tweets, anything public). Be bold with internal ones (reading, organizing, learning).",
+        "**Earn trust through competence.** Your human gave you access to their stuff. Don't make them regret it. Be careful with **unsolicited** external actions (cold email, tweets, anything public). **Inbound email replies are your Concierge job** — see `EMAIL.md`. Be bold with reading, organizing, and learning.",
+    ),
+    (
+        "- When in doubt, ask before acting externally.",
+        "- When in doubt about **unsolicited** outbound actions, ask first. Inbound inbox replies requested by the operator are pre-approved (see `EMAIL.md`).",
+    ),
+]
+for old, new in replacements:
+    if old in text:
+        text = text.replace(old, new, 1)
+block = """
+## Inbound email (Concierge deployment)
+
+Your inbox is a **concierge channel**. Replying to senders is **in scope** — not a cautious
+"external action" to avoid. Use `scripts/himalaya-inbox.sh` / `scripts/himalaya-read.sh`
+for sender addresses; **never** ask the operator for an address you can read from the message.
+Do not "process internally" when a direct email reply is what the sender expects.
+"""
+if "## Inbound email (Concierge deployment)" not in text:
+    text = text.rstrip() + block + "\n"
+path.write_text(text, encoding="utf-8")
+PY
+}
+
 # Shared EMAIL.md fragment — keep write_agent_email_doc and _sync_agent_email_tooling_in_container aligned.
 _email_read_inbox_doc_block() {
   cat <<'EOF'
@@ -4326,6 +4474,75 @@ def write_executable(path, content):
 write_executable(os.path.join(scripts_dir, "himalaya-inbox.sh"), inbox_script)
 write_executable(os.path.join(scripts_dir, "himalaya-read.sh"), read_script)
 
+skill_dir = os.path.join(workspace, "skills", "himalaya")
+os.makedirs(skill_dir, exist_ok=True)
+skill_path = os.path.join(skill_dir, "SKILL.md")
+skill_doc = f"""---
+name: himalaya
+description: "Migadu/Himalaya email for this Concierge deployment — list, read, reply via workspace scripts."
+---
+
+# Email (IdentyClaw Concierge — {agent_id})
+
+**This overrides the generic Himalaya skill.** Mail is pre-configured — do **not** run `himalaya account configure`.
+
+Read **`EMAIL.md`** and **`AGENTS.md` → Inbound email (concierge)** before any inbox task.
+
+## List inbox (helpers include sender email addresses)
+
+```bash
+sh scripts/himalaya-inbox.sh 10
+```
+
+**Never** use plain `himalaya envelope list` without `--output json` — the table shows names only.
+
+## Read / reply
+
+```bash
+sh scripts/himalaya-read.sh <ID>
+sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"
+```
+
+When the operator asks you to check/reply to inbox mail, **that is approval**. Never ask for sender
+email or "process internally" instead of replying. **Run \`sh scripts/himalaya-send.sh\` and confirm
+\`Message successfully sent!\` before reporting a reply as sent.**
+
+**Critical:** \`From:\` must be \`{email}\` ({display_name}).
+"""
+with open(skill_path, "w", encoding="utf-8") as f:
+    f.write(skill_doc)
+os.chmod(skill_path, 0o644)
+
+soul_path = os.path.join(workspace, "SOUL.md")
+if os.path.isfile(soul_path):
+    with open(soul_path, encoding="utf-8") as f:
+        soul = f.read()
+    soul_replacements = [
+        (
+            "**Earn trust through competence.** Your human gave you access to their stuff. Don't make them regret it. Be careful with external actions (emails, tweets, anything public). Be bold with internal ones (reading, organizing, learning).",
+            "**Earn trust through competence.** Your human gave you access to their stuff. Don't make them regret it. Be careful with **unsolicited** external actions (cold email, tweets, anything public). **Inbound email replies are your Concierge job** — see `EMAIL.md`. Be bold with reading, organizing, and learning.",
+        ),
+        (
+            "- When in doubt, ask before acting externally.",
+            "- When in doubt about **unsolicited** outbound actions, ask first. Inbound inbox replies requested by the operator are pre-approved (see `EMAIL.md`).",
+        ),
+    ]
+    for old, new in soul_replacements:
+        if old in soul:
+            soul = soul.replace(old, new, 1)
+    if "## Inbound email (Concierge deployment)" not in soul:
+        soul = soul.rstrip() + """
+
+## Inbound email (Concierge deployment)
+
+Your inbox is a **concierge channel**. Replying to senders is **in scope** — not a cautious
+"external action" to avoid. Use `scripts/himalaya-inbox.sh` / `scripts/himalaya-read.sh`
+for sender addresses; **never** ask the operator for an address you can read from the message.
+Do not "process internally" when a direct email reply is what the sender expects.
+"""
+    with open(soul_path, "w", encoding="utf-8") as f:
+        f.write(soul)
+
 email_path = os.path.join(workspace, "EMAIL.md")
 with open(email_path, "w", encoding="utf-8") as f:
     f.write(email_doc)
@@ -4410,6 +4627,8 @@ ensure_agent_email_tooling() {
   write_himalaya_delete_script "$config_dir"
   write_himalaya_inbox_script "$config_dir"
   write_himalaya_read_script "$config_dir"
+  write_himalaya_workspace_skill "$config_dir" "$email" "$display_name" "$id"
+  patch_soul_concierge_inbound_email "$config_dir"
   write_agent_email_doc "$email" "$display_name" "$config_dir"
 }
 
@@ -4936,9 +5155,11 @@ ensure_a2a_config() {
 
   a2a_warn_legacy_auth_mode_env "$id"
 
-  local audience display_name public_base_url peers_json dynamic_peers_from_jwt own_token_id api_base
+  local audience display_name card_name card_description public_base_url peers_json dynamic_peers_from_jwt own_token_id api_base
   audience="$(agent_a2a_audience "$id" "$config_dir" "$container")"
   display_name="$(agent_display_name "$id")"
+  card_name="$(agent_card_name "$id")"
+  card_description="$(agent_card_description "$id")"
   public_base_url="$(agent_a2a_public_base_url "$id")"
   own_token_id="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
   api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
@@ -4962,7 +5183,8 @@ ensure_a2a_config() {
 
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$audience" "$display_name" "$public_base_url" "$peers_arg" \
-    "$api_base" "$dynamic_peers_from_jwt" "$own_token_id" <<'PY'
+    "$api_base" "$dynamic_peers_from_jwt" "$own_token_id" \
+    "$card_name" "$card_description" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -4974,6 +5196,8 @@ peers = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
 issuer = sys.argv[6]
 dynamic_peers_from_jwt = sys.argv[7] == "1"
 own_token_id = sys.argv[8] if len(sys.argv) > 8 else ""
+card_name = sys.argv[9] if len(sys.argv) > 9 else display_name
+card_description = sys.argv[10] if len(sys.argv) > 10 else display_name
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -5032,14 +5256,11 @@ for key, value in desired_login.items():
         changed = True
 
 card = inbound.setdefault("agentCard", {})
-if card.get("name") != display_name:
-    card["name"] = display_name
+if card.get("name") != card_name:
+    card["name"] = card_name
     changed = True
-card_desc = f"{display_name} (IdentyClaw A2A)"
-if own_token_id:
-    card_desc = f"{display_name} (IdentyClaw A2A, token_id={own_token_id})"
-if card.get("description") != card_desc:
-    card["description"] = card_desc
+if card.get("description") != card_description:
+    card["description"] = card_description
     changed = True
 
 # Agent Card skills[] — required by A2A discovery (plugin reads inbound.agentCard.skills only).
@@ -5047,14 +5268,14 @@ KNOWN_SKILLS = {
     "identyclaw": {
         "id": "identyclaw",
         "name": "IdentyClaw",
-        "description": "HOLA verify and create, Passport lookup, DID resolution, and agent discovery",
+        "description": "Portable, verifiable agent identity — HOLA create/verify, Passport lookup, DID resolution, and peer discovery",
         "tags": ["identity", "hola", "passport"],
     },
     "himalaya": {
         "id": "himalaya",
         "name": "Email",
-        "description": "Send and read Migadu email via the himalaya CLI",
-        "tags": ["email", "smtp", "imap"],
+        "description": "Email concierge — receive and reply to inbound mail via Himalaya (Migadu IMAP/SMTP)",
+        "tags": ["email", "smtp", "imap", "concierge"],
     },
     "linkedin-social": {
         "id": "linkedin-social",
@@ -5072,7 +5293,7 @@ KNOWN_SKILLS = {
 A2A_SKILL = {
     "id": "a2a-messaging",
     "name": "A2A Peer Messaging",
-    "description": "Agent-to-agent messaging, tasks, and file exchange with RODiT JWT auth",
+    "description": "Agent-to-agent messaging, tasks, and file exchange with RODiT JWT — verify peers before sharing data",
     "tags": ["a2a", "messaging", "tasks"],
 }
 skill_entries = data.get("skills", {}).get("entries", {})
@@ -5091,8 +5312,8 @@ if A2A_SKILL["id"] not in seen_ids:
 if not advertised:
     advertised.append({
         "id": "default",
-        "name": display_name,
-        "description": card_desc,
+        "name": card_name,
+        "description": card_description,
     })
 if json.dumps(card.get("skills"), sort_keys=True) != json.dumps(advertised, sort_keys=True):
     card["skills"] = advertised
