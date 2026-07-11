@@ -3681,6 +3681,7 @@ start_pod_agent() {
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     if [[ "$mode" == "start" ]]; then
       ensure_agent_state_for_container_exec "$id"
+      ensure_agent_mail_tooling_refresh "$id" "$dir"
       sync_quiet_plugin_env "$dir" "$container"
       sync_agent_plugin_configs "$id" "$dir" || true
       echo "Already running: ${container} (synced .env + plugins; use './identyclaw.sh restart ${id}' to bounce the gateway)"
@@ -3689,6 +3690,7 @@ start_pod_agent() {
     echo "==> ${id} already running in pod — syncing credentials/.env and recreating container (refresh --env-file)"
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
+    ensure_agent_mail_tooling_refresh "$id" "$dir"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
@@ -3696,6 +3698,8 @@ start_pod_agent() {
     ensure_llm_sqlite_auth "$id"
     recreate_pod_agent_container "$id"
     container="$(agent_container "$id")"
+    wait_for_running_agent_container "$container" || return 1
+    ensure_agent_mail_tooling_refresh "$id" "$dir"
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Recreated ${container}"
@@ -3703,9 +3707,11 @@ start_pod_agent() {
   fi
 
   if podman container exists "$container" 2>/dev/null; then
+    ensure_agent_mail_tooling_refresh "$id" "$dir" || true
     recreate_pod_agent_container "$id"
     container="$(agent_container "$id")"
     wait_for_running_agent_container "$container" || return 1
+    ensure_agent_mail_tooling_refresh "$id" "$dir"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
@@ -3726,9 +3732,11 @@ start_pod_agent() {
   if podman pod exists "$pod_name" 2>/dev/null && [[ -f "$dir/.env" ]]; then
     echo "==> Recreating ${container} in pod ${pod_name}"
     sync_a2a_peers_from_logs "$id" || true
+    ensure_agent_mail_tooling_refresh "$id" "$dir" || true
     recreate_pod_agent_container "$id"
     container="$(agent_container "$id")"
     wait_for_running_agent_container "$container" || return 1
+    ensure_agent_mail_tooling_refresh "$id" "$dir"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
@@ -3860,6 +3868,72 @@ EOF
   chmod 755 "$config_dir/workspace/scripts/himalaya-delete.sh"
 }
 
+write_himalaya_inbox_script() {
+  local config_dir="$1"
+  mkdir -p "$config_dir/workspace/scripts"
+  cat >"$config_dir/workspace/scripts/himalaya-inbox.sh" <<'EOF'
+#!/bin/sh
+# List INBOX with sender email addresses (plain table omits addr).
+# Usage: sh scripts/himalaya-inbox.sh [PAGE_SIZE]
+set -eu
+PAGE_SIZE="${1:-10}"
+himalaya envelope list --folder INBOX --page-size "$PAGE_SIZE" --output json | node -e '
+const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+if (!Array.isArray(rows) || rows.length === 0) {
+  console.log("INBOX is empty");
+  process.exit(0);
+}
+for (const e of rows) {
+  const from = e.from?.addr || "?";
+  const name = e.from?.name || "";
+  console.log(`ID ${e.id}\t${from}\t${name}\t${e.subject}\t${e.date || ""}`);
+}
+'
+EOF
+  chmod 755 "$config_dir/workspace/scripts/himalaya-inbox.sh"
+}
+
+write_himalaya_read_script() {
+  local config_dir="$1"
+  mkdir -p "$config_dir/workspace/scripts"
+  cat >"$config_dir/workspace/scripts/himalaya-read.sh" <<'EOF'
+#!/bin/sh
+# Read full message (headers + body). Use for From: address and content.
+# Usage: sh scripts/himalaya-read.sh <ID>
+set -eu
+ID="${1:?usage: himalaya-read.sh <ID>}"
+himalaya message read "$ID" --output plain
+EOF
+  chmod 755 "$config_dir/workspace/scripts/himalaya-read.sh"
+}
+
+# Shared EMAIL.md fragment — keep write_agent_email_doc and _sync_agent_email_tooling_in_container aligned.
+_email_read_inbox_doc_block() {
+  cat <<'EOF'
+## Read inbox
+
+**Use the helpers** (recommended — include sender email addresses):
+
+```bash
+sh scripts/himalaya-inbox.sh 10          # ID, from-addr, name, subject, date
+sh scripts/himalaya-read.sh <ID>         # full message; From: line has reply address
+```
+
+Raw Himalaya (same data):
+
+```bash
+himalaya envelope list --folder INBOX --page-size 10 --output json   # from.addr in JSON
+himalaya message read <ID> --output plain                          # never envelope view
+```
+
+**Common mistakes:**
+- There is **no** `himalaya envelope view` — use `message read <ID>` or `scripts/himalaya-read.sh`.
+- Plain `himalaya envelope list` (table) shows sender **names only**, not email addresses.
+- **Never** ask the operator for a sender's email if you have the message ID — read the message.
+- `himalaya message reply` / `message write` need `$EDITOR` and **fail** headless — use `scripts/himalaya-send.sh`.
+EOF
+}
+
 write_agent_email_doc() {
   local email="$1"
   local display_name="$2"
@@ -3876,12 +3950,7 @@ write_agent_email_doc() {
 - **Config:** \`/home/node/.config/himalaya/config.toml\`
 - **IMAP/SMTP:** Migadu (\`imap.migadu.com:993\`, \`smtp.migadu.com:${smtp_port}\`)
 
-## Read inbox
-
-\`\`\`bash
-himalaya envelope list --page-size 10
-himalaya message read <ID>
-\`\`\`
+$(_email_read_inbox_doc_block)
 
 ## Delete (move to Trash)
 
@@ -3952,12 +4021,12 @@ Your inbox is a **concierge channel**. When someone emails you, replying to them
 **is in scope** — do not treat IdentyClaw-related mail as "internal only" and skip
 a direct reply.
 
-1. \`himalaya envelope list --page-size 10\` — find unread or requested messages
-2. \`himalaya message read <ID>\` — read the full message and note the \`From:\` address
+1. \`sh scripts/himalaya-inbox.sh 10\` — list messages with sender **email addresses**
+2. \`sh scripts/himalaya-read.sh <ID>\` — read body; copy \`From:\` address for the reply
 3. Compose the answer (for product questions: \`memory_search\` / \`identyclaw_get_resource\`
    first, then cite sources in the reply body)
-4. Send via \`sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"\` (use the sender's
-   email from step 2; \`himalaya message reply\` needs \`\$EDITOR\` and fails headless)
+4. \`sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"\` — **never** ask the operator
+   for the sender's email when you have the message ID
 
 **Operator main session:** when the operator asks you to check the inbox and answer or
 reply to received emails, that **is** operator approval — send the replies, then
@@ -3989,6 +4058,7 @@ IdentyClaw-related mail — do not treat it as "internal only" and skip a direct
 - **HOLA probes** (`IDENTYCLAW_HOLA_PROBE:*`): handled by the deterministic responder
   (`EMAIL.md`) — do not duplicate.
 - **Never** refuse to reply to in-scope mail by claiming you will "process it internally".
+- **Never** ask the operator for a sender's email address — use `scripts/himalaya-read.sh <ID>`.
 EOF
 }
 
@@ -4013,9 +4083,11 @@ tools_block = f"""
 
 - **Mail is pre-configured** — read **`EMAIL.md`** before any inbox task.
 - **Account:** `{email}` (Migadu / Himalaya). Do **not** ask for IMAP/SMTP/password.
-- **Read:** `himalaya envelope list --page-size 10` (plain `exec`, no `elevated`)
+- **List:** `sh scripts/himalaya-inbox.sh 10` (includes sender email; plain `exec`, no `elevated`)
+- **Read:** `sh scripts/himalaya-read.sh <ID>` (full message + From: address)
 - **Delete:** `himalaya message delete <ID>` (plain `exec`, no `elevated`)
 - **Reply:** read message, then `sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"`
+- **Never** use `envelope view` (does not exist) or ask the operator for a sender address
 - **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
 - **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
 - In-scope inbound mail must get a **direct reply to the sender** — see **Inbound email (concierge)**.
@@ -4025,7 +4097,7 @@ agents_block = f"""
 
 - Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
 - **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
-- Read/delete/reply via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `himalaya message read <ID>`, `scripts/himalaya-send.sh`.
+- Read/delete/reply via plain `exec` (no `elevated: true`) — `scripts/himalaya-inbox.sh`, `scripts/himalaya-read.sh`, `scripts/himalaya-send.sh`.
 - `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
 - The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
 - **Concierge duty:** reply to in-scope inbound mail — see **Inbound email (concierge)** below.
@@ -4081,7 +4153,7 @@ for path, block, heading in (
 PY
 }
 
-_sync_agent_email_docs_in_container() {
+_sync_agent_email_tooling_in_container() {
   local container="$1"
   local email="$2"
   local display_name="$3"
@@ -4093,11 +4165,40 @@ _sync_agent_email_docs_in_container() {
   podman exec -i \
     -e CONCIERGE_INBOUND_EMAIL_AGENTS_BLOCK="$inbound_block" \
     "$container" python3 - "$email" "$display_name" "$agent_id" "$smtp_port" <<'PY'
-import os, re, sys
+import os, re, stat, sys
 
 email, display_name, agent_id, smtp_port = sys.argv[1:5]
 inbound_block = os.environ["CONCIERGE_INBOUND_EMAIL_AGENTS_BLOCK"].strip()
 workspace = "/home/node/.openclaw/workspace"
+scripts_dir = os.path.join(workspace, "scripts")
+
+inbox_script = """#!/bin/sh
+# List INBOX with sender email addresses (plain table omits addr).
+# Usage: sh scripts/himalaya-inbox.sh [PAGE_SIZE]
+set -eu
+PAGE_SIZE="${1:-10}"
+himalaya envelope list --folder INBOX --page-size "$PAGE_SIZE" --output json | node -e '
+const rows = JSON.parse(require("fs").readFileSync(0, "utf8"));
+if (!Array.isArray(rows) || rows.length === 0) {
+  console.log("INBOX is empty");
+  process.exit(0);
+}
+for (const e of rows) {
+  const from = e.from?.addr || "?";
+  const name = e.from?.name || "";
+  console.log(`ID ${e.id}\\t${from}\\t${name}\\t${e.subject}\\t${e.date || ""}`);
+}
+'
+"""
+
+read_script = """#!/bin/sh
+# Read full message (headers + body). Use for From: address and content.
+# Usage: sh scripts/himalaya-read.sh <ID>
+set -eu
+ID="${1:?usage: himalaya-read.sh <ID>}"
+himalaya message read "$ID" --output plain
+"""
+
 email_doc = f"""# Email (Himalaya / Migadu)
 
 - **Account:** `{email}` ({display_name})
@@ -4106,10 +4207,25 @@ email_doc = f"""# Email (Himalaya / Migadu)
 
 ## Read inbox
 
+**Use the helpers** (recommended — include sender email addresses):
+
 ```bash
-himalaya envelope list --page-size 10
-himalaya message read <ID>
+sh scripts/himalaya-inbox.sh 10
+sh scripts/himalaya-read.sh <ID>
 ```
+
+Raw Himalaya (same data):
+
+```bash
+himalaya envelope list --folder INBOX --page-size 10 --output json
+himalaya message read <ID> --output plain
+```
+
+**Common mistakes:**
+- No `himalaya envelope view` — use `message read <ID>` or `scripts/himalaya-read.sh`.
+- Plain `envelope list` table shows names only, not email addresses.
+- Never ask the operator for a sender's email if you have the message ID.
+- `himalaya message reply` / `message write` need `$EDITOR` and fail headless — use `scripts/himalaya-send.sh`.
 
 ## Delete (move to Trash)
 
@@ -4136,22 +4252,38 @@ Your inbox is a **concierge channel**. When someone emails you, replying to them
 **is in scope** — do not treat IdentyClaw-related mail as "internal only" and skip
 a direct reply.
 
-1. `himalaya envelope list --page-size 10`
-2. `himalaya message read <ID>` — note the `From:` address
+1. `sh scripts/himalaya-inbox.sh 10`
+2. `sh scripts/himalaya-read.sh <ID>` — note the `From:` address
 3. Compose the answer (`memory_search` / `identyclaw_get_resource` for product questions)
-4. `sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"`
+4. `sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"` — never ask operator for sender email
 
 **Operator main session:** when the operator asks you to check the inbox and answer or
 reply to received emails, that **is** operator approval.
 
 **Never** refuse in-scope inbound mail by claiming you will "process it internally".
 """
+
+tools_block = f"""
+## Email ({agent_id})
+
+- **Mail is pre-configured** — read **`EMAIL.md`** before any inbox task.
+- **Account:** `{email}` (Migadu / Himalaya). Do **not** ask for IMAP/SMTP/password.
+- **List:** `sh scripts/himalaya-inbox.sh 10` (includes sender email; plain `exec`, no `elevated`)
+- **Read:** `sh scripts/himalaya-read.sh <ID>` (full message + From: address)
+- **Delete:** `himalaya message delete <ID>` (plain `exec`, no `elevated`)
+- **Reply:** read message, then `sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"`
+- **Never** use `envelope view` (does not exist) or ask the operator for a sender address
+- **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
+- **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
+- In-scope inbound mail must get a **direct reply to the sender** — see **Inbound email (concierge)**.
+"""
+
 agents_block = f"""
 ## Email
 
 - Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
 - **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
-- Read/delete/reply via plain `exec` (no `elevated: true`) — see **`EMAIL.md`**.
+- Read/delete/reply via plain `exec` (no `elevated: true`) — `scripts/himalaya-inbox.sh`, `scripts/himalaya-read.sh`, `scripts/himalaya-send.sh`.
 - **Concierge duty:** reply to in-scope inbound mail — see **Inbound email (concierge)**.
 """
 
@@ -4185,22 +4317,46 @@ def patch_trust_tiers(text):
     )
     return text.replace(old, new, 1) if old in text else text
 
+def write_executable(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.chmod(path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+
+write_executable(os.path.join(scripts_dir, "himalaya-inbox.sh"), inbox_script)
+write_executable(os.path.join(scripts_dir, "himalaya-read.sh"), read_script)
+
 email_path = os.path.join(workspace, "EMAIL.md")
 with open(email_path, "w", encoding="utf-8") as f:
     f.write(email_doc)
 os.chmod(email_path, 0o644)
 
-agents_path = os.path.join(workspace, "AGENTS.md")
-if os.path.isfile(agents_path):
-    with open(agents_path, encoding="utf-8") as f:
+for path, block, heading in (
+    (os.path.join(workspace, "TOOLS.md"), tools_block, r"\n## Email[^\n]*\n"),
+    (os.path.join(workspace, "AGENTS.md"), agents_block, r"\n## Email\n"),
+):
+    if not os.path.isfile(path):
+        continue
+    with open(path, encoding="utf-8") as f:
         text = f.read()
-    text = upsert_block(text, r"\n## Email\n", agents_block)
-    text = patch_knowledge_scope(text)
-    text = patch_trust_tiers(text)
-    text = upsert_block(text, r"\n## Inbound email \(concierge\)\n", "\n\n" + inbound_block + "\n")
-    with open(agents_path, "w", encoding="utf-8") as f:
+    text = upsert_block(text, heading, block)
+    if os.path.basename(path) == "AGENTS.md":
+        text = patch_knowledge_scope(text)
+        text = patch_trust_tiers(text)
+        text = upsert_block(text, r"\n## Inbound email \(concierge\)\n", "\n\n" + inbound_block + "\n")
+    with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 PY
+}
+
+# Refresh mail helpers on host (when writable) and always inside a running container.
+ensure_agent_mail_tooling_refresh() {
+  local id="$1"
+  local config_dir="${2:-$(agent_home "$id")}"
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    ensure_agent_email_tooling "$id" "$config_dir" 2>/dev/null || true
+  fi
+  ensure_concierge_inbox_reply_guidance "$id" "$config_dir"
 }
 
 ensure_concierge_inbox_reply_guidance() {
@@ -4213,7 +4369,7 @@ ensure_concierge_inbox_reply_guidance() {
   [[ -n "$email" ]] || return 0
   container="$(agent_container "$id")"
   if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    _sync_agent_email_docs_in_container "$container" "$email" "$display_name" "$id"
+    _sync_agent_email_tooling_in_container "$container" "$email" "$display_name" "$id"
   fi
 }
 
@@ -4252,6 +4408,8 @@ ensure_agent_email_tooling() {
   write_himalaya_config "$email" "$display_name" "$config_dir"
   write_himalaya_send_script "$email" "$display_name" "$config_dir"
   write_himalaya_delete_script "$config_dir"
+  write_himalaya_inbox_script "$config_dir"
+  write_himalaya_read_script "$config_dir"
   write_agent_email_doc "$email" "$display_name" "$config_dir"
 }
 
@@ -6754,8 +6912,7 @@ ensure_agent_bootstrap() {
   local container
   container="$(agent_container "$id")"
   ensure_mail_secrets_from_env "$id" "$config_dir"
-  ensure_agent_email_tooling "$id" "$config_dir"
-  ensure_concierge_inbox_reply_guidance "$id" "$config_dir"
+  ensure_agent_mail_tooling_refresh "$id" "$config_dir"
   ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_twitter_secrets_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
