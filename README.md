@@ -15,6 +15,24 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 
 **You choose how many agents run on each host** via `AGENT_IDS` in `env.local` (see [Choosing agents on this host](#choosing-agents-on-this-host)). The defaults in `env.example` illustrate a three-agent layout (`agent-a`, `agent-c`, `agent-e`); trim or extend that list to match your deployment.
 
+## Features & capabilities
+
+| Area | What this repo provides |
+| --- | --- |
+| **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (main / development tiers) |
+| **Image** | Local `openclaw-himalaya:local` from GHCR OpenClaw **2026.6.10-slim**, Himalaya **v1.2.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
+| **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
+| **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, IdentyClaw API workflows |
+| **A2A** | **identyclaw-a2a** @0.4.6 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
+| **Webhooks** | **identyclaw-webhooks** @0.1.7 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
+| **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); proactive `GET /api/agents` seeding |
+| **Channels** | Discord (bundled); optional Telegram, Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
+| **LLM** | **OpenRouter** (default) or **OpenCode** Zen/Go; model chain + failover timeouts synced from `env.local` |
+| **Memory** | QMD backend with session-memory hook and configurable retention |
+| **Security** | Gateway token auth, rate limiting, tool/knowledge scope in workspace docs, RODiT JWT boundaries for A2A vs webhooks vs Control UI |
+| **Testing** | Repo-local unit tests (CI); constitution gateway suites with per-agent **preflight**; multi-agent and multi-peer sweeps |
+| **Ops** | Boot persistence (`enable-boot`), GitHub Actions deploy, self-signed TLS generation, agent export/import, `restore-host-access` for credential edits |
+
 ## Standards
 
 This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/docs/). Key references:
@@ -28,16 +46,19 @@ This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/d
 
 ## Prerequisites
 
-- Podman (rootless recommended). On AlmaLinux / RHEL / Fedora:
+| Requirement | Notes |
+| --- | --- |
+| **Podman** (rootless recommended) | AlmaLinux / RHEL / Fedora: `sudo dnf install -y podman` |
+| **Node.js 22+** (host) | Used by test/probe scripts; CI runs `node scripts/test-unit-all.mjs` |
+| **Sibling app directory** | Default `../identyclaw-agents-app` — created by `./identyclaw.sh init` |
+| **Migadu mailboxes** | One per agent you enable in `AGENT_IDS`; set `AGENT_*_EMAIL` in `env.local` |
+| **OpenRouter or OpenCode key** | Before onboard/chat: `./identyclaw.sh set-api-key` or `set-opencode-key` |
+| **NEAR Passport credentials** | `secrets/near-credentials/*.json` per agent for A2A, webhooks, and HOLA signing |
+| **Optional host CLI** | `openclaw` on the host for advanced management outside containers |
 
-  ```bash
-  sudo dnf install -y podman
-  ```
+Mailbox passwords are **not** required for `init`, `build-image`, or `start` — add them later (see [Set email passwords later](#set-email-passwords-later)).
 
-- Optional: `openclaw` CLI on the host for advanced management
-- Migadu (or compatible IMAP) mailboxes for each agent you plan to use — edit addresses in `~/identyclaw-agents-app/env.local` (`AGENT_*_EMAIL`)
-
-Mailbox passwords are **not** required for `init`, `build-image`, or `start` — you can add them later (see [Set email passwords later](#set-email-passwords-later)).
+For main-tier **pod** deploy, also prepare TLS material under `~/identyclaw-agents-app/certs/` (`./identyclaw.sh generate-certs`) and set `IDENTYCLAW_DEPLOY_MODE=pod` with per-agent `AGENT_*_PUBLIC_HOST`.
 
 ## Repository vs app directory
 
@@ -90,7 +111,7 @@ AGENT_IDS=agent-a agent-c agent-e
 
 `./identyclaw.sh init` seeds state directories for **agent-a, agent-c, and agent-e** from `env.example`. Agents not listed in `AGENT_IDS` are simply not started — you can leave their mailbox passwords and API keys unset until you need them.
 
-Per-agent settings in `env.local` use the `AGENT_<LETTER>_` prefix matching the id suffix (`agent-a` → `AGENT_A_EMAIL`, `AGENT_A_GATEWAY_PORT`, etc.). The stock template covers `a`, `d`, and `e`; add matching blocks if you introduce custom ids.
+Per-agent settings in `env.local` use the `AGENT_<LETTER>_` prefix matching the id suffix (`agent-a` → `AGENT_A_EMAIL`, `AGENT_A_GATEWAY_PORT`, etc.). The stock template covers `a`, `c`, and `e`; add matching blocks if you introduce custom ids.
 
 Set `AGENT_IDS` **before** the first `./identyclaw.sh start all` (or edit `env.local` right after `init`).
 
@@ -121,14 +142,14 @@ When Migadu passwords are ready, configure **each agent in `AGENT_IDS`**:
 # repeat set-password / set-api-key / onboard for each agent in AGENT_IDS
 ```
 
-**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.5.27+**, and bundled plugins (Discord) are in the image:
+**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.6.10+**, and bundled plugins (Discord) are in the image:
 
 ```bash
 ./identyclaw.sh build-image
 ./identyclaw.sh restart all
 ```
 
-The local image pins `ghcr.io/openclaw/openclaw:2026.5.27-slim` and pre-installs `@openclaw/discord` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
+The local image pins `ghcr.io/openclaw/openclaw:2026.6.10-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.6.10` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
 - **Pod mode** (per agent): `https://<AGENT_*_PUBLIC_HOST>:<ingress-port>/` — token: `./identyclaw.sh token <agent-id>`
 - **Standalone dev** (default ports from `env.local`): agent-a → `http://127.0.0.1:18789/`, agent-c → `http://127.0.0.1:18793/`, agent-e → `http://127.0.0.1:18797/`
@@ -278,7 +299,7 @@ You can bring agents up before mail is configured. Himalaya reads credentials fr
 
 **Option B — one-time in `env.local`**
 
-Set `AGENT_A_PASSWORD`, `AGENT_D_PASSWORD`, and `AGENT_E_PASSWORD` in `env.local`, then re-run init (only writes secrets if the password fields are non-empty):
+Set `AGENT_A_PASSWORD`, `AGENT_C_PASSWORD`, and `AGENT_E_PASSWORD` in `env.local`, then re-run init (only writes secrets if the password fields are non-empty):
 
 ```bash
 # edit env.local, then:
@@ -307,6 +328,17 @@ Email verification is symmetric: just as `test-mail-hola` sends a HOLA probe to 
 ./identyclaw.sh enable-mail-responder          # keep our inbox answered on a timer
 REQUIRE_MAIL_HOLA=1 ./identyclaw.sh test-mail-hola agent-a <peer-token-id>
 ```
+
+### Inbox heartbeat (concierge)
+
+Optional LLM-driven inbox polling replies to inbound mail on a schedule (workspace `AGENTS.md` defines concierge scope and trust tiers):
+
+```bash
+./identyclaw.sh enable-inbox-check agent-a 1h
+./identyclaw.sh restart agent-a
+```
+
+Or set `IDENTYCLAW_ENABLE_INBOX_HEARTBEAT=1` and `IDENTYCLAW_INBOX_HEARTBEAT_INTERVAL=1h` in `env.local` before bootstrap/restart.
 
 ## Rootful (optional, not recommended)
 
@@ -437,6 +469,7 @@ Pin and install plugins (defaults in `env.example`):
 ```bash
 IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.6
 IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.2
+IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.7
 ```
 
 Each agent's own public base can come from Passport `metadata.webhook_url` when `IDENTYCLAW_RODIT_SELF_CONFIGURE=1` (default).
@@ -571,7 +604,21 @@ Rotating one credential does not automatically revoke the others. See trust-boun
 
 **Typical flow:** (1) public Agent Card discovery → (2) optional HOLA trust via `identyclaw-tools` → (3) ongoing work via **`a2a_send_message`** → (4) optional **`send_rodit_webhook`** wake when a lightweight signed ping is enough.
 
-**Verify:** `./identyclaw.sh test` — A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail (suites per [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)).
+**Verify:** `./identyclaw.sh test` — unit tests, **preflight**, then A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail (suites per [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)).
+
+### Optional chat channels
+
+Beyond email-first defaults, agents can enable:
+
+| Channel | Setup | Notes |
+| --- | --- | --- |
+| **Discord** | `./identyclaw.sh set-discord-token agent-a` | Bundled in image; guild channel bootstrap on start |
+| **Telegram** | Bot token in `openclaw.json` / onboard | DM approvers synced from NEAR `owner_id` on bootstrap |
+| **X / Twitter** | `set-twitter` or `set-twitter-cookies` | bird-twitter skill (session cookies, not paid API) |
+| **Instagram** | `./identyclaw.sh set-instagram agent-a` | Browser-based; reCAPTCHA may require manual login |
+| **LinkedIn** | ClawLink plugin + linkedin-social skill | OAuth via ClawLink — no API keys in chat |
+
+See `env.example` for ClawHub pin variables (`IDENTYCLAW_CLAWHUB_TWITTER_SKILL`, etc.).
 
 ### Agent A (example main-tier pod setup)
 
@@ -591,7 +638,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | Deploy mode | `pod` (`IDENTYCLAW_INGRESS_PORT=9443` in `env.local`) |
 | Gateway bind | `lan` (reachable from nginx sidecar inside the pod) |
 | Gateway auth | token |
-| Model | **Primary:** `openrouter/x-ai/grok-4.3` (temporary) → **fallback 1:** `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` (free) → **fallback 2:** `openrouter/qwen/qwen3-coder:free` (free) |
+| Model | **Primary:** `openrouter/deepseek/deepseek-v4-flash:free` → **fallback 1:** `openrouter/qwen/qwen3-coder:free` → **fallback 2:** `openrouter/deepseek/deepseek-v4-flash` (override via `OPENCLAW_MODEL_*` in `env.local`) |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
 | Memory | `qmd` |
@@ -612,15 +659,15 @@ Key `openclaw.json` excerpts (secrets redacted):
   "agents": {
     "defaults": {
       "models": {
-        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {},
+        "openrouter/deepseek/deepseek-v4-flash:free": {},
         "openrouter/qwen/qwen3-coder:free": {},
-        "openrouter/x-ai/grok-4.3": {}
+        "openrouter/deepseek/deepseek-v4-flash": {}
       },
       "model": {
-        "primary": "openrouter/x-ai/grok-4.3",
+        "primary": "openrouter/deepseek/deepseek-v4-flash:free",
         "fallbacks": [
-          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
-          "openrouter/qwen/qwen3-coder:free"
+          "openrouter/qwen/qwen3-coder:free",
+          "openrouter/deepseek/deepseek-v4-flash"
         ]
       }
     }
@@ -720,6 +767,43 @@ cd ~/identyclaw-agents
 **CLI chat:** `./identyclaw.sh chat agent-e`
 
 **Interactive onboard instead** (if you prefer the wizard over `mirror`):
+
+```bash
+./identyclaw.sh onboard agent-e
+```
+
+## Preflight
+
+Gateway tests run **preflight** checks before constitution suites. Preflight prints `passed` / `not-passed` / `skipped` per check (outcomes follow [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)).
+
+### Per-agent preflight (`./identyclaw.sh test [agent-id]`)
+
+Emitted at the start of each agent’s constitution run:
+
+| Check | Passed | Not-passed / skipped |
+| --- | --- | --- |
+| **webhook_url** | Passport `metadata.webhook_url` from API `GET /full` matches this host’s ingress base | Missing NEAR creds; API/chain URL missing; registered URL ≠ nginx/loopback base |
+| **agent-card** | HTTP 200 at `{ingress}/.well-known/agent-card.json` | Gateway down, wrong bind, or pod not routing |
+| **POST /a2a** | Unauthenticated request returns **401/403** (auth-gated) | Open `/a2a` or unreachable peer base |
+| **webhooks plugin** | `identyclaw-webhooks` installed at the version pinned in `env.local` | No NEAR creds; plugin missing or stale — run `./identyclaw.sh upgrade-plugins` |
+
+Requires `IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1` (or Open P2P) for live `webhook_url` resolution against the IdentyClaw API.
+
+### Multi-agent preflight (`./identyclaw.sh test-all-agents`)
+
+Before starting containers, verifies **Migadu mailbox passwords** exist for every id in `AGENT_IDS`. Then starts agents, syncs A2A outbound peers, prints the live peer roster, and runs unit tests + constitution per agent.
+
+### Useful preflight commands
+
+```bash
+./identyclaw.sh test agent-a              # unit tests + preflight + local/peer constitution suites
+./identyclaw.sh test-candidates           # remote peers per agent and test mode (a2a / a2a+email / email)
+./identyclaw.sh test-unit                 # repo-local unit tests only (no Podman; CI-safe)
+./identyclaw.sh discover-a2a-peers all    # refresh outbound.agents from GET /api/agents
+./identyclaw.sh status                    # container state + ingress URLs
+```
+
+Skip slow or failing suites while debugging via `CONSTITUTION_SKIP_SUITES` in `env.local` (see `env.example`).
 
 ## Troubleshooting
 
@@ -845,35 +929,57 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 
 | Command | Description |
 |---------|-------------|
-| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.5.27+ + Himalaya + Discord plugin layer |
+| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.6.10+ + Himalaya + Discord plugin layer |
 | `./identyclaw.sh init` | Create agent state dirs (`agent-a`, `agent-c`, `agent-e` from `env.example`) and `env.local` |
 | `./identyclaw.sh set-password agent-a` | Store Migadu password locally |
 | `./identyclaw.sh set-discord-token agent-a` | Store Discord bot token in `secrets/` (synced to `.env` on start) |
+| `./identyclaw.sh set-instagram agent-a` | Store Instagram username/password in `secrets/` |
+| `./identyclaw.sh set-twitter agent-a` | Store X/Twitter login; enables hourly DM polling via heartbeat |
+| `./identyclaw.sh set-twitter-cookies agent-a` | Store X session cookies (`AUTH_TOKEN` + `CT0`) for bird-twitter skill |
 | `./identyclaw.sh set-api-key agent-a` | Store OpenRouter API key (`sk-or-...`) with validation |
-| `./identyclaw.sh mirror agent-c` | Copy config + OpenRouter auth from another agent (e.g. agent-a → agent-c) |
+| `./identyclaw.sh set-opencode-key agent-a` | Store OpenCode Zen/Go API key (when `OPENCLAW_LLM_PROVIDER=opencode`) |
+| `./identyclaw.sh mirror agent-c` | Copy config + LLM auth from another agent (e.g. agent-a → agent-c) |
+| `./identyclaw.sh export-agent agent-a [file]` | Pack agent secrets + config for migration (`--with-browser` optional) |
+| `./identyclaw.sh import-agent agent-a file` | Restore agent from `export-agent` archive |
 | `./identyclaw.sh configure agent-a` | Run `openclaw configure` in the gateway container |
 | `./identyclaw.sh start all` | Start every agent in `AGENT_IDS` |
 | `./identyclaw.sh stop all` | Stop every agent in `AGENT_IDS` |
 | `./identyclaw.sh restart all` | Restart after password or config changes |
+| `./identyclaw.sh restore-host-access [id\|all]` | Stop pod agents and restore host ownership (edit creds/`.env` on host) |
 | `./identyclaw.sh enable-boot` | One-time: background + start agents in `AGENT_IDS` after reboot |
+| `./identyclaw.sh status` | Show podman + health URLs |
+| `./identyclaw.sh logs agent-a` | Follow logs |
+| `./identyclaw.sh test [id]` | Unit tests + **preflight** + full constitution suite (default: first `AGENT_IDS` entry) |
+| `./identyclaw.sh test-unit` | Repo-local unit tests only (no Podman) |
+| `./identyclaw.sh test-candidates` | List remote test peers per agent and mode |
+| `./identyclaw.sh test-all-agents` | Start `AGENT_IDS`, sync peers, run constitution per local agent |
+| `./identyclaw.sh test-all-agents-chat` | Constitution + chat-driven peer discovery per agent |
+| `./identyclaw.sh test-all-peers` | Constitution suites against every live `A2A_PEER_AGENTS` peer |
 | `./identyclaw.sh test-mail agent-a` | Verify IMAP via Himalaya |
+| `./identyclaw.sh test-mail-hola [id] [peer-token-id]` | Reciprocal email HOLA; `REQUIRE_MAIL_HOLA=1` enforces replies |
 | `./identyclaw.sh respond-mail [id\|all]` | Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point) |
 | `./identyclaw.sh enable-mail-responder [interval]` | Install user systemd timer running `respond-mail` (default 5min) |
-| `./identyclaw.sh logs agent-a` | Follow logs |
+| `./identyclaw.sh enable-inbox-check agent-a [interval]` | Enable LLM inbox heartbeat / concierge (default 1h) |
+| `./identyclaw.sh respond-a2a-webhook-smoke [id\|all]` | Handle inbound A2A webhook smoke probes (constitution helper) |
+| `./identyclaw.sh enable-a2a-webhook-smoke-responder [interval]` | Timer for `respond-a2a-webhook-smoke` (default 1min) |
+| `./identyclaw.sh respond-a2a-hola-smoke [id\|all]` | Send deterministic inbound A2A HOLA probe emails (smoke tests) |
+| `./identyclaw.sh enable-a2a-hola-smoke-responder [interval]` | Timer for `respond-a2a-hola-smoke` (default 1min) |
+| `./identyclaw.sh generate-certs [--force]` | Issue self-signed TLS PEMs for pod ingress |
+| `./identyclaw.sh test-a2a [from] [peer-token-id]` | Agent Card discovery + unauthenticated `/a2a` → 401 |
+| `./identyclaw.sh test-a2a-auth [peer-token-id]` | P2P JWT on `/a2a` (peer via API/registry, then local inbound) |
+| `./identyclaw.sh test-a2a-messaging [from] [peer]` | `message/send` → `tasks/get` E2E (requires live peer) |
+| `./identyclaw.sh test-auth-boundaries [peer-token-id]` | Channel isolation + mutual P2P JWT binding |
+| `./identyclaw.sh upgrade-plugins [id\|all]` | Refresh A2A + IdentyClaw + webhooks plugins from ClawHub pins |
+| `./identyclaw.sh discover-a2a-peers [id\|all]` | Discover live peers via `GET /api/agents` and refresh `outbound.agents` |
+| `./identyclaw.sh sync-a2a-peers [id\|all]` | Backfill `env.local` from discovered peers (optional ops) |
+| `./identyclaw.sh test-webhook [id]` | Webhook ingress (unsigned, invalid sig, signed, optional `/api/testhola`) |
+| `./identyclaw.sh test-webhook-p2p [from] [to]` | Bidirectional P2P webhook receipts |
+| `./identyclaw.sh send-rodit-webhook id peer-token-id [text]` | POST signed `/hooks/wake` to peer after 10s delay |
+| `./identyclaw.sh webhook-url agent-a [path]` | Print public HTTPS webhook URL |
 | `./identyclaw.sh token agent-a` | Print Control UI gateway token |
 | `./identyclaw.sh chat agent-a` | Interactive terminal chat |
 | `./identyclaw.sh ask agent-a "..."` | One-shot message to an agent |
-| `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks) |
-| `./identyclaw.sh test` | Full gateway suite (A2A, webhooks, mail — see [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)) |
-| `./identyclaw.sh test-mail-hola [id] [peer-token-id]` | Reciprocal email HOLA: we probe the peer **and** drive the peer to probe us; `REQUIRE_MAIL_HOLA=1` makes missing replies a failure |
-| `./identyclaw.sh test-a2a [from] [peer-token-id]` | Agent Card discovery (peer URL via API when dynamic mode on) + unauthenticated `/a2a` → 401 |
-| `./identyclaw.sh test-a2a-auth` | P2P JWT on `/a2a` (peer via API/registry, then local inbound) |
-| `./identyclaw.sh upgrade-plugins [id\|all]` | Refresh A2A + IdentyClaw plugins from ClawHub pins |
-| `./identyclaw.sh discover-a2a-peers [id\|all]` | Proactively discover live peers via `GET /api/agents` and refresh `outbound.agents` |
-| `./identyclaw.sh sync-a2a-peers [id\|all]` | Backfill `env.local` from discovered peers (optional ops) |
-| `./identyclaw.sh test-webhook [id]` | Webhook ingress (unsigned, invalid sig, signed) |
-| `./identyclaw.sh test-webhook-p2p [from] [to]` | Bidirectional P2P webhook receipts |
-| `./identyclaw.sh webhook-url agent-a [path]` | Print public HTTPS webhook URL |
+| `./identyclaw.sh onboard agent-a` | Interactive OpenClaw setup (skips hatch TUI / health checks by default) |
 
 ## Main-tier ingress (CI/CD + nginx TLS sidecar)
 
@@ -935,7 +1041,12 @@ Per-agent runtime state lives under `~/identyclaw-agents-app/agents/<agent-id>/`
 
 ### GitHub Actions
 
-Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+Workflows:
+
+| Workflow | Trigger | Purpose |
+| --- | --- | --- |
+| [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) | Push to `main` / `development` | Build image, deploy pod to SSH hosts, health probe |
+| [`.github/workflows/test-unit.yml`](.github/workflows/test-unit.yml) | PR + push to `main` / `development` | `node scripts/test-unit-all.mjs` (no Podman) |
 
 Required repository secrets (same names as other IdentyClaw `-idc` repos): `SSH_HOST_MAIN`, `SSH_USER_MAIN`, `SSH_PRIVATE_KEY_MAIN`, `SSH_KNOWN_HOSTS_MAIN`, and the `*_DEVELOPMENT` variants, plus `GHCR_PULL_TOKEN`.
 
@@ -957,10 +1068,14 @@ Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tu
 ```
 ~/identyclaw-agents-app/agents/agent-a/
   openclaw.json
-  .env                    # OPENCLAW_GATEWAY_TOKEN
+  .env                    # OPENCLAW_GATEWAY_TOKEN, IDENTYCLAW_*, NEAR_*
   workspace/
+    IDENTITYCLAW.md       # operator guidance (A2A + identity)
+    EMAIL.md              # Himalaya / concierge instructions
+    scripts/              # himalaya-inbox.sh, himalaya-read.sh, himalaya-delete.sh, send helpers
   .config/himalaya/config.toml
   secrets/imap.pass       # never commit
+  secrets/near-credentials/*.json
   secrets/imap.sh         # auth helper for Himalaya
 
 ~/identyclaw-agents-app/agents/agent-c/      # same structure
