@@ -8081,6 +8081,9 @@ defaults.setdefault("workspace", "/home/node/.openclaw/workspace")
 defaults["models"] = allowlist
 defaults["model"] = {"primary": primary, "fallbacks": fallbacks}
 defaults["timeoutSeconds"] = agent_timeout
+# OpenClaw 2026.6.x duplicates post-tool assistant text when blockStreamingBreak is
+# text_end (boundary-aware openai-completions). message_end avoids the echo in TUI/webchat.
+defaults["blockStreamingBreak"] = "message_end"
 
 providers = data.setdefault("models", {}).setdefault("providers", {})
 plugins = data.setdefault("plugins", {}).setdefault("entries", {})
@@ -9022,6 +9025,7 @@ write_openclaw_json() {
           "${OPENCLAW_MODEL_FALLBACK_2}"
         ]
       },
+      "blockStreamingBreak": "message_end",
       "memorySearch": {
         "experimental": { "sessionMemory": true },
         "sources": ["memory", "sessions"]
