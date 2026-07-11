@@ -3975,7 +3975,11 @@ The \`From:\` header has the reply address.
 
 ## Reply (concierge duty — send, do not summarize internally)
 
-When the operator asks you to check/reply to inbox mail, **that is approval**. For each in-scope message:
+When the operator asks you to check/reply to inbox mail, **that is approval**. Periodic
+check requests (hourly, etc.) are **standing approval** — enable the \`inbox-check\` task in
+\`workspace/HEARTBEAT.md\` and set \`openclaw.json\` heartbeat interval per **EMAIL.md**.
+
+For each in-scope message:
 
 1. \`sh scripts/himalaya-inbox.sh 10\`
 2. \`sh scripts/himalaya-read.sh <ID>\`
@@ -4180,6 +4184,23 @@ a direct reply.
 reply to received emails, that **is** operator approval — send the replies, then
 summarize what you sent.
 
+**Periodic checks (heartbeat):** when the operator asks you to check the inbox on a
+schedule (e.g. hourly), you **can** enable recurring checks via OpenClaw heartbeat:
+
+1. Add or update the \`inbox-check\` task in \`workspace/HEARTBEAT.md\` (interval matches
+   the requested cadence, default \`1h\`)
+2. Set \`agents.defaults.heartbeat.every\` in \`openclaw.json\` to the same interval
+3. Run an immediate inbox check now
+4. If you changed \`openclaw.json\`, tell the operator: \`./identyclaw.sh restart ${id}\`
+
+**Standing approval:** periodic inbox check requests count as operator approval for
+concierge replies in heartbeat/isolated sessions until they say otherwise.
+
+**Host shortcut:** \`./identyclaw.sh enable-inbox-check ${id} [interval]\`
+
+\`enable-mail-responder\` is **only** for deterministic HOLA probe replies — not LLM inbox
+review.
+
 **HOLA probes** (\`IDENTYCLAW_HOLA_PROBE:*\`) are handled by the deterministic
 responder above — do not duplicate.
 
@@ -4201,6 +4222,9 @@ IdentyClaw-related mail — do not treat it as "internal only" and skip a direct
 - **Operator main session:** when the operator asks you to check the inbox, answer
   received emails, or reply to a sender — that **is** operator approval. Read each
   message, send replies (see `EMAIL.md`), then summarize what you sent.
+- **Periodic checks:** when the operator asks for scheduled inbox checks (hourly, etc.),
+  enable heartbeat per `EMAIL.md` → Periodic inbox checks. Standing approval for replies
+  in heartbeat/isolated sessions until they say otherwise.
 - **In-scope inbound mail:** use `memory_search` / `identyclaw_get_resource` to
   compose factual answers, then **email the sender** — searching alone is not responding.
 - **HOLA probes** (`IDENTYCLAW_HOLA_PROBE:*`): handled by the deterministic responder
@@ -4278,7 +4302,8 @@ def patch_trust_tiers(text):
         "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email): "
         "sender must be HOLA-verified **and** an operator must approve the specific action.\n"
         "- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
-        "Operator requests in the main session count as approval. Use `memory_search` to compose "
+        "Operator requests in the main session count as approval. Periodic inbox check requests "
+        "count as standing approval in heartbeat sessions. Use `memory_search` to compose "
         "factual answers, then send via `EMAIL.md` — do not stop at an internal summary."
     )
     if old in text:
@@ -4408,6 +4433,23 @@ a direct reply.
 **Operator main session:** when the operator asks you to check the inbox and answer or
 reply to received emails, that **is** operator approval.
 
+**Periodic checks (heartbeat):** when the operator asks you to check the inbox on a
+schedule (e.g. hourly), you **can** enable recurring checks via OpenClaw heartbeat:
+
+1. Add or update the `inbox-check` task in `workspace/HEARTBEAT.md` (interval matches
+   the requested cadence, default `1h`)
+2. Set `agents.defaults.heartbeat.every` in `openclaw.json` to the same interval
+3. Run an immediate inbox check now
+4. If you changed `openclaw.json`, tell the operator: `./identyclaw.sh restart {agent_id}`
+
+**Standing approval:** periodic inbox check requests count as operator approval for
+concierge replies in heartbeat/isolated sessions until they say otherwise.
+
+**Host shortcut:** `./identyclaw.sh enable-inbox-check {agent_id} [interval]`
+
+`enable-mail-responder` is **only** for deterministic HOLA probe replies — not LLM inbox
+review.
+
 **Never** refuse in-scope inbound mail by claiming you will "process it internally".
 """
 
@@ -4460,7 +4502,8 @@ def patch_trust_tiers(text):
         "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email): "
         "sender must be HOLA-verified **and** an operator must approve the specific action.\n"
         "- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
-        "Operator requests in the main session count as approval. Use `memory_search` to compose "
+        "Operator requests in the main session count as approval. Periodic inbox check requests "
+        "count as standing approval in heartbeat sessions. Use `memory_search` to compose "
         "factual answers, then send via `EMAIL.md` — do not stop at an internal summary."
     )
     return text.replace(old, new, 1) if old in text else text
@@ -4503,9 +4546,11 @@ sh scripts/himalaya-read.sh <ID>
 sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"
 ```
 
-When the operator asks you to check/reply to inbox mail, **that is approval**. Never ask for sender
-email or "process internally" instead of replying. **Run \`sh scripts/himalaya-send.sh\` and confirm
-\`Message successfully sent!\` before reporting a reply as sent.**
+When the operator asks you to check/reply to inbox mail, **that is approval**. Periodic
+check requests (hourly, etc.) are **standing approval** — enable the `inbox-check` task in
+`workspace/HEARTBEAT.md` and set `openclaw.json` heartbeat interval per **EMAIL.md**.
+Never ask for sender email or "process internally" instead of replying. **Run `sh scripts/himalaya-send.sh` and confirm
+`Message successfully sent!` before reporting a reply as sent.**
 
 **Critical:** \`From:\` must be \`{email}\` ({display_name}).
 """
@@ -6953,65 +6998,141 @@ for path, block in ((tools_path, tools_block), (agents_path, agents_block)):
 PY
 }
 
-write_twitter_heartbeat_doc() {
-  local config_dir="$1"
-  local agent_id
-  agent_id="$(basename "$config_dir")"
-  mkdir -p "$config_dir/workspace"
-  cat >"$config_dir/workspace/HEARTBEAT.md" <<EOF
-tasks:
-
-- name: twitter-mentions
-  interval: 1h
-  prompt: "Check X/Twitter mentions and notifications. Read workspace/TWITTER.md, run workspace/node_modules/.bin/bird check then bird mentions. Summarize anything needing a response. Draft replies in workspace/twitter/drafts/ when appropriate."
-
-# X/Twitter monitoring (hourly)
-
-Follow TWITTER.md. If bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK.
+_heartbeat_inbox_check_prompt() {
+  cat <<'EOF'
+Read EMAIL.md. Run sh scripts/himalaya-inbox.sh 10. For each new in-scope message, read and reply per concierge rules (memory_search / identyclaw_get_resource first for factual answers). Skip IDENTYCLAW_HOLA_PROBE messages (handled deterministically). Summarize actions taken. If nothing needs attention, reply HEARTBEAT_OK.
 EOF
-  chmod 644 "$config_dir/workspace/HEARTBEAT.md"
 }
 
-_write_twitter_heartbeat_doc_in_container() {
-  local container="$1"
-  local agent_id="${container#openclaw-}"
-  podman exec -i "$container" python3 - "$agent_id" <<'PY'
-import os, sys
-agent_id = sys.argv[1]
-workspace = "/home/node/.openclaw/workspace"
-content = f"""tasks:
+_heartbeat_twitter_mentions_prompt() {
+  cat <<'EOF'
+Check X/Twitter mentions and notifications. Read workspace/TWITTER.md, run workspace/node_modules/.bin/bird check then bird mentions. Summarize anything needing a response. Draft replies in workspace/twitter/drafts/ when appropriate.
+EOF
+}
 
-- name: twitter-mentions
-  interval: 1h
-  prompt: "Check X/Twitter mentions and notifications. Read workspace/TWITTER.md, run workspace/node_modules/.bin/bird check then bird mentions. Summarize anything needing a response. Draft replies in workspace/twitter/drafts/ when appropriate."
+_upsert_heartbeat_task() {
+  local heartbeat_file="$1"
+  local task_name="$2"
+  local interval="$3"
+  local prompt="$4"
+  local footer_line="${5:-}"
+  mkdir -p "$(dirname "$heartbeat_file")"
+  HEARTBEAT_TASK_NAME="$task_name" \
+  HEARTBEAT_TASK_INTERVAL="$interval" \
+  HEARTBEAT_TASK_PROMPT="$prompt" \
+  HEARTBEAT_TASK_FOOTER="$footer_line" \
+  python3 - "$heartbeat_file" <<'PY'
+import os, re, sys
+from pathlib import Path
 
-# X/Twitter monitoring (hourly)
+path = Path(sys.argv[1])
+name = os.environ["HEARTBEAT_TASK_NAME"]
+interval = os.environ["HEARTBEAT_TASK_INTERVAL"]
+prompt = os.environ["HEARTBEAT_TASK_PROMPT"]
+footer_line = os.environ.get("HEARTBEAT_TASK_FOOTER", "")
 
-Follow TWITTER.md. If bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies {agent_id}. If nothing needs attention, reply HEARTBEAT_OK.
-"""
-path = os.path.join(workspace, "HEARTBEAT.md")
-with open(path, "w", encoding="utf-8") as f:
-    f.write(content)
-os.chmod(path, 0o644)
+content = path.read_text(encoding="utf-8") if path.is_file() else "tasks:\n\n"
+
+task_re = re.compile(
+    r"^- name: (?P<name>\S+)\n  interval: (?P<interval>\S+)\n  prompt: \"(?P<prompt>(?:[^\"\\]|\\.)*)\"\n?",
+    re.M,
+)
+tasks: dict[str, tuple[str, str]] = {}
+for m in task_re.finditer(content):
+    tasks[m.group("name")] = (m.group("interval"), m.group("prompt"))
+tasks[name] = (interval, prompt)
+
+footers: list[str] = []
+for line in content.splitlines():
+    if line.startswith("# ") and line not in footers:
+        footers.append(line)
+if footer_line and footer_line not in footers:
+    footers.append(footer_line)
+
+out = ["tasks:", ""]
+for tname, (tint, tprompt) in tasks.items():
+    out.append(f"- name: {tname}")
+    out.append(f"  interval: {tint}")
+    out.append(f'  prompt: "{tprompt}"')
+    out.append("")
+if footers:
+    out.extend(footers)
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+path.chmod(0o644)
 PY
 }
 
-ensure_twitter_heartbeat_config() {
+_upsert_heartbeat_task_in_container() {
+  local container="$1"
+  local task_name="$2"
+  local interval="$3"
+  local prompt="$4"
+  local footer_line="${5:-}"
+  HEARTBEAT_TASK_NAME="$task_name" \
+  HEARTBEAT_TASK_INTERVAL="$interval" \
+  HEARTBEAT_TASK_PROMPT="$prompt" \
+  HEARTBEAT_TASK_FOOTER="$footer_line" \
+  podman exec -i -e HEARTBEAT_TASK_NAME -e HEARTBEAT_TASK_INTERVAL -e HEARTBEAT_TASK_PROMPT -e HEARTBEAT_TASK_FOOTER \
+    "$container" python3 <<'PY'
+import os, re
+from pathlib import Path
+
+path = Path("/home/node/.openclaw/workspace/HEARTBEAT.md")
+name = os.environ["HEARTBEAT_TASK_NAME"]
+interval = os.environ["HEARTBEAT_TASK_INTERVAL"]
+prompt = os.environ["HEARTBEAT_TASK_PROMPT"]
+footer_line = os.environ.get("HEARTBEAT_TASK_FOOTER", "")
+
+content = path.read_text(encoding="utf-8") if path.is_file() else "tasks:\n\n"
+
+task_re = re.compile(
+    r"^- name: (?P<name>\S+)\n  interval: (?P<interval>\S+)\n  prompt: \"(?P<prompt>(?:[^\"\\]|\\.)*)\"\n?",
+    re.M,
+)
+tasks: dict[str, tuple[str, str]] = {}
+for m in task_re.finditer(content):
+    tasks[m.group("name")] = (m.group("interval"), m.group("prompt"))
+tasks[name] = (interval, prompt)
+
+footers: list[str] = []
+for line in content.splitlines():
+    if line.startswith("# ") and line not in footers:
+        footers.append(line)
+if footer_line and footer_line not in footers:
+    footers.append(footer_line)
+
+out = ["tasks:", ""]
+for tname, (tint, tprompt) in tasks.items():
+    out.append(f"- name: {tname}")
+    out.append(f"  interval: {tint}")
+    out.append(f'  prompt: "{tprompt}"')
+    out.append("")
+if footers:
+    out.extend(footers)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+path.chmod(0o644)
+PY
+}
+
+ensure_heartbeat_config() {
   local config_dir="$1"
+  local interval="${2:-1h}"
   local config="$config_dir/openclaw.json"
   [[ -f "$config" ]] || return 0
-  python3 - "$config" <<'PY'
+  python3 - "$config" "$interval" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+interval = sys.argv[2]
 data = json.loads(path.read_text(encoding="utf-8"))
 agents = data.setdefault("agents", {})
 defaults = agents.setdefault("defaults", {})
 heartbeat = defaults.setdefault("heartbeat", {})
 changed = False
 for key, value in {
-    "every": "1h",
+    "every": interval,
     "target": "none",
     "lightContext": True,
     "isolatedSession": True,
@@ -7028,12 +7149,14 @@ if changed:
 PY
 }
 
-_ensure_twitter_heartbeat_config_in_container() {
+_ensure_heartbeat_config_in_container() {
   local container="$1"
-  podman exec -i "$container" python3 <<'PY'
-import json
+  local interval="${2:-1h}"
+  podman exec -i "$container" python3 - "$interval" <<'PY'
+import json, sys
 from pathlib import Path
 
+interval = sys.argv[1]
 path = Path("/home/node/.openclaw/openclaw.json")
 data = json.loads(path.read_text(encoding="utf-8"))
 agents = data.setdefault("agents", {})
@@ -7041,7 +7164,7 @@ defaults = agents.setdefault("defaults", {})
 heartbeat = defaults.setdefault("heartbeat", {})
 changed = False
 for key, value in {
-    "every": "1h",
+    "every": interval,
     "target": "none",
     "lightContext": True,
     "isolatedSession": True,
@@ -7056,6 +7179,80 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
+}
+
+write_twitter_heartbeat_doc() {
+  local config_dir="$1"
+  local agent_id prompt
+  agent_id="$(basename "$config_dir")"
+  prompt="$(_heartbeat_twitter_mentions_prompt)"
+  _upsert_heartbeat_task \
+    "$config_dir/workspace/HEARTBEAT.md" \
+    "twitter-mentions" "1h" "$prompt" \
+    "# X/Twitter monitoring (hourly) — follow TWITTER.md; if bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK."
+}
+
+_write_twitter_heartbeat_doc_in_container() {
+  local container="$1"
+  local agent_id="${container#openclaw-}" prompt
+  prompt="$(_heartbeat_twitter_mentions_prompt)"
+  _upsert_heartbeat_task_in_container \
+    "$container" \
+    "twitter-mentions" "1h" "$prompt" \
+    "# X/Twitter monitoring (hourly) — follow TWITTER.md; if bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK."
+}
+
+ensure_twitter_heartbeat_config() {
+  ensure_heartbeat_config "$1" "1h"
+}
+
+_ensure_twitter_heartbeat_config_in_container() {
+  _ensure_heartbeat_config_in_container "$1" "1h"
+}
+
+write_inbox_heartbeat_doc() {
+  local config_dir="$1"
+  local interval="${2:-1h}"
+  local prompt
+  prompt="$(_heartbeat_inbox_check_prompt)"
+  _upsert_heartbeat_task \
+    "$config_dir/workspace/HEARTBEAT.md" \
+    "inbox-check" "$interval" "$prompt" \
+    "# Inbox monitoring (periodic) — follow EMAIL.md concierge rules. If nothing needs attention, reply HEARTBEAT_OK."
+}
+
+_write_inbox_heartbeat_doc_in_container() {
+  local container="$1"
+  local interval="${2:-1h}"
+  local prompt
+  prompt="$(_heartbeat_inbox_check_prompt)"
+  _upsert_heartbeat_task_in_container \
+    "$container" \
+    "inbox-check" "$interval" "$prompt" \
+    "# Inbox monitoring (periodic) — follow EMAIL.md concierge rules. If nothing needs attention, reply HEARTBEAT_OK."
+}
+
+ensure_inbox_heartbeat_config() {
+  ensure_heartbeat_config "$1" "${2:-1h}"
+}
+
+_ensure_inbox_heartbeat_config_in_container() {
+  _ensure_heartbeat_config_in_container "$1" "${2:-1h}"
+}
+
+enable_inbox_heartbeat() {
+  local id="$1"
+  local interval="${2:-1h}"
+  local config_dir container
+  config_dir="$(agent_home "$id")"
+  [[ -d "$config_dir" ]] || { echo "Run ./identyclaw.sh init first" >&2; return 1; }
+  write_inbox_heartbeat_doc "$config_dir" "$interval"
+  ensure_inbox_heartbeat_config "$config_dir" "$interval"
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_inbox_heartbeat_doc_in_container "$container" "$interval"
+    _ensure_inbox_heartbeat_config_in_container "$container" "$interval"
+  fi
 }
 
 ensure_twitter_secrets_from_env() {
