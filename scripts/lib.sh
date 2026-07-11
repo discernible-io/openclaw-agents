@@ -3713,6 +3713,8 @@ start_pod_agent() {
     if [[ "$mode" == "start" ]]; then
       ensure_agent_state_for_container_exec "$id"
       ensure_agent_mail_tooling_refresh "$id" "$dir"
+      ensure_agent_security_hardening "$id" "$dir" "$container"
+      ensure_main_ingress_config "$id" "$dir" "$container"
       sync_quiet_plugin_env "$dir" "$container"
       sync_agent_plugin_configs "$id" "$dir" || true
       echo "Already running: ${container} (synced .env + plugins; use './identyclaw.sh restart ${id}' to bounce the gateway)"
@@ -7443,6 +7445,8 @@ ensure_agent_bootstrap() {
   fi
   write_agent_browser_doc "$config_dir"
   sync_quiet_plugin_env "$config_dir" "$container"
+  ensure_main_ingress_config "$id" "$config_dir" "$container"
+  ensure_agent_security_hardening "$id" "$config_dir" "$container"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     echo "Note: ${id} has no Migadu password yet — run: ./identyclaw.sh set-password ${id}" >&2
   fi
@@ -7631,10 +7635,11 @@ ensure_agent_security_hardening() {
   local container="${3:-}"
   [[ -n "$container" ]] || container="$(agent_container "$id")"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  ensure_agent_env "$config_dir"
   local env_file="$config_dir/.env"
   if agent_env_use_container "$config_dir" "$container"; then
     env_file="/home/node/.openclaw/.env"
+  else
+    ensure_agent_env "$config_dir"
   fi
   _agent_openclaw_json_python "$config_dir" "$container" "$env_file" <<'PY'
 import json, sys
@@ -8110,6 +8115,9 @@ ensure_agent_env() {
   local config_dir="$1"
   local env_file="$config_dir/.env"
   if [[ -f "$env_file" ]] && grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$env_file" 2>/dev/null; then
+    return 0
+  fi
+  if [[ -f "$env_file" && ! -w "$env_file" ]] 2>/dev/null; then
     return 0
   fi
   local token

@@ -98,6 +98,8 @@ init_agent_if_missing() {
   write_agent_email_doc "$email" "$display_name" "$dir"
   write_openclaw_json "$dir" "$gw_port"
   ensure_agent_env "$dir"
+  ensure_main_ingress_config "$id" "$dir"
+  ensure_agent_security_hardening "$id" "$dir"
 
   if [[ -n "$password" ]]; then
     write_secret_helpers "$dir" "$password"
