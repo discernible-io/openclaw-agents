@@ -3394,6 +3394,26 @@ restore_pod_path_for_host() {
   podman unshare chown -R 0:0 "$path" 2>/dev/null || true
 }
 
+# Stopped pod containers leave agent state owned by the container uid; the host cannot read .env
+# until ownership is restored. Safe to call when the agent is already running (no-op).
+prepare_pod_agent_host_access_for_start() {
+  local id="$1"
+  local dir container
+  load_env
+  [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] || return 0
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  [[ -d "$dir" ]] || return 0
+  if [[ -r "$dir/.env" ]]; then
+    return 0
+  fi
+  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    return 0
+  fi
+  podman rm -f "$container" 2>/dev/null || true
+  restore_pod_path_for_host "$dir"
+}
+
 # Runtime mode follows the running container (pod vs keep-id standalone), not env alone.
 agent_runtime_deploy_mode() {
   local id="$1"
@@ -3620,6 +3640,7 @@ recreate_pod_agent_container() {
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
+  prepare_pod_agent_host_access_for_start "$id"
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
 
   image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
@@ -3682,7 +3703,6 @@ start_pod_agent() {
   fi
 
   if podman container exists "$container" 2>/dev/null; then
-    prepare_agent_state_for_gateway_start "$id" pod
     recreate_pod_agent_container "$id"
     container="$(agent_container "$id")"
     wait_for_running_agent_container "$container" || return 1
@@ -3702,6 +3722,7 @@ start_pod_agent() {
     return 1
   }
   local pod_name="${POD_NAME:-identyclaw-agents-pod}"
+  prepare_pod_agent_host_access_for_start "$id"
   if podman pod exists "$pod_name" 2>/dev/null && [[ -f "$dir/.env" ]]; then
     echo "==> Recreating ${container} in pod ${pod_name}"
     sync_a2a_peers_from_logs "$id" || true
