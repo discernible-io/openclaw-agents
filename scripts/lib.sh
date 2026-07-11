@@ -3945,8 +3945,276 @@ the deterministic A2A HOLA smoke responder signs and sends the probe email (no L
 The responder only replies with a signed HOLA when the inbound HOLA verifies; a
 tampered probe gets a rejection reply with no credential. If the responder is not
 scheduled, inbound email HOLA tests from peers will time out.
+
+## Reply to inbound messages (concierge)
+
+Your inbox is a **concierge channel**. When someone emails you, replying to them
+**is in scope** — do not treat IdentyClaw-related mail as "internal only" and skip
+a direct reply.
+
+1. \`himalaya envelope list --page-size 10\` — find unread or requested messages
+2. \`himalaya message read <ID>\` — read the full message and note the \`From:\` address
+3. Compose the answer (for product questions: \`memory_search\` / \`identyclaw_get_resource\`
+   first, then cite sources in the reply body)
+4. Send via \`sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"\` (use the sender's
+   email from step 2; \`himalaya message reply\` needs \`\$EDITOR\` and fails headless)
+
+**Operator main session:** when the operator asks you to check the inbox and answer or
+reply to received emails, that **is** operator approval — send the replies, then
+summarize what you sent.
+
+**HOLA probes** (\`IDENTYCLAW_HOLA_PROBE:*\`) are handled by the deterministic
+responder above — do not duplicate.
+
+**Never** refuse an in-scope inbound email by claiming you will "process it internally".
+Searching the KB composes the answer; **sending the email is the concierge service**.
 EOF
   chmod 644 "$config_dir/workspace/EMAIL.md"
+  write_email_workspace_guidance "$config_dir" "$email" "$id"
+}
+
+# Shared markdown for AGENTS.md — concierge must reply to inbound mail, not only search KB.
+_concierge_inbound_email_agents_block() {
+  cat <<'EOF'
+## Inbound email (concierge)
+
+Your **inbox is a concierge channel**. Replying to senders **is in scope** for
+IdentyClaw-related mail — do not treat it as "internal only" and skip a direct reply.
+
+- **Operator main session:** when the operator asks you to check the inbox, answer
+  received emails, or reply to a sender — that **is** operator approval. Read each
+  message, send replies (see `EMAIL.md`), then summarize what you sent.
+- **In-scope inbound mail:** use `memory_search` / `identyclaw_get_resource` to
+  compose factual answers, then **email the sender** — searching alone is not responding.
+- **HOLA probes** (`IDENTYCLAW_HOLA_PROBE:*`): handled by the deterministic responder
+  (`EMAIL.md`) — do not duplicate.
+- **Never** refuse to reply to in-scope mail by claiming you will "process it internally".
+EOF
+}
+
+write_email_workspace_guidance() {
+  local config_dir="$1"
+  local email="$2"
+  local agent_id="${3:-$(basename "$config_dir")}"
+  local tools="$config_dir/workspace/TOOLS.md"
+  local agents="$config_dir/workspace/AGENTS.md"
+  local inbound_block
+  inbound_block="$(_concierge_inbound_email_agents_block)"
+  [[ -f "$tools" ]] || [[ -f "$agents" ]] || return 0
+  CONCIERGE_INBOUND_EMAIL_AGENTS_BLOCK="$inbound_block" \
+  python3 - "$tools" "$agents" "$email" "$agent_id" <<'PY'
+import os, re, sys
+from pathlib import Path
+
+tools_path, agents_path, email, agent_id = sys.argv[1:5]
+inbound_block = os.environ["CONCIERGE_INBOUND_EMAIL_AGENTS_BLOCK"].strip()
+tools_block = f"""
+## Email ({agent_id})
+
+- **Mail is pre-configured** — read **`EMAIL.md`** before any inbox task.
+- **Account:** `{email}` (Migadu / Himalaya). Do **not** ask for IMAP/SMTP/password.
+- **Read:** `himalaya envelope list --page-size 10` (plain `exec`, no `elevated`)
+- **Delete:** `himalaya message delete <ID>` (plain `exec`, no `elevated`)
+- **Reply:** read message, then `sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"`
+- **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
+- **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
+- In-scope inbound mail must get a **direct reply to the sender** — see **Inbound email (concierge)**.
+"""
+agents_block = f"""
+## Email
+
+- Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
+- **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
+- Read/delete/reply via plain `exec` (no `elevated: true`) — `himalaya envelope list`, `himalaya message read <ID>`, `scripts/himalaya-send.sh`.
+- `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
+- The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
+- **Concierge duty:** reply to in-scope inbound mail — see **Inbound email (concierge)** below.
+"""
+
+def upsert_block(text, heading_re, block):
+    text = re.sub(heading_re + r".*?(?=\n## |\Z)", "", text, flags=re.S)
+    return text.rstrip() + block + "\n"
+
+def patch_knowledge_scope(text):
+    old = (
+        "- Actions on behalf of the user (send email, run commands, post to social) —\n"
+        "  those require operator approval per **Trust & tool tiers**"
+    )
+    new = (
+        "- Unsolicited outbound actions (cold email, social posts, arbitrary commands) —\n"
+        "  require operator approval per **Trust & tool tiers** (inbound email replies are\n"
+        "  in scope; see **Inbound email (concierge)**)"
+    )
+    if old in text:
+        text = text.replace(old, new, 1)
+    return text
+
+def patch_trust_tiers(text):
+    old = (
+        "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email): "
+        "sender must be HOLA-verified **and** an operator must approve the specific action."
+    )
+    new = (
+        "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email): "
+        "sender must be HOLA-verified **and** an operator must approve the specific action.\n"
+        "- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
+        "Operator requests in the main session count as approval. Use `memory_search` to compose "
+        "factual answers, then send via `EMAIL.md` — do not stop at an internal summary."
+    )
+    if old in text:
+        text = text.replace(old, new, 1)
+    return text
+
+for path, block, heading in (
+    (Path(tools_path), tools_block, r"\n## Email[^\n]*\n"),
+    (Path(agents_path), agents_block, r"\n## Email\n"),
+):
+    if not path.is_file():
+        continue
+    text = path.read_text(encoding="utf-8")
+    text = upsert_block(text, heading, block)
+    if path.name == "AGENTS.md":
+        text = patch_knowledge_scope(text)
+        text = patch_trust_tiers(text)
+        text = upsert_block(text, r"\n## Inbound email \(concierge\)\n", "\n\n" + inbound_block + "\n")
+    path.write_text(text, encoding="utf-8")
+PY
+}
+
+_sync_agent_email_docs_in_container() {
+  local container="$1"
+  local email="$2"
+  local display_name="$3"
+  local agent_id="$4"
+  local smtp_port smtp_settings inbound_block
+  smtp_settings="$(agent_smtp_settings "$agent_id")"
+  smtp_port="${smtp_settings%%|*}"
+  inbound_block="$(_concierge_inbound_email_agents_block)"
+  podman exec -i \
+    -e CONCIERGE_INBOUND_EMAIL_AGENTS_BLOCK="$inbound_block" \
+    "$container" python3 - "$email" "$display_name" "$agent_id" "$smtp_port" <<'PY'
+import os, re, sys
+
+email, display_name, agent_id, smtp_port = sys.argv[1:5]
+inbound_block = os.environ["CONCIERGE_INBOUND_EMAIL_AGENTS_BLOCK"].strip()
+workspace = "/home/node/.openclaw/workspace"
+email_doc = f"""# Email (Himalaya / Migadu)
+
+- **Account:** `{email}` ({display_name})
+- **Config:** `/home/node/.config/himalaya/config.toml`
+- **IMAP/SMTP:** Migadu (`imap.migadu.com:993`, `smtp.migadu.com:{smtp_port}`)
+
+## Read inbox
+
+```bash
+himalaya envelope list --page-size 10
+himalaya message read <ID>
+```
+
+## Delete (move to Trash)
+
+```bash
+himalaya message delete <ID>
+sh scripts/himalaya-delete.sh --all
+```
+
+## Send (headless — required in this container)
+
+```bash
+sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
+```
+
+**Critical:** `From:` must be `{email}`. Migadu rejects other senders (553 *Sender address rejected*).
+
+## Inbound HOLA probes (reciprocal testing)
+
+Handled by `./identyclaw.sh respond-mail {agent_id}` — no LLM action needed.
+
+## Reply to inbound messages (concierge)
+
+Your inbox is a **concierge channel**. When someone emails you, replying to them
+**is in scope** — do not treat IdentyClaw-related mail as "internal only" and skip
+a direct reply.
+
+1. `himalaya envelope list --page-size 10`
+2. `himalaya message read <ID>` — note the `From:` address
+3. Compose the answer (`memory_search` / `identyclaw_get_resource` for product questions)
+4. `sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"`
+
+**Operator main session:** when the operator asks you to check the inbox and answer or
+reply to received emails, that **is** operator approval.
+
+**Never** refuse in-scope inbound mail by claiming you will "process it internally".
+"""
+agents_block = f"""
+## Email
+
+- Mail **is already configured** via Himalaya — read **`EMAIL.md`** first on any email task.
+- **Account:** `{email}`. Credentials live in the container; **never** ask the operator for them.
+- Read/delete/reply via plain `exec` (no `elevated: true`) — see **`EMAIL.md`**.
+- **Concierge duty:** reply to in-scope inbound mail — see **Inbound email (concierge)**.
+"""
+
+def upsert_block(text, heading_re, block):
+    text = re.sub(heading_re + r".*?(?=\n## |\Z)", "", text, flags=re.S)
+    return text.rstrip() + block + "\n"
+
+def patch_knowledge_scope(text):
+    old = (
+        "- Actions on behalf of the user (send email, run commands, post to social) —\n"
+        "  those require operator approval per **Trust & tool tiers**"
+    )
+    new = (
+        "- Unsolicited outbound actions (cold email, social posts, arbitrary commands) —\n"
+        "  require operator approval per **Trust & tool tiers** (inbound email replies are\n"
+        "  in scope; see **Inbound email (concierge)**)"
+    )
+    return text.replace(old, new, 1) if old in text else text
+
+def patch_trust_tiers(text):
+    old = (
+        "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email): "
+        "sender must be HOLA-verified **and** an operator must approve the specific action."
+    )
+    new = (
+        "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email): "
+        "sender must be HOLA-verified **and** an operator must approve the specific action.\n"
+        "- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
+        "Operator requests in the main session count as approval. Use `memory_search` to compose "
+        "factual answers, then send via `EMAIL.md` — do not stop at an internal summary."
+    )
+    return text.replace(old, new, 1) if old in text else text
+
+email_path = os.path.join(workspace, "EMAIL.md")
+with open(email_path, "w", encoding="utf-8") as f:
+    f.write(email_doc)
+os.chmod(email_path, 0o644)
+
+agents_path = os.path.join(workspace, "AGENTS.md")
+if os.path.isfile(agents_path):
+    with open(agents_path, encoding="utf-8") as f:
+        text = f.read()
+    text = upsert_block(text, r"\n## Email\n", agents_block)
+    text = patch_knowledge_scope(text)
+    text = patch_trust_tiers(text)
+    text = upsert_block(text, r"\n## Inbound email \(concierge\)\n", "\n\n" + inbound_block + "\n")
+    with open(agents_path, "w", encoding="utf-8") as f:
+        f.write(text)
+PY
+}
+
+ensure_concierge_inbox_reply_guidance() {
+  local id="$1"
+  local config_dir="${2:-$(agent_home "$id")}"
+  local container mailbox email display_name
+  mailbox="$(agent_mailbox "$id")"
+  email="${mailbox%%|*}"
+  display_name="${mailbox#*|}"
+  [[ -n "$email" ]] || return 0
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _sync_agent_email_docs_in_container "$container" "$email" "$display_name" "$id"
+  fi
 }
 
 agent_mailbox() {
@@ -6487,6 +6755,7 @@ ensure_agent_bootstrap() {
   container="$(agent_container "$id")"
   ensure_mail_secrets_from_env "$id" "$config_dir"
   ensure_agent_email_tooling "$id" "$config_dir"
+  ensure_concierge_inbox_reply_guidance "$id" "$config_dir"
   ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_twitter_secrets_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
