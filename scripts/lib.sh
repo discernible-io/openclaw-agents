@@ -7700,6 +7700,7 @@ _read_inbox_heartbeat_interval() {
     interval="$(podman exec "$container" cat /home/node/.openclaw/secrets/inbox-heartbeat.interval 2>/dev/null | tr -d '[:space:]' || true)"
     [[ -n "$interval" ]] && echo "$interval"
   fi
+  return 0
 }
 
 write_inbox_heartbeat_marker() {
