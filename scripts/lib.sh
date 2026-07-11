@@ -3722,6 +3722,8 @@ start_pod_agent() {
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
     ensure_agent_mail_tooling_refresh "$id" "$dir"
+    ensure_agent_security_hardening "$id" "$dir" "$container"
+    ensure_main_ingress_config "$id" "$dir" "$container"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
     sync_quiet_plugin_env "$dir" "$container"
@@ -7582,13 +7584,16 @@ PY
 ensure_main_ingress_config() {
   local id="$1"
   local config_dir="$2"
-  local config="$config_dir/openclaw.json"
-  [[ -f "$config" ]] || return 0
+  local container="${3:-}"
+  [[ -n "$container" ]] || container="$(agent_container "$id")"
   load_env
-  local public_url internal_port
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  local public_url internal_port ingress_port
   public_url="$(agent_public_base_url "$id")"
   internal_port="$(agent_internal_gateway_port "$id")"
-  python3 - "$config" "$public_url" "$internal_port" "$(agent_ingress_port "$id")" <<'PY'
+  ingress_port="$(agent_ingress_port "$id")"
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "$public_url" "$internal_port" "$ingress_port" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -7618,6 +7623,182 @@ if changed:
     Path(path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     Path(path).chmod(0o600)
 PY
+}
+
+ensure_agent_security_hardening() {
+  local id="$1"
+  local config_dir="$2"
+  local container="${3:-}"
+  [[ -n "$container" ]] || container="$(agent_container "$id")"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  ensure_agent_env "$config_dir"
+  local env_file="$config_dir/.env"
+  if agent_env_use_container "$config_dir" "$container"; then
+    env_file="/home/node/.openclaw/.env"
+  fi
+  _agent_openclaw_json_python "$config_dir" "$container" "$env_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+env_path = Path(sys.argv[2])
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+token = ""
+if env_path.is_file():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("OPENCLAW_GATEWAY_TOKEN="):
+            token = line.split("=", 1)[1].strip()
+            break
+if not token:
+    token = (data.get("gateway", {}).get("auth", {}) or {}).get("token") or ""
+
+gateway = data.setdefault("gateway", {})
+auth = gateway.setdefault("auth", {})
+if token:
+    if auth.get("mode") != "token" or auth.get("token") != token:
+        auth["mode"] = "token"
+        auth["token"] = token
+        changed = True
+rate = auth.setdefault(
+    "rateLimit",
+    {"maxAttempts": 10, "windowMs": 60000, "lockoutMs": 300000},
+)
+desired_rate = {"maxAttempts": 10, "windowMs": 60000, "lockoutMs": 300000}
+if rate != desired_rate:
+    auth["rateLimit"] = desired_rate
+    changed = True
+
+session = data.setdefault("session", {})
+if session.get("dmScope") != "per-channel-peer":
+    session["dmScope"] = "per-channel-peer"
+    changed = True
+
+tools = data.setdefault("tools", {})
+exec_cfg = tools.setdefault("exec", {})
+exec_defaults = {
+    "ask": "on-miss",
+    "strictInlineEval": True,
+}
+for key, val in exec_defaults.items():
+    if exec_cfg.get(key) != val:
+        exec_cfg[key] = val
+        changed = True
+for legacy_key in ("mode", "security"):
+    if legacy_key in exec_cfg:
+        del exec_cfg[legacy_key]
+        changed = True
+safe_bins = exec_cfg.setdefault("safeBins", [])
+for name in ("himalaya", "sh", "node"):
+    if name not in safe_bins:
+        safe_bins.append(name)
+        changed = True
+
+PUBLIC_CHANNEL_TOOLS = [
+    "read",
+    "group:memory",
+    "identyclaw_list_agents",
+    "identyclaw_list_resources",
+    "identyclaw_get_resource",
+    "identyclaw_verify_hola",
+    "identyclaw_create_hola",
+    "identyclaw_get_nonce",
+    "memory_search",
+    "memory_get",
+]
+DANGEROUS_TOOLS = {
+    "exec",
+    "write",
+    "edit",
+    "browser",
+    "a2a_send_message",
+    "send_rodit_webhook",
+    "sessions_send",
+    "clawlink_call_tool",
+    "clawlink_preview_tool",
+    "clawlink_start_connection",
+}
+
+channels = data.get("channels", {})
+tbs = tools.setdefault("toolsBySender", {})
+for channel_name, sender_key in (
+    ("telegram", "channel:telegram:*"),
+    ("discord", "channel:discord:*"),
+):
+    ch = channels.get(channel_name, {})
+    if not isinstance(ch, dict) or not ch.get("enabled"):
+        continue
+    entry = tbs.setdefault(sender_key, {})
+    allow = list(entry.get("allow") or PUBLIC_CHANNEL_TOOLS)
+    merged = []
+    seen = set()
+    for tool in allow + PUBLIC_CHANNEL_TOOLS:
+        if tool in DANGEROUS_TOOLS or tool in seen:
+            continue
+        merged.append(tool)
+        seen.add(tool)
+    if merged != allow:
+        entry["allow"] = merged
+        changed = True
+
+owners = (data.get("commands", {}) or {}).get("ownerAllowFrom") or []
+telegram_approvers = []
+discord_approvers = []
+for owner in owners:
+    if not isinstance(owner, str):
+        continue
+    if owner.startswith("telegram:"):
+        telegram_approvers.append(owner.split(":", 1)[1])
+    elif owner.startswith("discord:"):
+        discord_approvers.append(owner.split(":", 1)[1])
+
+if telegram_approvers and channels.get("telegram", {}).get("enabled"):
+    tg = channels.setdefault("telegram", {})
+    ea = tg.setdefault("execApprovals", {})
+    desired = {"enabled": True, "approvers": telegram_approvers, "target": "dm"}
+    if ea != desired:
+        tg["execApprovals"] = desired
+        changed = True
+
+if discord_approvers and channels.get("discord", {}).get("enabled"):
+    dc = channels.setdefault("discord", {})
+    ea = dc.setdefault("execApprovals", {})
+    desired = {"enabled": True, "approvers": discord_approvers, "target": "dm"}
+    if ea != desired:
+        dc["execApprovals"] = desired
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+# Render pod nginx.conf from repo templates and reload the sidecar (public API paths only).
+ensure_pod_nginx_ingress_config() {
+  load_env
+  [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] || return 0
+  local app tier nginx_conf repo nginx_container
+  app="$(identyclaw_app_dir)"
+  repo="${REPO_ROOT:-${IDENTYCLAW_ROOT}}"
+  tier="$(resolve_deploy_tier "$repo" "${OPENCLAW_IMAGE:-}")"
+  nginx_conf="${app}/nginx/nginx.conf"
+  nginx_container="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
+  mkdir -p "${app}/nginx"
+  bash "${repo}/scripts/render-nginx-conf.sh" "$tier" "$nginx_conf"
+  if ! podman ps --format '{{.Names}}' | grep -qx "$nginx_container"; then
+    echo "    (nginx: ${nginx_container} not running — config rendered to ${nginx_conf})" >&2
+    return 0
+  fi
+  if podman exec "$nginx_container" nginx -t >/dev/null 2>&1; then
+    podman exec "$nginx_container" nginx -s reload >/dev/null 2>&1 \
+      && echo "    (nginx: reloaded ${nginx_conf})" >&2 \
+      || echo "    (nginx: reload failed — recreate pod or run deploy-local-podman.sh)" >&2
+  else
+    echo "    (nginx: config test failed — check ${nginx_conf})" >&2
+    return 1
+  fi
 }
 
 ensure_openclaw_model_defaults() {
@@ -7796,6 +7977,8 @@ sync_agent_openclaw_json_when_container_running() {
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   wait_for_running_agent_container "$container" || return 1
+  ensure_agent_security_hardening "$id" "$dir" "$container"
+  ensure_main_ingress_config "$id" "$dir" "$container"
   ensure_openclaw_model_defaults "$dir" "$container"
   ensure_memory_config "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
@@ -7827,6 +8010,9 @@ write_openclaw_json() {
       ]
     }
   },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
   "skills": {
     "entries": {
       "himalaya": { "enabled": true },
@@ -7834,6 +8020,11 @@ write_openclaw_json() {
     }
   },
   "tools": {
+    "exec": {
+      "ask": "on-miss",
+      "strictInlineEval": true,
+      "safeBins": ["himalaya", "sh", "node"]
+    },
     "allow": [
       "exec",
       "read",

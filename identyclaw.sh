@@ -123,6 +123,8 @@ init_one_agent() {
   write_agent_email_doc "$email" "$display_name" "$dir"
   write_openclaw_json "$dir" "$gateway_port"
   ensure_agent_env "$dir"
+  ensure_main_ingress_config "$id" "$dir"
+  ensure_agent_security_hardening "$id" "$dir"
 
   if [[ -n "$password" ]]; then
     write_secret_helpers "$dir" "$password"
@@ -363,6 +365,7 @@ cmd_restart() {
         ;;
       *) echo "Usage: $0 restart [agent-id|all]" >&2; exit 1 ;;
     esac
+    ensure_pod_nginx_ingress_config || true
     return 0
   fi
   cmd_stop "$target"
