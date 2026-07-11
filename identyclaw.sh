@@ -263,6 +263,8 @@ start_one() {
   ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
+  ensure_main_ingress_config "$id" "$dir"
+  ensure_agent_security_hardening "$id" "$dir"
 
   podman rm -f "$container" 2>/dev/null || true
   prepare_agent_state_for_gateway_start "$id" standalone
@@ -424,11 +426,9 @@ cmd_status() {
       print_agent_ingress_urls "$id"
     done
     echo ""
-    echo "Control UI (operator; gateway token required):"
+    echo "Control UI (operator; not on public ingress — use chat or loopback):"
     for id in $AGENT_IDS; do
-      local base
-      base="$(agent_ingress_base_url "$id")"
-      [[ -n "$base" ]] && echo "  ${id}: ${base}/"
+      echo "  ${id}: ./identyclaw.sh chat ${id}   (token: ./identyclaw.sh token ${id})"
     done
   else
     echo "Control UI (use token from: $0 token <id>):"
