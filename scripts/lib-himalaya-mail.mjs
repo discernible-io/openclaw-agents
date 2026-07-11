@@ -43,6 +43,19 @@ export function readMessagePlain(id) {
   });
 }
 
+export function deleteMessages(ids, { folder = "INBOX" } = {}) {
+  const normalized = (Array.isArray(ids) ? ids : [ids])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  if (normalized.length === 0) {
+    throw new Error("cannot delete messages without envelope id(s)");
+  }
+  execFileSync("himalaya", ["message", "delete", "--folder", folder, ...normalized], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
 export function parseFromAddress(plain) {
   const match = String(plain || "").match(/^From:\s*(?:[^<]*<([^>]+)>|(\S+@\S+))/im);
   return (match?.[1] || match?.[2] || "").trim();

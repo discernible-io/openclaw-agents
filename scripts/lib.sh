@@ -3806,6 +3806,39 @@ EOF
   chmod 755 "$config_dir/workspace/scripts/himalaya-send.sh"
 }
 
+write_himalaya_delete_script() {
+  local config_dir="$1"
+  mkdir -p "$config_dir/workspace/scripts"
+  cat >"$config_dir/workspace/scripts/himalaya-delete.sh" <<'EOF'
+#!/bin/sh
+# Delete message(s) by envelope ID, or all INBOX messages with --all.
+# Usage: sh scripts/himalaya-delete.sh <ID>...
+#        sh scripts/himalaya-delete.sh --all
+set -eu
+
+if [ "$#" -eq 1 ] && [ "$1" = "--all" ]; then
+  ids=$(himalaya envelope list --folder INBOX --output json | node -e '
+    const items = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(items) || items.length === 0) process.exit(0);
+    process.stdout.write(items.map((e) => e.id).join(" "));
+  ')
+  if [ -z "$ids" ]; then
+    echo "No messages in INBOX"
+    exit 0
+  fi
+  set -- $ids
+fi
+
+if [ "$#" -eq 0 ]; then
+  echo "usage: himalaya-delete.sh <ID>... | --all" >&2
+  exit 1
+fi
+
+himalaya message delete "$@"
+EOF
+  chmod 755 "$config_dir/workspace/scripts/himalaya-delete.sh"
+}
+
 write_agent_email_doc() {
   local email="$1"
   local display_name="$2"
@@ -3828,6 +3861,20 @@ write_agent_email_doc() {
 himalaya envelope list --page-size 10
 himalaya message read <ID>
 \`\`\`
+
+## Delete (move to Trash)
+
+There is **no** \`himalaya envelope delete\` command. Envelope IDs come from
+\`envelope list\`, but deletion uses the **message** subcommand:
+
+\`\`\`bash
+himalaya message delete <ID>
+himalaya message delete 1 2 3
+sh scripts/himalaya-delete.sh --all
+\`\`\`
+
+Confirm with the user before deleting many messages. \`message delete\` moves
+messages to Trash (IMAP \`\\Deleted\`); it does not permanently expunge them.
 
 ## Send (headless — required in this container)
 
@@ -3915,6 +3962,7 @@ ensure_agent_email_tooling() {
   display_name="${mailbox#*|}"
   write_himalaya_config "$email" "$display_name" "$config_dir"
   write_himalaya_send_script "$email" "$display_name" "$config_dir"
+  write_himalaya_delete_script "$config_dir"
   write_agent_email_doc "$email" "$display_name" "$config_dir"
 }
 
