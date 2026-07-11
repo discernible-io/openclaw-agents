@@ -23,7 +23,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Image** | Local `openclaw-himalaya:local` from GHCR OpenClaw **2026.6.10-slim**, Himalaya **v1.2.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, IdentyClaw API workflows |
-| **A2A** | **identyclaw-a2a** @0.4.6 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
+| **A2A** | **identyclaw-a2a** @0.4.7 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
 | **Webhooks** | **identyclaw-webhooks** @0.1.7 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); proactive `GET /api/agents` seeding |
 | **Channels** | Discord (bundled); optional Telegram, Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
@@ -467,8 +467,8 @@ IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1   # dynamic outbound + inbound JWT learn
 Pin and install plugins (defaults in `env.example`):
 
 ```bash
-IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.6
-IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.2
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.7
+IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.3
 IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.7
 ```
 
@@ -476,7 +476,7 @@ Each agent's own public base can come from Passport `metadata.webhook_url` when 
 
 ```bash
 # After near-credentials + A2A_PEER_AGENTS token_ids + dynamic flag:
-./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.6+ (agent-card skills + task history via tasks/get historyLength)
+./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.7+ (agent-card skills + task history via tasks/get historyLength)
 ./identyclaw.sh restart all
 ./identyclaw.sh test-a2a              # resolves peer URL via API; token_id from A2A_PEER_AGENTS
 ./identyclaw.sh test                  # full suite (see ../docs/docs/test-constitution.md)
