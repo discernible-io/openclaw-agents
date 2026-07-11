@@ -3672,7 +3672,15 @@ recreate_pod_agent_container() {
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
   prepare_pod_agent_host_access_for_start "$id"
-  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
+  if [[ -f "$dir/.env" ]]; then
+    :
+  elif podman ps --format '{{.Names}}' | grep -qx "$container" \
+    && podman exec "$container" test -f /home/node/.openclaw/.env 2>/dev/null; then
+    :
+  else
+    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
+    return 1
+  fi
 
   image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
   [[ -n "$image" ]] || image="$(openclaw_agent_image)"
@@ -5709,7 +5717,15 @@ recreate_pod_agent_gateway() {
   prepare_agent_state_for_gateway_start "$id" pod
   podman rm -f "$container" 2>/dev/null || true
   restore_pod_path_for_host "$dir"
-  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; return 1; }
+  if [[ -f "$dir/.env" ]]; then
+    :
+  elif podman container exists "$container" 2>/dev/null \
+    && podman exec "$container" test -f /home/node/.openclaw/.env 2>/dev/null; then
+    :
+  else
+    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
+    return 1
+  fi
   podman run -d \
     --pod "$pod_name" \
     --name "$container" \
