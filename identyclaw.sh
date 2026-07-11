@@ -669,6 +669,7 @@ cmd_enable_inbox_check() {
   local interval="${2:-1h}"
   enable_inbox_heartbeat "$id" "$interval"
   echo "Inbox heartbeat enabled (HEARTBEAT.md inbox-check + agents.defaults.heartbeat.every=${interval})"
+  echo "Persisted in secrets/inbox-heartbeat.interval (re-applied on start/restart/bootstrap)"
   echo "Restart to apply: $0 restart ${id}"
 }
 

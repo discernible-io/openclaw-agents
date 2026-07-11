@@ -4619,6 +4619,7 @@ ensure_agent_mail_tooling_refresh() {
     ensure_agent_email_tooling "$id" "$config_dir" 2>/dev/null || true
   fi
   ensure_concierge_inbox_reply_guidance "$id" "$config_dir"
+  ensure_inbox_heartbeat_from_env "$id" "$config_dir"
 }
 
 ensure_concierge_inbox_reply_guidance() {
@@ -7240,18 +7241,107 @@ _ensure_inbox_heartbeat_config_in_container() {
   _ensure_heartbeat_config_in_container "$1" "${2:-1h}"
 }
 
+inbox_heartbeat_interval_for_agent() {
+  local id="$1"
+  local config_dir="$2"
+  local interval="" env_interval="" marker_file="$config_dir/secrets/inbox-heartbeat.interval"
+  load_env
+  env_interval="$(agent_env_value "$id" INBOX_HEARTBEAT_INTERVAL "")"
+  [[ -n "$env_interval" ]] && interval="$env_interval"
+  if [[ -z "$interval" ]]; then
+    case "$(agent_env_value "$id" ENABLE_INBOX_HEARTBEAT "")" in
+      1|true|yes|on) interval="${IDENTYCLAW_INBOX_HEARTBEAT_INTERVAL:-1h}" ;;
+    esac
+  fi
+  if [[ -z "$interval" ]]; then
+    case "${IDENTYCLAW_ENABLE_INBOX_HEARTBEAT:-}" in
+      1|true|yes|on) interval="${IDENTYCLAW_INBOX_HEARTBEAT_INTERVAL:-1h}" ;;
+    esac
+  fi
+  if [[ -z "$interval" && -f "$marker_file" ]]; then
+    interval="$(tr -d '[:space:]' <"$marker_file")"
+  fi
+  [[ -n "$interval" ]] && echo "$interval"
+}
+
+_read_inbox_heartbeat_interval() {
+  local id="$1"
+  local config_dir="$2"
+  local interval container
+  interval="$(inbox_heartbeat_interval_for_agent "$id" "$config_dir")"
+  [[ -n "$interval" ]] && { echo "$interval"; return 0; }
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    interval="$(podman exec "$container" cat /home/node/.openclaw/secrets/inbox-heartbeat.interval 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$interval" ]] && echo "$interval"
+  fi
+}
+
+write_inbox_heartbeat_marker() {
+  local config_dir="$1"
+  local interval="$2"
+  mkdir -p "$config_dir/secrets"
+  printf '%s\n' "$interval" >"$config_dir/secrets/inbox-heartbeat.interval"
+  chmod 600 "$config_dir/secrets/inbox-heartbeat.interval"
+}
+
+_write_inbox_heartbeat_marker_in_container() {
+  local container="$1"
+  local interval="$2"
+  podman exec -i "$container" python3 - "$interval" <<'PY'
+import os, sys
+from pathlib import Path
+
+interval = sys.argv[1]
+path = Path("/home/node/.openclaw/secrets/inbox-heartbeat.interval")
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(interval + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+}
+
+_apply_inbox_heartbeat() {
+  local id="$1"
+  local config_dir="$2"
+  local interval="$3"
+  local container
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_inbox_heartbeat_doc_in_container "$container" "$interval"
+    _ensure_inbox_heartbeat_config_in_container "$container" "$interval"
+  fi
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    write_inbox_heartbeat_doc "$config_dir" "$interval"
+    ensure_inbox_heartbeat_config "$config_dir" "$interval"
+  fi
+}
+
+ensure_inbox_heartbeat_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local interval
+  interval="$(_read_inbox_heartbeat_interval "$id" "$config_dir")"
+  [[ -n "$interval" ]] || return 0
+  _apply_inbox_heartbeat "$id" "$config_dir" "$interval"
+}
+
 enable_inbox_heartbeat() {
   local id="$1"
   local interval="${2:-1h}"
   local config_dir container
   config_dir="$(agent_home "$id")"
-  [[ -d "$config_dir" ]] || { echo "Run ./identyclaw.sh init first" >&2; return 1; }
-  write_inbox_heartbeat_doc "$config_dir" "$interval"
-  ensure_inbox_heartbeat_config "$config_dir" "$interval"
   container="$(agent_container "$id")"
+  if ! [[ -d "$config_dir" ]] && ! podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    echo "Run ./identyclaw.sh init first" >&2
+    return 1
+  fi
   if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    _write_inbox_heartbeat_doc_in_container "$container" "$interval"
-    _ensure_inbox_heartbeat_config_in_container "$container" "$interval"
+    _write_inbox_heartbeat_marker_in_container "$container" "$interval"
+    _apply_inbox_heartbeat "$id" "$config_dir" "$interval"
+  elif [[ -d "$config_dir" ]]; then
+    write_inbox_heartbeat_marker "$config_dir" "$interval"
+    write_inbox_heartbeat_doc "$config_dir" "$interval"
+    ensure_inbox_heartbeat_config "$config_dir" "$interval"
   fi
 }
 
@@ -7333,6 +7423,7 @@ ensure_agent_bootstrap() {
   ensure_agent_mail_tooling_refresh "$id" "$config_dir"
   ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_twitter_secrets_from_env "$id" "$config_dir"
+  ensure_inbox_heartbeat_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
   ensure_discord_guild_channels "$config_dir" "$container"
