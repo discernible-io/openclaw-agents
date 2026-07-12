@@ -1,5 +1,24 @@
 # OpenClaw + IdentyClaw Agent Template
 
+[![Deploy identyclaw-agents](https://github.com/discernible-io/identyclaw-agents/actions/workflows/deploy.yml/badge.svg)](https://github.com/discernible-io/identyclaw-agents/actions/workflows/deploy.yml)
+[![Gitleaks](https://img.shields.io/badge/secrets-Gitleaks%20in%20CI-brightgreen)](https://github.com/discernible-io/identyclaw-agents/blob/main/.github/workflows/deploy.yml)
+
+Part of [IdentyClaw](https://www.discernible.io/#developers) — **[Deploy an agent](https://www.discernible.io/#developers)**
+
+**Start here:** `./identyclaw.sh init` → `./identyclaw.sh build-image` → `./scripts/deploy-local-podman.sh` → `./identyclaw.sh generate-near-account <id>` → purchase at [purchase.identyclaw.com](https://purchase.identyclaw.com).
+
+### Related repositories
+
+| Repo | Role |
+|------|------|
+| [openclaw-identyclaw-plugin](https://github.com/discernible-io/openclaw-identyclaw-plugin) | Installed as `identyclaw-tools` — API login, HOLA |
+| [openclaw-a2a-idc-plugin](https://github.com/discernible-io/openclaw-a2a-idc-plugin) | Installed as `identyclaw-a2a` — `POST /a2a` |
+| [openclaw-identyclaw-webhooks-plugin](https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin) | Installed as `identyclaw-webhooks` — `/hooks/*` |
+| [sdk](https://github.com/discernible-io/sdk) | [`@rodit/rodit-auth-be`](https://github.com/discernible-io/sdk) used by plugins at runtime |
+| [gennearaccount](https://github.com/discernible-io/gennearaccount) | C alternative to `generate-near-account` |
+
+**Releases:** Pin production deploys to a tagged release (e.g. [`v1.0.0`](https://github.com/discernible-io/identyclaw-agents/releases)) rather than floating `main`.
+
 Deploy a single [OpenClaw](https://docs.openclaw.ai) gateway with **IdentyClaw identity** (NEAR Passport / RODiT), A2A peer messaging, and signed webhooks — using Podman on your host or via GitHub Actions.
 
 This repository is **code-only** (safe to clone publicly). Runtime config, secrets, TLS, and agent state live outside the git checkout in a sibling **app directory** (default `../identyclaw-agents-app`).
@@ -88,7 +107,7 @@ Host **npm** is not required for the standard path: ClawHub plugin installs run 
 | **NEAR RPC URL** | Before deploy | `IDENTYCLAW_NEAR_RPC_URL` in `env.local` |
 | **Public hostname** | Before TLS / Passport metadata | DNS, `AGENT_*_PUBLIC_HOST`, or Passport `webhook_url` |
 | **TLS** | Before deploy | Self-signed (`generate-certs`) or CA PEMs in `certs/` |
-| **NEAR implicit account** | After first deploy | `./identyclaw.sh generate-near-account <id>` (Node in container; host npm not required) |
+| **NEAR implicit account** | After first deploy | `./identyclaw.sh generate-near-account <id>` (Node in container; host npm not required). If Node/container path is unavailable, use [gennearaccount](https://github.com/discernible-io/gennearaccount) instead |
 | **IdentyClaw Passport** JSON | After purchase | NEAR credentials under `agents/<id>/secrets/near-credentials/` |
 
 Optional: Migadu (or compatible) mailbox for Himalaya email / HOLA mail probes.
@@ -222,9 +241,9 @@ After deploy, use the operator CLI copied to the app dir:
 ../identyclaw-agents-app/repo/identyclaw.sh status
 ```
 
-#### Generate NEAR implicit account (openclaw-identyclaw plugin)
+#### Generate NEAR implicit account ([openclaw-identyclaw-plugin](https://github.com/discernible-io/openclaw-identyclaw-plugin))
 
-After the first deploy, the **openclaw-identyclaw plugin** (`identyclaw-tools`) is installed. Create the NEAR implicit account **before** purchasing a Passport.
+After the first deploy, the **[openclaw-identyclaw plugin](https://github.com/discernible-io/openclaw-identyclaw-plugin)** (`identyclaw-tools`) is installed. Create the NEAR implicit account **before** purchasing a Passport.
 
 **Host npm is not required** — Node runs inside the OpenClaw container:
 
@@ -233,6 +252,8 @@ After the first deploy, the **openclaw-identyclaw plugin** (`identyclaw-tools`) 
 ```
 
 This writes `agents/<id>/secrets/near-credentials/<implicit_account_id>.json` (mode `0600`) and prints the `implicit_account_id` on stdout. Private keys are never printed.
+
+If the container/Node path is unavailable, build and run [gennearaccount](https://github.com/discernible-io/gennearaccount) on the host instead — it writes the same JSON credential layout under `secrets/near-credentials/`.
 
 Then:
 
@@ -326,7 +347,7 @@ Enables user linger + `podman-restart.service` so containers survive reboot.
 | Path / step | Purpose |
 |-------------|---------|
 | `agents/<id>/extensions/identyclaw-tools` | openclaw-identyclaw plugin (installed by deploy) |
-| `./identyclaw.sh generate-near-account <id>` | NEAR implicit account JSON (runs in container) |
+| `./identyclaw.sh generate-near-account <id>` | NEAR implicit account JSON (runs in container; [gennearaccount](https://github.com/discernible-io/gennearaccount) alternative) |
 | `agents/<id>/secrets/near-credentials/<implicit-account-id-not-set>.json` | NEAR implicit account + private key (from plugin or post-purchase) |
 | https://purchase.identyclaw.com | Mint IdentyClaw Passport to your `implicit_account_id` |
 | Passport `metadata.webhook_url` | Public HTTPS base for ingress + A2A (e.g. `https://agent-domain-not-set.example.com:9443`) |
@@ -371,6 +392,16 @@ OpenClaw gateway :18789 (pod internal, lan bind)
     └── identyclaw-webhooks plugin   ← signed webhook ingress
 ```
 
+Installed plugins (ClawHub → `agents/<id>/extensions/`):
+
+| Extension dir | Source repo |
+|---------------|-------------|
+| `identyclaw-tools` | [openclaw-identyclaw-plugin](https://github.com/discernible-io/openclaw-identyclaw-plugin) |
+| `identyclaw-a2a` | [openclaw-a2a-idc-plugin](https://github.com/discernible-io/openclaw-a2a-idc-plugin) |
+| `identyclaw-webhooks` | [openclaw-identyclaw-webhooks-plugin](https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin) |
+
+RODiT JWT validation uses [`@rodit/rodit-auth-be`](https://github.com/discernible-io/sdk) from the [sdk](https://github.com/discernible-io/sdk) monorepo.
+
 Nginx config is rendered at deploy from `scripts/render-nginx-conf.sh` using Passport-derived hostnames and `AGENT_IDS`.
 
 ---
@@ -402,7 +433,7 @@ Run from the repo root (or `../identyclaw-agents-app/repo/` after deploy):
 
 ## GitHub Actions deploy
 
-Push to **`main`** triggers CI:
+Push to **`main`** triggers CI (see badge above). For production hosts, check out a [tagged release](https://github.com/discernible-io/identyclaw-agents/releases) (e.g. `v1.0.0`) instead of floating `main`, or use `workflow_dispatch` with an explicit commit SHA.
 
 1. Build images → GHCR tags `<sha>-main`
 2. SSH deploy to host using secrets: `SSH_HOST_MAIN`, `SSH_USER_MAIN`, `SSH_PRIVATE_KEY_MAIN`, `SSH_KNOWN_HOSTS_MAIN`, `GHCR_PULL_TOKEN`
@@ -522,6 +553,7 @@ upserted in place, so hand-edits outside those blocks are preserved.
 | Plugin build errors | Node 22+, npm, network; retry deploy or `upgrade-plugins` |
 | Agent can't send Telegram→Discord (or mixes channels / uses raw API) | Restart after deploy so `openclaw.json` gets `tools.message.crossContext.allowAcrossProviders`; agent should read `CHAT_CHANNELS.md` and use the `message` tool with explicit `channel` |
 | Bash console / Control UI can't read email (`exec` missing) | Use session `console` (`./identyclaw.sh chat` / `ask` do this automatically). In Control UI, switch off `main` (Telegram/Discord). Set `AGENT_*_TELEGRAM_OWNER_ID` / `DISCORD_OWNER_ID` for full tools on those channels. Restart after env changes. |
+| HOLA verify fails or debugging outside OpenClaw | Use [`@rodit/verify-hola`](https://github.com/discernible-io/sdk) from the sdk monorepo: `npx @rodit/verify-hola report --rpc` (or verify at [verify.identyclaw.com](https://verify.identyclaw.com)) |
 
 For unit tests on webhook URL resolution:
 
