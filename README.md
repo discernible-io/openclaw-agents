@@ -9,8 +9,9 @@ Part of [IdentyClaw](https://www.discernible.io/#developers) — **[Deploy an ag
 
 ### Related repositories
 
-| Repo | Role |
-|------|------|
+| Repo / docs | Role |
+|-------------|------|
+| [IdentyClaw API (MCP discovery)](https://api.identyclaw.com/.well-known/mcp) | OpenAPI, skills, enrollment & integration guides — JWT, HOLA, curl workflows |
 | [openclaw-identyclaw-plugin](https://github.com/discernible-io/openclaw-identyclaw-plugin) | Installed as `identyclaw-tools` — API login, HOLA |
 | [openclaw-a2a-idc-plugin](https://github.com/discernible-io/openclaw-a2a-idc-plugin) | Installed as `identyclaw-a2a` — `POST /a2a` |
 | [openclaw-identyclaw-webhooks-plugin](https://github.com/discernible-io/openclaw-identyclaw-webhooks-plugin) | Installed as `identyclaw-webhooks` — `/hooks/*` |
@@ -295,7 +296,7 @@ With NEAR creds present, bootstrap **self-configures** from Passport via `RoditC
 |----------------------|------------------------|
 | Public host, ingress port | `metadata.webhook_url` |
 | A2A public base URL | `metadata.webhook_url` |
-| IdentyClaw API base | `metadata.subjectuniqueidentifier_url` |
+| IdentyClaw API base | `metadata.subjectuniqueidentifier_url` (API docs: [MCP discovery](https://api.identyclaw.com/.well-known/mcp)) |
 | Inbound JWT audience | `owner_id` |
 | Own `token_id` | Passport config |
 | Display name, email | DN / `contactUri` (env overrides optional) |
@@ -361,11 +362,11 @@ Enables user linger + `podman-restart.service` so containers survive reboot.
 | `AGENT_*_A2A_PUBLIC_BASE_URL` | Force A2A base URL |
 | `AGENT_*_EMAIL` / `AGENT_*_DISPLAY_NAME` | Force mailbox / agent card name |
 | `AGENT_*_PASSWORD` | Migadu IMAP/SMTP password |
-| `IDENTYCLAW_API_BASE_URL` | Override IdentyClaw API base (default: Passport `subjectuniqueidentifier_url`) |
+| `IDENTYCLAW_API_BASE_URL` | Override IdentyClaw API base (default: Passport `subjectuniqueidentifier_url`; see [MCP discovery](https://api.identyclaw.com/.well-known/mcp) for API docs) |
 | `IDENTYCLAW_KNOWLEDGE_ENABLED` | Set `0` to disable local document RAG (default `1`) |
 | `IDENTYCLAW_KNOWLEDGE_PATH` | Knowledge folder relative to workspace (default `./knowledge`) |
 | `A2A_PEER_AGENTS` | Space-separated remote peer `token_id` list |
-| `IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` | Auto-discover peers from `GET /api/agents` |
+| `IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` | Auto-discover peers from `GET /api/agents` ([API reference](https://api.identyclaw.com/.well-known/mcp)) |
 | `IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1` | Learn peers from inbound P2P JWT logins |
 
 ### Agent id naming
@@ -472,7 +473,8 @@ identyclaw-agents-app/agents/<agent-id>/workspace/knowledge/
 ```
 
 Supported formats: `.md`, `.txt`, `.pdf`, `.csv`, `.json`. Prefer topic-focused Markdown
-files over one large PDF. After bulk changes:
+files over one large PDF. For IdentyClaw HTTP API details (agents, identity, HOLA), see
+[MCP discovery](https://api.identyclaw.com/.well-known/mcp). After bulk changes:
 
 ```bash
 ./identyclaw.sh knowledge-reindex <agent-id>

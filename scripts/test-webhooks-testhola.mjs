@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Webhook test via IdentyClaw /api/testhola (same pattern as clienttest-idc).
+ * Webhook test via IdentyClaw POST /api/testhola (see https://api.identyclaw.com/.well-known/mcp).
  * API validates HOLA, then sends RODiT-signed webhooks to the caller's webhook_url.
  *
  * Usage:
