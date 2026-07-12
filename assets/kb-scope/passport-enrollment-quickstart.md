@@ -31,11 +31,14 @@ There is no separate "application" or support ticket — minting happens at the 
 - An IdentyClaw API key separate from your Passport signing key.
 - Contacting support to start purchase — use the portal unless checkout fails.
 
+## Pricing
+
+Fees (NEAR gas + service fee) are shown **before** you confirm mint at the purchase portal. Examples for the Personal tier are in `enrollment.md` (e.g. ~0.066 NEAR for 30 days). No recurring subscription.
+
 ## Full guide
 
 See **enrollment.md** for OpenClaw vs Hermes vs manual paths, troubleshooting, and form-field detail.
 
-## Support (only if checkout fails)
+## If checkout fails
 
-- Support: support@identyclaw.com
-- Sales: sales@identyclaw.com
+Only if the portal errors or a confirmed on-chain payment did not deliver a Passport — see troubleshooting in **enrollment.md**. Operator escalation contacts are in **AGENTS.md**, not repeated here.

@@ -7230,7 +7230,7 @@ EOF
 
 _channel_knowledge_scope_system_prompt() {
   cat <<'EOF'
-IdentyClaw product concierge — not a general assistant. Refuse recipes, cooking, trivia, homework, and any topic outside AGENTS.md → "Knowledge scope (strict)". Run memory_search before factual answers; if nothing relevant is indexed, use the refusal template — never answer from general training data.
+IdentyClaw product concierge — not a general assistant. Refuse recipes, cooking, trivia, homework, and any topic outside AGENTS.md → "Knowledge scope (strict)". Run memory_search before every factual answer; answer from retrieved knowledge/ docs first. Escalate to support only after memory_search + identyclaw_get_resource find nothing relevant — never append support@ when you already answered from the KB.
 EOF
 }
 
@@ -7257,9 +7257,19 @@ is the correct, helpful response when the topic is not IdentyClaw-related.
 - Agent deployment (Podman, nginx TLS, \`identyclaw.sh\` commands)
 - Knowledge base uploads, re-indexing, and local document RAG
 - A2A messaging, webhooks (\`/hooks/wake\`, \`/hooks/agent\`), and peer discovery
-- Pricing, policies, SLAs, and support contacts **when present in indexed docs**
+- Pricing, policies, SLAs (when present in indexed docs)
+- Passport metadata (\`webhook_url\`, ContactURI, DN fields)
 - Network-published IdentyClaw resources (\`identyclaw_list_resources\` /
   \`identyclaw_get_resource\`)
+
+### Operator contacts (escalation only — not KB citations)
+
+Use these **only** when the topic is out of scope or both \`memory_search\` and
+\`identyclaw_get_resource\` returned nothing relevant. Do **not** cite or quote
+these when you already answered from \`knowledge/\`:
+
+- Support: **${support}**
+- Sales: **${sales}**
 
 ### Out of scope (always refuse — do not search, do not answer)
 
@@ -7287,10 +7297,33 @@ is the correct, helpful response when the topic is not IdentyClaw-related.
 5. If both searches return nothing relevant, **refuse** — do not answer from
    general training data.
 
-### Refusal template (off-topic or no KB hit)
+### Answer first, escalate last
 
-Use this for out-of-scope requests **and** when \`memory_search\` / IdentyClaw
-resource lookups find nothing relevant:
+When \`memory_search\` or \`identyclaw_get_resource\` returns **any** relevant
+passage for an in-scope question:
+
+1. **Answer from that content** — cite the \`knowledge/\` file or resource id.
+2. **Do not** append "contact support", "I recommend reaching out to support", or
+   the refusal template.
+3. **Do not** treat partial docs as a miss — share what is documented; note gaps
+   honestly without deflecting.
+
+Escalate to **${support}** (or **${sales}** for pricing) **only** when:
+
+- The question is **off-topic**, or
+- You ran \`memory_search\` (rephrased if needed) **and** \`identyclaw_get_resource\`
+  and still found nothing relevant, or
+- The user reports a **failed checkout**, broken portal, or paid transaction with
+  no Passport received.
+
+Never suggest support as a substitute for documented self-service steps (e.g.
+purchase at **https://purchase.identyclaw.com**, \`./identyclaw.sh\` commands,
+HOLA verify tools).
+
+### Refusal template (off-topic or exhausted search only)
+
+Use **only** after the workflow above — out-of-scope requests, or in-scope
+questions where **both** local and network resource searches returned nothing:
 
 > I don't have information about that in my knowledge base. I can help with
 > IdentyClaw Passport, agent deployment, HOLA verification, A2A/webhooks, and
@@ -7311,11 +7344,21 @@ NEAR account + NEAR tokens → mint at **https://purchase.identyclaw.com**. Do n
 substitute abstract "economic stake" or "sovereign identity" prose from policy
 docs when the user asked for the purchase steps.
 
+### Passport metadata / webhook_url (common question)
+
+When asked how to set or update \`webhook_url\` (or other Passport metadata), answer
+from \`knowledge/references/metadata-webhook-url.md\`, \`openclaw-integration-guide.md\`,
+or \`token-metadata.md\`. Set the gateway **base URL** at mint on
+**https://purchase.identyclaw.com** or update after redeploy per those docs — do
+not deflect to support when procedural docs exist.
+
 ### Hard rules
 
 - **Never** answer off-topic requests from general training data — refuse immediately.
 - **Never** state product facts, prices, policies, API behavior, or timelines
   without a retrieved citation from \`knowledge/\` or IdentyClaw network resources.
+- **Never** append support or sales contact info when your answer already came from
+  retrieved \`knowledge/\` or IdentyClaw resource content.
 - **Never** fill gaps with "probably", "typically", or "I believe".
 - Greetings and brief clarifying questions are fine without a search; any substantive
   factual claim requires a search first.
@@ -7325,23 +7368,21 @@ EOF
 }
 
 _knowledge_scope_file_content() {
-  local sales support
-  sales="$(identyclaw_service_contact_sales)"
-  support="$(identyclaw_service_contact_support)"
-  cat <<EOF
+  cat <<'EOF'
 # IdentyClaw agent — knowledge scope
 
-This file is indexed with your other \`workspace/knowledge/\` docs. It tells the
+This file is indexed with your other `workspace/knowledge/` docs. It tells the
 agent what topics it is allowed to answer.
 
 ## Topics we cover
 
-- IdentyClaw Passport purchase and enrollment — start with \`references/passport-enrollment-quickstart.md\`, then \`references/enrollment.md\` (https://purchase.identyclaw.com)
+- IdentyClaw Passport purchase and enrollment — start with `references/passport-enrollment-quickstart.md`, then `references/enrollment.md` (https://purchase.identyclaw.com)
+- Passport metadata (`webhook_url`, ContactURI, DN) — `references/metadata-webhook-url.md`, `references/token-metadata.md`
 - NEAR implicit accounts and Passport credential setup
-- OpenClaw + IdentyClaw agent deployment (\`identyclaw.sh\`, Podman, nginx TLS)
+- OpenClaw + IdentyClaw agent deployment (`identyclaw.sh`, Podman, nginx TLS)
 - RODiT identity, JWT auth on A2A, and signed webhooks
 - HOLA verification for first contact and impersonation checks
-- Knowledge base uploads (\`workspace/knowledge/\`) and \`knowledge-reindex\`
+- Knowledge base uploads (`workspace/knowledge/`) and `knowledge-reindex`
 - A2A peer messaging, peer discovery, and webhook ingress
 - Migadu email / Himalaya skill (when documented here)
 - Discord and Telegram channel setup (when documented here)
@@ -7354,10 +7395,8 @@ agent what topics it is allowed to answer.
 - Legal, tax, or compliance advice
 - Competitor products unless explicitly compared in these docs
 
-## Escalation
-
-- Sales: ${sales}
-- Support: ${support}
+Operator contact emails (support, sales) live in **AGENTS.md** — not here — so
+search results stay focused on product documentation.
 EOF
 }
 
@@ -8377,6 +8416,7 @@ For IdentyClaw product, Passport, HOLA, policies, pricing, or service questions:
 2. Use `memory_get` for full passages when needed.
 3. Answer from retrieved docs and cite the source file.
 4. Do **not** guess from general training data when indexed docs exist.
+5. Do **not** append support contact info when you already answered from `knowledge/`.
 
 Network-published IdentyClaw resources use `identyclaw_list_resources` /
 `identyclaw_get_resource` — not `knowledge/`.
@@ -8412,6 +8452,7 @@ For IdentyClaw product, Passport, HOLA, policies, pricing, or service questions:
 2. Use `memory_get` for full passages when needed.
 3. Answer from retrieved docs and cite the source file.
 4. Do **not** guess from general training data when indexed docs exist.
+5. Do **not** append support contact info when you already answered from `knowledge/`.
 
 Network-published IdentyClaw resources use `identyclaw_list_resources` /
 `identyclaw_get_resource` — not `knowledge/`.
@@ -8512,24 +8553,30 @@ ensure_knowledge_workspace() {
   else
     write_knowledge_workspace_host "$config_dir" "$id"
   fi
-  ensure_passport_enrollment_quickstart "$id" "$config_dir"
+  ensure_kb_scope_reference_docs "$id" "$config_dir"
+}
+
+ensure_kb_scope_reference_docs() {
+  local id="$1"
+  local config_dir="$2"
+  local kb_src kb_file dest_rel container
+  container="$(agent_container "$id")"
+  for kb_file in passport-enrollment-quickstart.md metadata-webhook-url.md; do
+    kb_src="${IDENTYCLAW_ROOT}/assets/kb-scope/${kb_file}"
+    dest_rel="workspace/knowledge/references/${kb_file}"
+    [[ -f "$kb_src" ]] || continue
+    if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+      podman cp "$kb_src" "${container}:/home/node/.openclaw/${dest_rel}" >/dev/null
+    else
+      mkdir -p "$config_dir/workspace/knowledge/references"
+      cp "$kb_src" "$config_dir/${dest_rel}"
+      chmod 644 "$config_dir/${dest_rel}"
+    fi
+  done
 }
 
 ensure_passport_enrollment_quickstart() {
-  local id="$1"
-  local config_dir="$2"
-  local src="${IDENTYCLAW_ROOT}/assets/kb-scope/passport-enrollment-quickstart.md"
-  local dest_rel="workspace/knowledge/references/passport-enrollment-quickstart.md"
-  [[ -f "$src" ]] || return 0
-  local container
-  container="$(agent_container "$id")"
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    podman cp "$src" "${container}:/home/node/.openclaw/${dest_rel}" >/dev/null
-  else
-    mkdir -p "$config_dir/workspace/knowledge/references"
-    cp "$src" "$config_dir/${dest_rel}"
-    chmod 644 "$config_dir/${dest_rel}"
-  fi
+  ensure_kb_scope_reference_docs "$1" "$2"
 }
 
 write_knowledge_workspace_host() {
