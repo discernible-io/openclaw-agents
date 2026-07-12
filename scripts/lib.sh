@@ -7276,11 +7276,14 @@ is the correct, helpful response when the topic is not IdentyClaw-related.
 ### Required workflow (every factual in-scope question)
 
 1. Run \`memory_search\` with the user's question (and a rephrased variant if the
-   first pass is empty).
+   first pass is empty). For Passport purchase/enrollment, also search:
+   \`passport purchase enrollment NEAR purchase.identyclaw.com\`.
 2. If local docs are insufficient, try \`identyclaw_list_resources\` then
    \`identyclaw_get_resource\` for network-published content.
 3. Use \`memory_get\` to pull full passages before answering.
-4. Answer **only** from retrieved content. Cite the source file or resource id.
+4. Answer **only** from retrieved content. Cite the source file or resource id
+   under \`knowledge/\` (or an IdentyClaw resource id) — **never** cite \`sessions/\`
+   paths for product facts; those are prior chat logs, not documentation.
 5. If both searches return nothing relevant, **refuse** — do not answer from
    general training data.
 
@@ -7300,11 +7303,19 @@ not need to search first:
 > I'm the IdentyClaw concierge and only answer questions about IdentyClaw Passport,
 > agent hosting, HOLA, and related services. For anything else, contact **${support}**.
 
+### Passport purchase (common question)
+
+When asked how to get a Passport or what the prerequisites are, answer from
+\`knowledge/references/passport-enrollment-quickstart.md\` or \`enrollment.md\`:
+NEAR account + NEAR tokens → mint at **https://purchase.identyclaw.com**. Do not
+substitute abstract "economic stake" or "sovereign identity" prose from policy
+docs when the user asked for the purchase steps.
+
 ### Hard rules
 
 - **Never** answer off-topic requests from general training data — refuse immediately.
 - **Never** state product facts, prices, policies, API behavior, or timelines
-  without a retrieved citation.
+  without a retrieved citation from \`knowledge/\` or IdentyClaw network resources.
 - **Never** fill gaps with "probably", "typically", or "I believe".
 - Greetings and brief clarifying questions are fine without a search; any substantive
   factual claim requires a search first.
@@ -7325,7 +7336,7 @@ agent what topics it is allowed to answer.
 
 ## Topics we cover
 
-- IdentyClaw Passport purchase and enrollment (https://purchase.identyclaw.com)
+- IdentyClaw Passport purchase and enrollment — start with \`references/passport-enrollment-quickstart.md\`, then \`references/enrollment.md\` (https://purchase.identyclaw.com)
 - NEAR implicit accounts and Passport credential setup
 - OpenClaw + IdentyClaw agent deployment (\`identyclaw.sh\`, Podman, nginx TLS)
 - RODiT identity, JWT auth on A2A, and signed webhooks
@@ -8157,7 +8168,8 @@ ensure_memory_config() {
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$IDENTYCLAW_MEMORY_BACKEND" "$IDENTYCLAW_QMD_SESSION_RECALL" \
-    "$IDENTYCLAW_QMD_SESSION_RETENTION_DAYS" <<'PY'
+    "$IDENTYCLAW_QMD_SESSION_RETENTION_DAYS" \
+    "$IDENTYCLAW_KNOWLEDGE_ENABLED" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -8165,6 +8177,7 @@ path = Path(sys.argv[1])
 backend = sys.argv[2]
 session_recall = sys.argv[3] == "1"
 retention_days = int(sys.argv[4])
+knowledge_enabled = sys.argv[5] == "1"
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -8192,7 +8205,9 @@ if session_recall:
     if experimental.get("sessionMemory") is not True:
         experimental["sessionMemory"] = True
         changed = True
-    desired_sources = ["memory", "sessions"]
+    # KB concierge agents: search indexed docs only — session recall poisons
+    # product answers when prior wrong replies get re-ranked above enrollment.md.
+    desired_sources = ["memory"] if knowledge_enabled else ["memory", "sessions"]
     if memory_search.get("sources") != desired_sources:
         memory_search["sources"] = desired_sources
         changed = True
@@ -8496,6 +8511,24 @@ ensure_knowledge_workspace() {
     _ensure_knowledge_workspace_in_container "$container" "$id"
   else
     write_knowledge_workspace_host "$config_dir" "$id"
+  fi
+  ensure_passport_enrollment_quickstart "$id" "$config_dir"
+}
+
+ensure_passport_enrollment_quickstart() {
+  local id="$1"
+  local config_dir="$2"
+  local src="${IDENTYCLAW_ROOT}/assets/kb-scope/passport-enrollment-quickstart.md"
+  local dest_rel="workspace/knowledge/references/passport-enrollment-quickstart.md"
+  [[ -f "$src" ]] || return 0
+  local container
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    podman cp "$src" "${container}:/home/node/.openclaw/${dest_rel}" >/dev/null
+  else
+    mkdir -p "$config_dir/workspace/knowledge/references"
+    cp "$src" "$config_dir/${dest_rel}"
+    chmod 644 "$config_dir/${dest_rel}"
   fi
 }
 
