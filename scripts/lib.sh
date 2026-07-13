@@ -3650,8 +3650,11 @@ deploy_agent_ids_from_env() {
 wait_for_running_agent_container() {
   local container="$1"
   local attempt
-  for attempt in $(seq 1 20); do
-    podman ps --format '{{.Names}}' | grep -qx "$container" && return 0
+  for attempt in $(seq 1 40); do
+    if podman ps --format '{{.Names}}' | grep -qx "$container" \
+      && podman exec "$container" true 2>/dev/null; then
+      return 0
+    fi
     sleep 0.25
   done
   echo "Timed out waiting for ${container} to start" >&2
