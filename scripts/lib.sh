@@ -383,6 +383,28 @@ agent_env_value() {
   echo "${!combined:-$default}"
 }
 
+# Managed browser tool/plugin (default on). Set AGENT_{SLUG}_BROWSER=0 to disable.
+agent_browser_enabled() {
+  local id="$1" v
+  load_env
+  v="$(agent_env_value "$id" BROWSER "1")"
+  case "${v,,}" in
+    0|false|no|off) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# ClawLink plugin + LinkedIn skill tools (default on). Set AGENT_{SLUG}_CLAWLINK=0 to disable.
+agent_clawlink_enabled() {
+  local id="$1" v
+  load_env
+  v="$(agent_env_value "$id" CLAWLINK "1")"
+  case "${v,,}" in
+    0|false|no|off) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 agent_letter_ord() {
   local id="$1"
   if [[ "$id" =~ ^agent-([a-z])$ ]]; then
@@ -6332,16 +6354,164 @@ for path, block in ((tools_path, tools_block), (agents_path, agents_block)):
 PY
 }
 
+# Enable or disable ClawLink + linkedin-social in openclaw.json (tools allow/deny + plugin/skill).
+ensure_clawlink_container_config() {
+  local id="$1"
+  local config_dir="$2"
+  local container="${3:-}"
+  local enabled=1 slug plugin_id
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  if agent_clawlink_enabled "$id"; then
+    enabled=1
+  else
+    enabled=0
+  fi
+  slug="$(linkedin_skill_slug)"
+  plugin_id="$(clawlink_plugin_id)"
+  _agent_openclaw_json_python "$config_dir" "$container" "$enabled" "$slug" "$plugin_id" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+enabled = (sys.argv[2] if len(sys.argv) > 2 else "1") != "0"
+slug = sys.argv[3] if len(sys.argv) > 3 else "linkedin-social"
+plugin_id = sys.argv[4] if len(sys.argv) > 4 else "clawlink-plugin"
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+clawlink_tools = [
+    "clawlink_begin_pairing",
+    "clawlink_get_pairing_status",
+    "clawlink_start_connection",
+    "clawlink_get_connection_status",
+    "clawlink_list_integrations",
+    "clawlink_list_tools",
+    "clawlink_search_tools",
+    "clawlink_describe_tool",
+    "clawlink_preview_tool",
+    "clawlink_call_tool",
+]
+
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+plugin = plugins.setdefault(plugin_id, {})
+if plugin.get("enabled") is not enabled:
+    plugin["enabled"] = enabled
+    changed = True
+
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+skill = skills.setdefault(slug, {})
+if skill.get("enabled") is not enabled:
+    skill["enabled"] = enabled
+    changed = True
+
+tools = data.setdefault("tools", {})
+allow = list(tools.get("allow") or [])
+deny = list(tools.get("deny") or [])
+if enabled:
+    for name in clawlink_tools:
+        if name not in allow:
+            allow.append(name)
+            changed = True
+        if name in deny:
+            deny = [t for t in deny if t != name]
+            changed = True
+    if "alsoAllow" in tools:
+        del tools["alsoAllow"]
+        changed = True
+else:
+    before = allow[:]
+    allow = [t for t in allow if t not in clawlink_tools]
+    if allow != before:
+        changed = True
+    for name in clawlink_tools:
+        if name not in deny:
+            deny.append(name)
+            changed = True
+
+if tools.get("allow") != allow:
+    tools["allow"] = allow
+    changed = True
+if deny:
+    if tools.get("deny") != deny:
+        tools["deny"] = deny
+        changed = True
+elif "deny" in tools:
+    del tools["deny"]
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+write_agent_clawlink_disabled_doc() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local content
+  content='# ClawLink / LinkedIn — disabled
+
+ClawLink tools and the LinkedIn skill are **disabled** for this agent (`AGENT_*_CLAWLINK=0`).
+Do not call `clawlink_*` tools or attempt LinkedIn posting via ClawLink.
+'
+  if [[ -w "$config_dir/workspace" ]] || mkdir -p "$config_dir/workspace" 2>/dev/null; then
+    printf '%s\n' "$content" >"$config_dir/workspace/LINKEDIN.md"
+    chmod 644 "$config_dir/workspace/LINKEDIN.md" 2>/dev/null || true
+    python3 - "$config_dir/workspace" <<'PY' 2>/dev/null || true
+import re, sys
+from pathlib import Path
+ws = Path(sys.argv[1])
+disabled = """
+## LinkedIn — disabled
+
+ClawLink / LinkedIn tools are disabled (`AGENT_*_CLAWLINK=0`).
+"""
+for name in ("TOOLS.md", "AGENTS.md"):
+    path = ws / name
+    if not path.is_file():
+        continue
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"\n## LinkedIn[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+    path.write_text(text.rstrip() + disabled + "\n", encoding="utf-8")
+PY
+  elif [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec -i "$container" tee /home/node/.openclaw/workspace/LINKEDIN.md >/dev/null <<<"$content"
+    podman exec -i "$container" python3 - <<'PY'
+import os, re
+workspace = "/home/node/.openclaw/workspace"
+disabled = """
+## LinkedIn — disabled
+
+ClawLink / LinkedIn tools are disabled (`AGENT_*_CLAWLINK=0`).
+"""
+for name in ("TOOLS.md", "AGENTS.md"):
+    path = os.path.join(workspace, name)
+    if not os.path.isfile(path):
+        continue
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    text = re.sub(r"\n## LinkedIn[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.rstrip() + disabled + "\n")
+PY
+  fi
+}
+
 ensure_linkedin_clawlink_skill() {
   local id="$1"
   local config_dir="$2"
   local container plugin_spec skill_spec slug
   load_env
+  container="$(agent_container "$id")"
+  if ! agent_clawlink_enabled "$id"; then
+    ensure_clawlink_container_config "$id" "$config_dir" "$container"
+    write_agent_clawlink_disabled_doc "$config_dir" "$container"
+    return 0
+  fi
   skill_spec="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-}"
   [[ -n "$skill_spec" ]] || return 0
   slug="$(linkedin_skill_slug)"
   plugin_spec="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
-  container="$(agent_container "$id")"
   if [[ -f "$config_dir/openclaw.json" ]]; then
     _patch_linkedin_openclaw_json "$config_dir/openclaw.json"
     write_agent_linkedin_doc "$config_dir"
@@ -6359,6 +6529,7 @@ ensure_linkedin_clawlink_skill() {
   fi
   _patch_linkedin_openclaw_json_in_container "$container"
   _write_agent_linkedin_doc_in_container "$container"
+  ensure_clawlink_container_config "$id" "$config_dir" "$container"
 }
 
 write_twitter_secrets() {
@@ -6834,38 +7005,115 @@ ensure_instagram_secrets_from_env() {
 }
 
 ensure_browser_container_config() {
-  local config_dir="$1"
-  local config="$config_dir/openclaw.json"
-  [[ -f "$config" ]] || return 0
-  python3 - "$config" <<'PY'
+  local id="$1"
+  local config_dir="$2"
+  local container="${3:-}"
+  local enabled=1
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  if agent_browser_enabled "$id"; then
+    enabled=1
+  else
+    enabled=0
+  fi
+  _agent_openclaw_json_python "$config_dir" "$container" "$enabled" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+enabled = (sys.argv[2] if len(sys.argv) > 2 else "1") != "0"
 data = json.loads(path.read_text(encoding="utf-8"))
-browser = data.setdefault("browser", {})
-desired = {
-    "enabled": True,
-    "headless": True,
-    "noSandbox": True,
-    "executablePath": "/usr/bin/google-chrome-stable",
-}
 changed = False
+
+browser = data.setdefault("browser", {})
+if enabled:
+    desired = {
+        "enabled": True,
+        "headless": True,
+        "noSandbox": True,
+        "executablePath": "/usr/bin/google-chrome-stable",
+    }
+else:
+    desired = {
+        "enabled": False,
+        "headless": True,
+        "noSandbox": True,
+        "executablePath": "/usr/bin/google-chrome-stable",
+    }
 for key, value in desired.items():
     if browser.get(key) != value:
         browser[key] = value
         changed = True
+
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+plugin_browser = plugins.setdefault("browser", {})
+if plugin_browser.get("enabled") is not enabled:
+    plugin_browser["enabled"] = enabled
+    changed = True
+
+tools = data.setdefault("tools", {})
+allow = list(tools.get("allow") or [])
+deny = list(tools.get("deny") or [])
+if enabled:
+    if "browser" not in allow:
+        allow.append("browser")
+        changed = True
+    if "browser" in deny:
+        deny = [t for t in deny if t != "browser"]
+        changed = True
+else:
+    if "browser" in allow:
+        allow = [t for t in allow if t != "browser"]
+        changed = True
+    if "browser" not in deny:
+        deny.append("browser")
+        changed = True
+if tools.get("allow") != allow:
+    tools["allow"] = allow
+    changed = True
+if deny:
+    if tools.get("deny") != deny:
+        tools["deny"] = deny
+        changed = True
+elif "deny" in tools:
+    del tools["deny"]
+    changed = True
+
 if changed:
-    data["browser"] = browser
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
 }
 
 write_agent_browser_doc() {
-  local config_dir="$1"
-  mkdir -p "$config_dir/workspace"
-  cat >"$config_dir/workspace/BROWSER.md" <<'EOF'
+  local id="$1"
+  local config_dir="$2"
+  local container="${3:-}"
+  mkdir -p "$config_dir/workspace" 2>/dev/null || true
+  if ! agent_browser_enabled "$id"; then
+    if [[ -w "$config_dir/workspace" ]]; then
+      cat >"$config_dir/workspace/BROWSER.md" <<'EOF'
+# Browser tool — disabled
+
+The managed `browser` tool is **disabled** for this agent (`AGENT_*_BROWSER=0`).
+Do not attempt browser automation, CDP, or Chrome login flows. Use `read` /
+`identyclaw_*` / channel tools instead, or ask an operator to re-enable the
+browser if needed.
+EOF
+      chmod 644 "$config_dir/workspace/BROWSER.md"
+    elif [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      podman exec -i "$container" tee /home/node/.openclaw/workspace/BROWSER.md >/dev/null <<'EOF'
+# Browser tool — disabled
+
+The managed `browser` tool is **disabled** for this agent (`AGENT_*_BROWSER=0`).
+Do not attempt browser automation, CDP, or Chrome login flows. Use `read` /
+`identyclaw_*` / channel tools instead, or ask an operator to re-enable the
+browser if needed.
+EOF
+    fi
+    return 0
+  fi
+  if [[ -w "$config_dir/workspace" ]]; then
+    cat >"$config_dir/workspace/BROWSER.md" <<'EOF'
 # Browser tool (pod / container deploy)
 
 This gateway runs **Google Chrome headless** inside the agent container (not the
@@ -6903,7 +7151,47 @@ Chrome cold-start can take ~30s. Retry `open`, or run inside the container:
 For PNG/image URLs, prefer `curl` or `read` on a downloaded file when you only
 need to verify the URL — browser is for interactive pages.
 EOF
-  chmod 644 "$config_dir/workspace/BROWSER.md"
+    chmod 644 "$config_dir/workspace/BROWSER.md"
+  elif [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+    podman exec -i "$container" tee /home/node/.openclaw/workspace/BROWSER.md >/dev/null <<'EOF'
+# Browser tool (pod / container deploy)
+
+This gateway runs **Google Chrome headless** inside the agent container (not the
+isolated sandbox browser sidecar). Debian `chromium` crashes on CDP startup in
+Podman; the image ships `google-chrome-stable` instead.
+
+## Correct usage
+
+1. Omit `target` (defaults to host) or set `target="host"`.
+2. Open: `action="open"`, `url="https://…"`, optional `label="my-tab"`.
+3. Snapshot: use `action="tabs"` first, then `action="snapshot"` with `targetId` from the tab list (e.g. `t1`) or the same `label`.
+4. Profile: default managed profile is `openclaw` (cookies under `browser/openclaw/user-data/`).
+
+## Required config (synced on bootstrap)
+
+```json
+{
+  "browser": {
+    "enabled": true,
+    "headless": true,
+    "noSandbox": true,
+    "executablePath": "/usr/bin/google-chrome-stable"
+  }
+}
+```
+
+D-Bus warnings in Chrome stderr are normal in containers and are not fatal.
+
+## If browser times out on first use
+
+Chrome cold-start can take ~30s. Retry `open`, or run inside the container:
+
+`node /app/openclaw.mjs browser doctor`
+
+For PNG/image URLs, prefer `curl` or `read` on a downloaded file when you only
+need to verify the URL — browser is for interactive pages.
+EOF
+  fi
 }
 
 ensure_agent_bootstrap() {
@@ -6937,8 +7225,12 @@ ensure_agent_bootstrap() {
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
   ensure_agent_trust_doc "$id" "$config_dir"
   ensure_llm_sqlite_auth "$id"
-  ensure_browser_container_config "$config_dir"
-  write_agent_browser_doc "$config_dir"
+  ensure_browser_container_config "$id" "$config_dir" "$container"
+  write_agent_browser_doc "$id" "$config_dir" "$container"
+  if ! agent_clawlink_enabled "$id"; then
+    ensure_clawlink_container_config "$id" "$config_dir" "$container"
+    write_agent_clawlink_disabled_doc "$config_dir" "$container"
+  fi
   sync_quiet_plugin_env "$config_dir" "$container"
   if [[ ! -f "$config_dir/secrets/imap.pass" ]]; then
     echo "Note: ${id} has no Migadu password yet — run: ./identyclaw.sh set-password ${id}" >&2
@@ -8982,6 +9274,12 @@ sync_agent_openclaw_json_when_container_running() {
   ensure_knowledge_config "$dir" "$container"
   ensure_cross_context_messaging "$dir" "$container"
   ensure_tools_by_sender_policy "$id" "$dir" "$container"
+  ensure_browser_container_config "$id" "$dir" "$container"
+  write_agent_browser_doc "$id" "$dir" "$container"
+  if ! agent_clawlink_enabled "$id"; then
+    ensure_clawlink_container_config "$id" "$dir" "$container"
+    write_agent_clawlink_disabled_doc "$dir" "$container"
+  fi
   sync_quiet_plugin_env "$dir" "$container"
   ensure_agent_knowledge_governance "$id" "$dir"
   if [[ "$restart" == "1" ]]; then
