@@ -7890,8 +7890,10 @@ write_secret_helpers() {
   config_dir="$(agent_home "$id")"
   if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
     _write_secret_helpers_host "$config_dir" "$password"
+    echo "    (${id}: wrote imap/smtp secrets on host)" >&2
   else
-    _write_secret_helpers_in_container "$id" "$password"
+    _write_secret_helpers_in_container "$id" "$password" || return 1
+    echo "    (${id}: wrote imap/smtp secrets via container — host secrets/ not writable)" >&2
   fi
 }
 
