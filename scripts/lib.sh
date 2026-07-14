@@ -56,8 +56,7 @@ resolve_deploy_tier() {
 
 deploy_tier_app_port() {
   case "$1" in
-    development) printf '7443' ;;
-    main) printf '9443' ;;
+    development|main) printf '7443' ;;
     *) return 1 ;;
   esac
 }
@@ -226,7 +225,7 @@ load_env() {
   IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-linkedin-social}"
   IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
-  IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-9443}"
+  IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-7443}"
   AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
   AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
   AGENT_E_PUBLIC_HOST="${AGENT_E_PUBLIC_HOST:-agent-e.identyclaw.com}"
