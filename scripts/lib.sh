@@ -5699,9 +5699,15 @@ resolved_audience = (audience or "").strip()
 # cannot read container-owned NEAR creds during sync).
 if not resolved_audience and existing_audience:
     resolved_audience = existing_audience
+existing_issuer = (auth.get("issuer") or "").strip()
+resolved_issuer = (issuer or "").strip()
+# Same for API base used as JWT issuer — empty resolve must not clear a working issuer
+# (Invalid issuer / Error 005 on POST /a2a with P2P JWT).
+if not resolved_issuer and existing_issuer:
+    resolved_issuer = existing_issuer
 desired_auth = {
     "provider": "rodit",
-    "issuer": issuer,
+    "issuer": resolved_issuer,
     "audience": resolved_audience,
     "identityClaim": "token_id",
 }
@@ -8583,6 +8589,11 @@ EOF
 ensure_agent_env() {
   local config_dir="$1"
   local env_file="$config_dir/.env"
+  # Pod agents chown state to the container uid (0700). Host cannot create or append
+  # .env here — OPENCLAW_GATEWAY_TOKEN is already in the container-mounted .env.
+  if [[ ! -w "$config_dir" ]] 2>/dev/null; then
+    return 0
+  fi
   if [[ -f "$env_file" ]] && grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$env_file" 2>/dev/null; then
     return 0
   fi
