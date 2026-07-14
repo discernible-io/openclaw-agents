@@ -7,7 +7,7 @@
 # Commands:
 #   build-image          Pull base + build openclaw-himalaya:local
 #   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-c, agent-e)
-#   set-password <id>    Set Migadu mailbox password (agent-{a-z})
+#   set-password <id|all>  Set Migadu mailbox password (agent-{a-z} or all AGENT_IDS)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
 #   set-instagram <id>      Store Instagram username/password in secrets/ (survives rebuilds)
 #   set-twitter <id>        Store X/Twitter login + enable hourly DM polling via heartbeat
@@ -127,7 +127,7 @@ init_one_agent() {
   ensure_agent_security_hardening "$id" "$dir"
 
   if [[ -n "$password" ]]; then
-    write_secret_helpers "$dir" "$password"
+    write_secret_helpers "$id" "$password"
   elif [[ -f "$dir/secrets/imap.pass" ]]; then
     echo "    (keeping existing secrets)"
   else
@@ -153,16 +153,37 @@ cmd_init() {
 }
 
 cmd_set_password() {
-  local id="${1:?Usage: $0 set-password agent-b}"
-  local dir
+  local target="${1:?Usage: $0 set-password agent-b|all}"
+  local id dir pw shared_pw=""
+  load_env
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      dir="$(agent_home "$id")"
+      [[ -d "$dir" ]] || { echo "Missing ${dir} — run $0 init first" >&2; exit 1; }
+      if [[ -n "$shared_pw" ]]; then
+        read -r -s -p "Migadu password for ${id} [Enter=reuse previous]: " pw
+        echo
+        pw="${pw:-$shared_pw}"
+      else
+        read -r -s -p "Migadu password for ${id}: " pw
+        echo
+      fi
+      [[ -n "$pw" ]] || { echo "empty password for ${id}" >&2; exit 1; }
+      shared_pw="$pw"
+      write_secret_helpers "$id" "$pw" || exit 1
+      echo "Password stored for ${id} (secrets/imap.pass + smtp.pass)"
+    done
+    echo "Done. Himalaya reads secrets live — optional: $0 restart all"
+    return 0
+  fi
+  id="$target"
   dir="$(agent_home "$id")"
   [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
-  local pw
   read -r -s -p "Migadu password for ${id}: " pw
   echo
   [[ -n "$pw" ]] || { echo "empty password" >&2; exit 1; }
-  write_secret_helpers "$dir" "$pw"
-  echo "Password stored in ${dir}/secrets/ (mode 600)"
+  write_secret_helpers "$id" "$pw" || exit 1
+  echo "Password stored for ${id} (secrets/imap.pass + smtp.pass)"
 }
 
 cmd_set_discord_token() {

@@ -102,7 +102,7 @@ init_agent_if_missing() {
   ensure_agent_security_hardening "$id" "$dir"
 
   if [[ -n "$password" ]]; then
-    write_secret_helpers "$dir" "$password"
+    write_secret_helpers "$id" "$password"
   fi
 }
 

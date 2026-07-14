@@ -5076,7 +5076,7 @@ ensure_mail_secrets_from_env() {
     existing="$(tr -d '\n' <"$config_dir/secrets/imap.pass")"
   fi
   if [[ "$existing" != "$password" ]]; then
-    write_secret_helpers "$config_dir" "$password"
+    write_secret_helpers "$id" "$password"
     echo "    (${id}: Migadu password synced from env.local → secrets/)" >&2
   fi
 }
@@ -7877,7 +7877,25 @@ ensure_agent_bootstrap() {
   fi
 }
 
+# Store Migadu IMAP/SMTP password. Writes on host when secrets/ is writable;
+# otherwise falls back to the running container (pod UID ownership).
 write_secret_helpers() {
+  local id="$1"
+  local password="$2"
+  local config_dir
+  [[ -n "$id" && -n "$password" ]] || {
+    echo "write_secret_helpers: missing agent id or password" >&2
+    return 1
+  }
+  config_dir="$(agent_home "$id")"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    _write_secret_helpers_host "$config_dir" "$password"
+  else
+    _write_secret_helpers_in_container "$id" "$password"
+  fi
+}
+
+_write_secret_helpers_host() {
   local config_dir="$1"
   local password="$2"
   mkdir -p "$config_dir/secrets"
@@ -7891,6 +7909,30 @@ EOF
   chmod 700 "$config_dir/secrets"
   chmod 700 "$config_dir/secrets"/*.sh
   chmod 600 "$config_dir/secrets"/*.pass
+}
+
+_write_secret_helpers_in_container() {
+  local id="$1"
+  local password="$2"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Cannot store mailbox password: host secrets/ not writable and ${container} is not running" >&2
+    echo "Run: ./identyclaw.sh restore-host-access ${id}   # then set-password, then start" >&2
+    return 1
+  }
+  podman exec -i "$container" sh -c '
+set -e
+root=/home/node/.openclaw/secrets
+mkdir -p "$root"
+chmod 700 "$root"
+cat >"$root/imap.pass"
+cp "$root/imap.pass" "$root/smtp.pass"
+printf "%s\n" "#!/bin/sh" "cat /home/node/.openclaw/secrets/imap.pass" >"$root/imap.sh"
+cp "$root/imap.sh" "$root/smtp.sh"
+chmod 700 "$root/imap.sh" "$root/smtp.sh"
+chmod 600 "$root/imap.pass" "$root/smtp.pass"
+' <<<"${password}"
 }
 
 write_discord_token() {
