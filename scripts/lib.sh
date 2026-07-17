@@ -3661,6 +3661,8 @@ wait_for_running_agent_container() {
 }
 
 # Recreate a pod agent container so --env-file picks up .env changes (podman restart does not).
+# Pod userns leaves agent dirs owned by the container uid; restore host ownership before
+# reading --env-file (same pattern as recreate_pod_agent_gateway).
 recreate_pod_agent_container() {
   local id="$1"
   local dir container gw_port image pod_name z tls_env=()
@@ -3673,25 +3675,19 @@ recreate_pod_agent_container() {
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
-  prepare_pod_agent_host_access_for_start "$id"
-  if [[ -f "$dir/.env" ]]; then
-    :
-  elif podman ps --format '{{.Names}}' | grep -qx "$container" \
-    && podman exec "$container" test -f /home/node/.openclaw/.env 2>/dev/null; then
-    :
-  else
-    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
-    return 1
-  fi
 
   image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
   [[ -n "$image" ]] || image="$(openclaw_agent_image)"
 
-  # Host must own agent state so .env sync writes container paths before --env-file is read.
+  # Drop container ownership, then map state back to the deploy user so --env-file is readable.
   prepare_agent_state_for_gateway_start "$id" pod
-  sync_identyclaw_env "$dir" ""
-
   podman rm -f "$container" 2>/dev/null || true
+  restore_pod_path_for_host "$dir"
+  if [[ ! -f "$dir/.env" ]]; then
+    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
+    return 1
+  fi
+  sync_identyclaw_env "$dir" ""
 
   podman run -d \
     --pod "$pod_name" \
@@ -3709,6 +3705,7 @@ recreate_pod_agent_container() {
     -v "$dir/.config:/home/node/.config:ro${z}" \
     "$image" \
     node dist/index.js gateway --bind lan --port "$gw_port"
+  ensure_pod_agent_state_for_container "$id"
 }
 
 start_pod_agent() {
@@ -3734,13 +3731,14 @@ start_pod_agent() {
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
     ensure_agent_mail_tooling_refresh "$id" "$dir"
-    ensure_agent_security_hardening "$id" "$dir" "$container"
-    ensure_main_ingress_config "$id" "$dir" "$container"
-    ensure_openclaw_model_defaults "$dir" "$container"
-    ensure_memory_config "$dir" "$container"
-    sync_quiet_plugin_env "$dir" "$container"
+    ensure_agent_security_hardening "$id" "$dir" "$container" || true
+    ensure_main_ingress_config "$id" "$dir" "$container" || true
+    # Pre-recreate sync may fail when host cannot write openclaw.json; post-recreate syncs below.
+    ensure_openclaw_model_defaults "$dir" "$container" || true
+    ensure_memory_config "$dir" "$container" || true
+    sync_quiet_plugin_env "$dir" "$container" || true
     sync_agent_plugin_configs "$id" "$dir" || true
-    ensure_llm_sqlite_auth "$id"
+    ensure_llm_sqlite_auth "$id" || true
     recreate_pod_agent_container "$id"
     container="$(agent_container "$id")"
     wait_for_running_agent_container "$container" || return 1
