@@ -220,7 +220,8 @@ load_env() {
   # https://clawhub.ai/identyclaw/identyclaw
   IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-git:github.com/discernible-io/openclaw-identyclaw-plugin@main}"
   IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
-  IDENTYCLAW_CLAWHUB_SKILL_VERSION="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-1.6.2}"
+  # Prefer plugin-bundled skill (GitHub). Leave empty to avoid pinning an older ClawHub release.
+  IDENTYCLAW_CLAWHUB_SKILL_VERSION="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-}"
   IDENTYCLAW_CLAWHUB_TWITTER_SKILL="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
   # LinkedIn/ClawLink is opt-in: set IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL=linkedin-social to enable.
   IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-}"
@@ -5424,6 +5425,73 @@ identyclaw_skill_installed_in_container() {
       || test -f /home/node/.openclaw/skills/identyclaw/SKILL.md' 2>/dev/null
 }
 
+identyclaw_skill_frontmatter_version() {
+  local skill_md="$1"
+  [[ -f "$skill_md" ]] || return 0
+  python3 - "$skill_md" <<'PY' 2>/dev/null || true
+import re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+m = re.search(r"(?m)^version:\s*([^\s#]+)", text)
+print(m.group(1) if m else "")
+PY
+}
+
+identyclaw_skill_version_in_container() {
+  local container="$1"
+  local text
+  text="$(podman exec "$container" sh -c \
+    'cat /home/node/.openclaw/workspace/skills/identyclaw/SKILL.md 2>/dev/null \
+      || cat /home/node/.openclaw/skills/identyclaw/SKILL.md 2>/dev/null' 2>/dev/null || true)"
+  [[ -n "$text" ]] || return 0
+  python3 -c 'import re,sys; m=re.search(r"(?m)^version:\s*([^\s#]+)", sys.argv[1]); print(m.group(1) if m else "")' "$text" 2>/dev/null || true
+}
+
+# Install workspace skill from plugin-bundled skill/ (GitHub tip) when present; else ClawHub.
+install_identyclaw_skill() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local force="${3:-0}"
+  local skill_spec skill_ver plugin_skill host_skill stage_ctr install_args=()
+  load_env
+  skill_spec="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
+  skill_ver="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-}"
+
+  plugin_skill="$(agent_identyclaw_tools_ext_dir_container)/skill"
+  host_skill="$(agent_identyclaw_tools_ext_dir "$config_dir")/skill"
+  if [[ ! -f "$host_skill/SKILL.md" ]]; then
+    host_skill="$(identyclaw_app_dir)/repo/openclaw-identyclaw-plugin/skill"
+  fi
+  [[ -f "$host_skill/SKILL.md" ]] || host_skill=""
+
+  if [[ "$force" == "1" ]]; then
+    install_args+=(--force)
+  fi
+
+  if _agent_container_name_running "$container"; then
+    if podman exec "$container" test -f "${plugin_skill}/SKILL.md" 2>/dev/null; then
+      echo "    (IdentyClaw skill: plugin-bundled ${plugin_skill})" >&2
+      openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" "$plugin_skill" >&2
+      return $?
+    fi
+    if [[ -n "$host_skill" ]]; then
+      stage_ctr="/tmp/.identyclaw-skill-src"
+      echo "    (IdentyClaw skill: host ${host_skill} → container)" >&2
+      podman exec "$container" rm -rf "$stage_ctr" 2>/dev/null || true
+      podman cp "$host_skill" "$container:$stage_ctr" >/dev/null || return 1
+      openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" "$stage_ctr" >&2
+      local rc=$?
+      podman exec "$container" rm -rf "$stage_ctr" 2>/dev/null || true
+      return "$rc"
+    fi
+  fi
+
+  echo "    (IdentyClaw skill: ClawHub ${skill_spec}${skill_ver:+ @}${skill_ver})" >&2
+  [[ -n "$skill_ver" ]] && install_args+=(--version "$skill_ver")
+  openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" "$skill_spec" >&2 \
+    || openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" identyclaw >&2
+}
+
 ensure_identyclaw_config() {
   local config_dir="$1"
   local container="${2:-}"
@@ -5522,10 +5590,8 @@ ensure_identyclaw_packages() {
   link_identyclaw_plugin_deps_in_container "$container"
   podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
   if ! identyclaw_skill_installed_in_container "$container"; then
-    echo "    (${id}: installing ClawHub skill ${skill_spec} from identyclaw/identyclaw…)" >&2
-    if ! podman exec "$container" node /app/openclaw.mjs skills install "$skill_spec" >&2; then
-      podman exec "$container" node /app/openclaw.mjs skills install identyclaw >&2 || true
-    fi
+    install_identyclaw_skill "$config_dir" "$container" 0 \
+      || echo "    (${id}: IdentyClaw skill install failed)" >&2
   fi
 }
 
@@ -6431,20 +6497,12 @@ install_plugin_tree_in_container() {
 
 upgrade_agent_skill() {
   local id="$1"
-  local config_dir container skill_spec skill_ver
-  local -a install_args
+  local config_dir container
   load_env
   config_dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
-  skill_spec="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
-  skill_ver="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-}"
-
-  echo "    (IdentyClaw skill: ${skill_spec}${skill_ver:+ @}${skill_ver})"
-  install_args=(--force)
-  [[ -n "$skill_ver" ]] && install_args+=(--version "$skill_ver")
-  openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" "$skill_spec" >&2 \
-    || openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" identyclaw >&2 \
-    || echo "    (${id}: ClawHub skill install failed)" >&2
+  install_identyclaw_skill "$config_dir" "$container" 1 \
+    || echo "    (${id}: IdentyClaw skill install failed)" >&2
 }
 
 upgrade_agent_plugins() {
