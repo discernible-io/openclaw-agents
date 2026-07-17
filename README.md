@@ -638,7 +638,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | Deploy mode | `pod` (`IDENTYCLAW_INGRESS_PORT=9443` in `env.local`) |
 | Gateway bind | `lan` (reachable from nginx sidecar inside the pod) |
 | Gateway auth | token |
-| Model | **Primary:** `openrouter/deepseek/deepseek-v4-flash:free` → **fallback 1:** `openrouter/qwen/qwen3-coder:free` → **fallback 2:** `openrouter/deepseek/deepseek-v4-flash` (override via `OPENCLAW_MODEL_*` in `env.local`) |
+| Model | **Primary:** `openrouter/deepseek/deepseek-v4-flash` → **fallback 1:** `openrouter/qwen/qwen3-coder` → **fallback 2:** `openrouter/google/gemini-2.5-flash` (override via `OPENCLAW_MODEL_*` in `env.local`) |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
 | Memory | `qmd` |
@@ -659,15 +659,15 @@ Key `openclaw.json` excerpts (secrets redacted):
   "agents": {
     "defaults": {
       "models": {
-        "openrouter/deepseek/deepseek-v4-flash:free": {},
-        "openrouter/qwen/qwen3-coder:free": {},
-        "openrouter/deepseek/deepseek-v4-flash": {}
+        "openrouter/deepseek/deepseek-v4-flash": {},
+        "openrouter/qwen/qwen3-coder": {},
+        "openrouter/google/gemini-2.5-flash": {}
       },
       "model": {
-        "primary": "openrouter/deepseek/deepseek-v4-flash:free",
+        "primary": "openrouter/deepseek/deepseek-v4-flash",
         "fallbacks": [
-          "openrouter/qwen/qwen3-coder:free",
-          "openrouter/deepseek/deepseek-v4-flash"
+          "openrouter/qwen/qwen3-coder",
+          "openrouter/google/gemini-2.5-flash"
         ]
       }
     }
