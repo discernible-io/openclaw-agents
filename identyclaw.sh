@@ -50,7 +50,7 @@
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
-#   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins from ClawHub (pinned in env.local)
+#   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins (pinned in env.local)
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents
 #   token <id>           Print gateway token for Control UI
@@ -2247,6 +2247,8 @@ cmd_upgrade_plugins() {
   load_env
   local target="${1:-all}"
   local id
+  # Drop host git build cache so upgrade pulls latest GitHub tip once, then reuses across agents.
+  rm -f "$(identyclaw_app_dir)/repo/openclaw-identyclaw-plugin/.identyclaw-git-build" 2>/dev/null || true
   if [[ "$target" == "all" ]]; then
     for id in $AGENT_IDS; do
       upgrade_agent_plugins "$id"
