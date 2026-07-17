@@ -3738,16 +3738,19 @@ start_pod_agent() {
     ensure_agent_mail_tooling_refresh "$id" "$dir"
     ensure_agent_security_hardening "$id" "$dir" "$container" || true
     ensure_main_ingress_config "$id" "$dir" "$container" || true
-    # Pre-recreate sync may fail when host cannot write openclaw.json; post-recreate syncs below.
-    ensure_openclaw_model_defaults "$dir" "$container" || true
-    ensure_memory_config "$dir" "$container" || true
-    sync_quiet_plugin_env "$dir" "$container" || true
-    sync_agent_plugin_configs "$id" "$dir" || true
+    # Skip openclaw.json mutations here — host often cannot write container-owned
+    # state, and recreate drops the container mid-sync. Post-recreate sync below.
     ensure_llm_sqlite_auth "$id" || true
     recreate_pod_agent_container "$id"
     container="$(agent_container "$id")"
     wait_for_running_agent_container "$container" || return 1
     ensure_agent_mail_tooling_refresh "$id" "$dir"
+    # Post-recreate: container owns state — sync plugins/A2A/models now.
+    ensure_openclaw_model_defaults "$dir" "$container" || true
+    ensure_memory_config "$dir" "$container" || true
+    sync_quiet_plugin_env "$dir" "$container" || true
+    sync_agent_plugin_configs "$id" "$dir" || true
+    ensure_llm_sqlite_auth "$id" || true
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     echo "Recreated ${container}"
@@ -5703,29 +5706,23 @@ ensure_a2a_config() {
     dynamic_peers_from_jwt="1"
   fi
 
-  local peers_file peers_arg
-  peers_file="$(mktemp)"
-  printf '%s' "$peers_json" > "$peers_file"
-  peers_arg="$peers_file"
-  # Match _agent_openclaw_json_python: host openclaw.json vs in-container update.
-  if ! [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]] \
-    && agent_config_use_container "$config_dir" "$container"; then
-    peers_arg="/tmp/a2a-peers-$$.json"
-    podman cp "$peers_file" "${container}:${peers_arg}" >/dev/null
-  fi
+  # Pass peers as base64 in argv — avoids host/container temp-file path races during
+  # pod restart (openclaw.json ownership can flip between mktemp staging and python).
+  local peers_b64
+  peers_b64="$(printf '%s' "$peers_json" | base64 -w0 2>/dev/null || printf '%s' "$peers_json" | base64)"
 
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "$audience" "$display_name" "$public_base_url" "$peers_arg" \
+    "$audience" "$display_name" "$public_base_url" "$peers_b64" \
     "$api_base" "$dynamic_peers_from_jwt" "$own_token_id" \
     "$card_name" "$card_description" <<'PY'
-import json, sys
+import base64, json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 audience = sys.argv[2]
 display_name = sys.argv[3]
 public_base_url = sys.argv[4]
-peers = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
+peers = json.loads(base64.standard_b64decode(sys.argv[5]))
 issuer = sys.argv[6]
 dynamic_peers_from_jwt = sys.argv[7] == "1"
 own_token_id = sys.argv[8] if len(sys.argv) > 8 else ""
@@ -5934,10 +5931,6 @@ if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
 PY
-  rm -f "$peers_file"
-  if agent_config_use_container "$config_dir" "$container"; then
-    podman exec "$container" rm -f "$peers_arg" 2>/dev/null || true
-  fi
 
   if [[ -n "$peers_json" && "$peers_json" != "{}" ]]; then
     sync_a2a_tls_env "$config_dir" "$container"
