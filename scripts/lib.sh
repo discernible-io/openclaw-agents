@@ -218,7 +218,7 @@ load_env() {
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
   NEAR_RPC_URL="${IDENTYCLAW_NEAR_RPC_URL:-${NEAR_RPC_URL:-}}"
   # https://clawhub.ai/identyclaw/identyclaw
-  IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.3}"
+  IDENTYCLAW_CLAWHUB_PLUGIN="${IDENTYCLAW_CLAWHUB_PLUGIN:-git:github.com/discernible-io/openclaw-identyclaw-plugin@main}"
   IDENTYCLAW_CLAWHUB_SKILL="${IDENTYCLAW_CLAWHUB_SKILL:-identyclaw}"
   IDENTYCLAW_CLAWHUB_SKILL_VERSION="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-1.5.0}"
   IDENTYCLAW_CLAWHUB_TWITTER_SKILL="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
@@ -453,9 +453,12 @@ agent_a2a_ext_dir_container() {
 }
 
 clawhub_plugin_pinned_version() {
-  local spec="$1"
+  local spec="$1" ver
   [[ "$spec" == *@* ]] || return 0
-  echo "${spec##*@}"
+  ver="${spec##*@}"
+  # Semver pins only (clawhub/npm). git:@main / SHAs are not package versions.
+  [[ "$ver" =~ ^[0-9] ]] || return 0
+  echo "$ver"
 }
 
 a2a_plugin_installed_version() {
@@ -5892,10 +5895,33 @@ copy_openclaw_plugin_tree() {
   ln -sf /app "$ext_dir/node_modules/openclaw"
 }
 
+# Parse openclaw git:github.com/owner/repo[@ref] → https URL + optional ref.
+parse_openclaw_git_plugin_spec() {
+  local spec="$1"
+  local body ref=""
+  [[ "$spec" == git:* ]] || return 1
+  body="${spec#git:}"
+  case "$body" in
+    https://*|http://*) body="${body#*://}" ;;
+    ssh://git@*) body="${body#ssh://git@}" ;;
+    ssh://*) body="${body#ssh://}" ;;
+    git@*) body="${body#git@}"; body="${body/:/\/}" ;;
+  esac
+  if [[ "$body" == *@* ]]; then
+    ref="${body##*@}"
+    body="${body%@*}"
+  fi
+  body="${body%.git}"
+  body="${body#github.com/}"
+  [[ "$body" =~ ^[^/]+/[^/]+$ ]] || return 1
+  printf '%s\n' "https://github.com/${body}.git" "$ref"
+}
+
 build_git_plugin() {
   local repo="$1"
   local build_dir="$2"
   local build_cmd="${3:-build}"
+  local ref="${4:-}"
 
   command -v git >/dev/null 2>&1 || {
     echo "    (plugin: git required to clone ${repo})" >&2
@@ -5907,12 +5933,51 @@ build_git_plugin() {
   }
 
   rm -rf "$build_dir"
-  git clone --depth 1 "$repo" "$build_dir" >&2 || return 1
+  mkdir -p "$(dirname "$build_dir")"
+  if [[ -n "$ref" ]]; then
+    if ! git clone --depth 1 --branch "$ref" "$repo" "$build_dir" >&2; then
+      git clone "$repo" "$build_dir" >&2 || return 1
+      git -C "$build_dir" checkout "$ref" >&2 || return 1
+    fi
+  else
+    git clone --depth 1 "$repo" "$build_dir" >&2 || return 1
+  fi
   (
     cd "$build_dir"
     npm install >&2
     npm run "$build_cmd" >&2
-  ) || true
+  ) || return 1
+  [[ -f "$build_dir/dist/index.js" ]] || {
+    echo "    (plugin: build produced no dist/index.js in ${build_dir})" >&2
+    return 1
+  }
+}
+
+# Host-side clone+build cache for git: IdentyClaw tools plugin (OpenClaw git: install skips tsc).
+ensure_identyclaw_git_plugin_build() {
+  local plugin_spec="$1"
+  local force="${2:-0}"
+  local parsed repo ref build_dir marker head
+  load_env
+  mapfile -t parsed < <(parse_openclaw_git_plugin_spec "$plugin_spec") || return 1
+  repo="${parsed[0]}"
+  ref="${parsed[1]:-}"
+  build_dir="$(identyclaw_app_dir)/repo/openclaw-identyclaw-plugin"
+  marker="${build_dir}/.identyclaw-git-build"
+
+  if [[ "$force" != "1" && -f "$build_dir/dist/index.js" && -f "$marker" ]]; then
+    if [[ "$(cat "$marker" 2>/dev/null || true)" == "${repo}@${ref:-HEAD}" ]]; then
+      printf '%s' "$build_dir"
+      return 0
+    fi
+  fi
+
+  echo "    (building IdentyClaw plugin from ${repo}${ref:+ @}${ref}…)" >&2
+  build_git_plugin "$repo" "$build_dir" build "$ref" || return 1
+  printf '%s\n' "${repo}@${ref:-HEAD}" >"$marker"
+  head="$(git -C "$build_dir" rev-parse --short HEAD 2>/dev/null || true)"
+  [[ -n "$head" ]] && echo "    (built ${build_dir} @ ${head})" >&2
+  printf '%s' "$build_dir"
 }
 
 # Remove legacy dynamicPeersFromJwt so ClawHub install can validate config (0.4.0+ schema).
@@ -6244,7 +6309,7 @@ install_identyclaw_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
   local id="${3:-}"
-  local container ext_dir plugin_spec desired_ver installed_ver
+  local container ext_dir plugin_spec desired_ver installed_ver build_dir stage_dir
   ext_dir="$(agent_identyclaw_tools_ext_dir "$config_dir")"
   load_env
   plugin_spec="${IDENTYCLAW_CLAWHUB_PLUGIN}"
@@ -6253,9 +6318,11 @@ install_identyclaw_plugin() {
   desired_ver="$(clawhub_plugin_pinned_version "$plugin_spec")"
   installed_ver="$(identyclaw_plugin_installed_version "$config_dir" "$container")"
 
-  if [[ "$force" != "1" && -n "$desired_ver" && "$installed_ver" == "$desired_ver" ]] \
-    && identyclaw_tools_ext_ready "$config_dir" "$container"; then
-    return 0
+  # Semver pin: skip when version matches. git:/unpinned: skip when tree is ready unless forced.
+  if [[ "$force" != "1" ]] && identyclaw_tools_ext_ready "$config_dir" "$container"; then
+    if [[ -z "$desired_ver" || "$installed_ver" == "$desired_ver" ]]; then
+      return 0
+    fi
   fi
 
   if [[ "$force" == "1" || ( -n "$desired_ver" && -n "$installed_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
@@ -6271,11 +6338,31 @@ install_identyclaw_plugin() {
   echo "    (installing IdentyClaw plugin from ${plugin_spec}…)" >&2
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
   local install_args=()
-  if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
+  if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) || "$plugin_spec" == git:* ]]; then
     install_args+=(--force)
   fi
-  if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
-    return 1
+
+  # OpenClaw git: install clones source but does not run tsc — build then install from path.
+  if [[ "$plugin_spec" == git:* ]]; then
+    # Host build cached under app/repo; upgrade-plugins clears the marker to refresh once.
+    build_dir="$(ensure_identyclaw_git_plugin_build "$plugin_spec" 0)" || return 1
+    stage_dir="/tmp/.identyclaw-tools-plugin-src"
+    if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      podman exec "$container" rm -rf "$stage_dir" 2>/dev/null || true
+      podman cp "$build_dir" "$container:$stage_dir" >/dev/null || return 1
+      if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$stage_dir" >&2; then
+        return 1
+      fi
+      podman exec "$container" rm -rf "$stage_dir" 2>/dev/null || true
+    else
+      if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$build_dir" >&2; then
+        return 1
+      fi
+    fi
+  else
+    if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
+      return 1
+    fi
   fi
   identyclaw_tools_ext_ready "$config_dir" "$container" || {
     echo "    (identyclaw-tools: install finished but extension tree is missing)" >&2
@@ -6376,7 +6463,8 @@ upgrade_agent_plugins() {
   }
 
   echo "    (IdentyClaw: ${IDENTYCLAW_CLAWHUB_PLUGIN})"
-  install_identyclaw_plugin "$config_dir" 0 "$id" || {
+  # Force refresh for git: pins (no semver skip) and when switching off ClawHub.
+  install_identyclaw_plugin "$config_dir" 1 "$id" || {
     echo "IdentyClaw plugin install failed for ${id}" >&2
     return 1
   }

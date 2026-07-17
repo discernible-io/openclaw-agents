@@ -468,7 +468,7 @@ Pin and install plugins (defaults in `env.example`):
 
 ```bash
 IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.8
-IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.5.3
+IDENTYCLAW_CLAWHUB_PLUGIN=git:github.com/discernible-io/openclaw-identyclaw-plugin@main
 IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.8
 ```
 
