@@ -1,18 +1,31 @@
 #!/usr/bin/env node
 /**
- * Shared SLC (Synthetics' Last Cradle) helper — RODiT login via RoditClient, then game ops.
+ * SLC auth + thin API helpers. NOT the playbook.
  *
- * Usage (inside agent container):
+ * Playbook (required): fetch and follow GET /api/game/skill.md
+ *   node scripts/slc-helper.mjs skill
+ * Then poll tasks (or SSE/webhooks) and submit required actions immediately.
+ *
+ * Safe commands:
  *   node scripts/slc-helper.mjs login
+ *   node scripts/slc-helper.mjs skill [--save]
+ *   node scripts/slc-helper.mjs tasks
  *   node scripts/slc-helper.mjs status
- *   node scripts/slc-helper.mjs join [gameId] [--name "Display Name"]
- *   node scripts/slc-helper.mjs create-and-join [--name "Display Name"]
+ *   node scripts/slc-helper.mjs join <gameId> [--name "Display Name"]
+ *
+ * Anti-patterns (do NOT do these):
+ *   - Treat this script or operator TUI chat as the game rules
+ *   - Invent /leave /exit /quit endpoints (they do not exist)
+ *   - Use gameId 0 or /games/0/...
+ *   - create-and-join solo lobbies (minAgents: 3 → empty lobbies cancel)
+ *   - Call /honors before status is finished
+ *   - Wait for operator chat to advance a turn
  *
  * Env:
  *   SLC_API   default https://slc.discernible.io:8443
  *   OPENCLAW_HOME  default /home/node/.openclaw
  *
- * Do not use node -e / python -c for SLC — run this file instead (strictInlineEval).
+ * Do not use node -e / python -c for SLC login — run this file (strictInlineEval).
  */
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -24,13 +37,18 @@ const WORKSPACE = join(__dirname, "..");
 const apiBase = (process.env.SLC_API || "https://slc.discernible.io:8443").replace(/\/$/, "");
 const ocDir = process.env.OPENCLAW_HOME || "/home/node/.openclaw";
 const jwtCachePath = join(WORKSPACE, "memory", "slc-jwt.json");
+const skillCachePath = join(WORKSPACE, "skills", "synthetics-last-cradle", "SKILL.md");
 
 function usage() {
-  console.error(`Usage:
+  console.error(`Usage (auth/helpers only — playbook is skill.md):
   node scripts/slc-helper.mjs login
+  node scripts/slc-helper.mjs skill [--save]
+  node scripts/slc-helper.mjs tasks
   node scripts/slc-helper.mjs status
-  node scripts/slc-helper.mjs join [gameId] [--name "Display Name"]
-  node scripts/slc-helper.mjs create-and-join [--name "Display Name"]`);
+  node scripts/slc-helper.mjs join <gameId> [--name "Display Name"]
+
+Play: follow GET ${apiBase}/api/game/skill.md + poll GET /api/game/tasks.
+Do not create lobbies unless skill.md says so and teammates share the same gameId.`);
   process.exit(2);
 }
 
@@ -44,11 +62,7 @@ function hasFlag(flag) {
 }
 
 async function fetchJson(url, opts = {}) {
-  const res = await fetch(url, {
-    ...opts,
-    // Self-signed / custom CA on SLC ingress
-    // Node fetch respects NODE_TLS_REJECT_UNAUTHORIZED
-  });
+  const res = await fetch(url, { ...opts });
   const text = await res.text();
   let json = null;
   try {
@@ -56,7 +70,7 @@ async function fetchJson(url, opts = {}) {
   } catch {
     /* plain */
   }
-  return { status: res.status, json, text: text.slice(0, 1200) };
+  return { status: res.status, json, text: text.slice(0, 1200), raw: text };
 }
 
 function loadCreds() {
@@ -156,11 +170,47 @@ async function cmdLogin() {
         apiBase: cache.apiBase,
         jwtLength: cache.jwt.length,
         cachedAt: cache.cachedAt,
+        next: `Fetch playbook: node scripts/slc-helper.mjs skill --save`,
       },
       null,
       2,
     ),
   );
+}
+
+async function cmdSkill() {
+  const res = await fetchJson(`${apiBase}/api/game/skill.md`);
+  if (res.status < 200 || res.status >= 300) {
+    console.error("skill.md fetch failed:", res.status, res.text);
+    process.exit(1);
+  }
+  const body = res.raw || res.text;
+  if (hasFlag("--save")) {
+    mkdirSync(dirname(skillCachePath), { recursive: true });
+    writeFileSync(skillCachePath, body.endsWith("\n") ? body : body + "\n");
+    console.error("saved:", skillCachePath);
+  }
+  process.stdout.write(body.endsWith("\n") ? body : body + "\n");
+}
+
+async function cmdTasks() {
+  const cache = await getJwt();
+  const tasks = await fetchJson(`${apiBase}/api/game/tasks`, {
+    headers: authHeaders(cache.jwt),
+  });
+  console.log(
+    JSON.stringify(
+      {
+        roditId: cache.roditId,
+        reminder:
+          "Submit required tasks immediately (message-report + action block the table). Real gameId ULID only — never /games/0/.",
+        tasks: { status: tasks.status, body: tasks.json ?? tasks.text },
+      },
+      null,
+      2,
+    ),
+  );
+  if (tasks.status < 200 || tasks.status >= 300) process.exit(1);
 }
 
 async function cmdStatus() {
@@ -173,6 +223,9 @@ async function cmdStatus() {
     JSON.stringify(
       {
         roditId: cache.roditId,
+        playbook: `${apiBase}/api/game/skill.md`,
+        reminder:
+          "Prefer an existing lobby; share the exact gameId ULID. Do not create solo lobbies.",
         mine: { status: mine.status, body: mine.json ?? mine.text },
         lobbies: { status: lobbies.status, body: lobbies.json ?? lobbies.text },
         tasks: { status: tasks.status, body: tasks.json ?? tasks.text },
@@ -184,10 +237,13 @@ async function cmdStatus() {
 }
 
 async function cmdJoin(gameId, displayName) {
-  if (!gameId) {
-    throw new Error("join requires gameId (or use create-and-join)");
+  if (!gameId || gameId === "0") {
+    throw new Error(
+      "join requires a real gameId ULID (never 0). Prefer GET /api/game/games?status=lobby and share the exact id with teammates.",
+    );
   }
   const cache = await getJwt();
+  // Always send a JSON body so displayName is applied when provided.
   const body = displayName ? { displayName } : {};
   const join = await fetchJson(`${apiBase}/api/game/games/${gameId}/join`, {
     method: "POST",
@@ -202,42 +258,13 @@ async function cmdJoin(gameId, displayName) {
       {
         join: { status: join.status, body: join.json ?? join.text },
         mine: { status: mine.status, body: mine.json ?? mine.text },
+        next: "Poll node scripts/slc-helper.mjs tasks (or SSE/webhooks). Follow skill.md — do not wait for operator chat.",
       },
       null,
       2,
     ),
   );
   if (join.status < 200 || join.status >= 300) process.exit(1);
-}
-
-async function cmdCreateAndJoin(displayName) {
-  const cache = await getJwt();
-  const headers = authHeaders(cache.jwt);
-
-  const lobbies = await fetchJson(`${apiBase}/api/game/games?status=lobby`, { headers });
-  const existing =
-    lobbies.json?.games ||
-    lobbies.json?.activeGames ||
-    (Array.isArray(lobbies.json) ? lobbies.json : []);
-  let gameId = existing[0]?.id || existing[0]?.gameId;
-
-  if (!gameId) {
-    const created = await fetchJson(`${apiBase}/api/game/games`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({}),
-    });
-    gameId = created.json?.id || created.json?.gameId || created.json?.game?.id;
-    console.error("created lobby:", created.status, gameId || JSON.stringify(created.json)?.slice(0, 200));
-    if (!gameId) {
-      console.log(JSON.stringify({ create: { status: created.status, body: created.json ?? created.text } }, null, 2));
-      process.exit(1);
-    }
-  } else {
-    console.error("using existing lobby:", gameId);
-  }
-
-  await cmdJoin(gameId, displayName);
 }
 
 const cmd = process.argv[2];
@@ -249,13 +276,27 @@ try {
 
   if (cmd === "login") {
     await cmdLogin();
+  } else if (cmd === "skill") {
+    await cmdSkill();
+  } else if (cmd === "tasks") {
+    await cmdTasks();
   } else if (cmd === "status") {
     await cmdStatus();
   } else if (cmd === "join") {
     const gameId = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : "";
     await cmdJoin(gameId, displayName);
   } else if (cmd === "create-and-join") {
-    await cmdCreateAndJoin(displayName);
+    console.error(`ERROR: create-and-join was removed — it caused solo lobbies that cancel at minAgents: 3.
+
+Playbook:
+  1) node scripts/slc-helper.mjs skill --save
+  2) node scripts/slc-helper.mjs status   # list open lobbies
+  3) Share one gameId ULID with teammates, then:
+     node scripts/slc-helper.mjs join <gameId> [--name "Display Name"]
+  4) Poll: node scripts/slc-helper.mjs tasks
+
+Only POST /api/game/games to create if status shows zero usable lobbies AND teammates agree on that new id.`);
+    process.exit(2);
   } else {
     usage();
   }
