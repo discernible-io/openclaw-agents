@@ -4590,6 +4590,7 @@ tools_block = f"""
 - **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
 - **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
 - In-scope inbound mail must get a **direct reply to the sender** — see **Inbound email (concierge)**.
+- **Exec / interpreters:** `strictInlineEval` is on — do not use large `node -e` / `python -c`. Write `/tmp/foo.js` (or `.py`), then `node /tmp/foo.js` / `python3 /tmp/foo.py`.
 """
 agents_block = f"""
 ## Email
@@ -4600,6 +4601,7 @@ agents_block = f"""
 - `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
 - The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
 - **Concierge duty:** reply to in-scope inbound mail — see **Inbound email (concierge)** below.
+- For Node/Python: write a script file, then `node path.js` / `python3 path.py` — inline `node -e` is blocked by strictInlineEval.
 """
 
 def upsert_block(text, heading_re, block):
