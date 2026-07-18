@@ -200,6 +200,9 @@ load_env() {
   OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-600}"
   OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-120}"
   OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-60000}"
+  # Stuck-session recovery (defaults ~2m warn / ~6m abort) kills long exec mid-turn; keep abort >= agent timeout.
+  OPENCLAW_STUCK_SESSION_WARN_MS="${OPENCLAW_STUCK_SESSION_WARN_MS:-300000}"
+  OPENCLAW_STUCK_SESSION_ABORT_MS="${OPENCLAW_STUCK_SESSION_ABORT_MS:-900000}"
   # Memory: QMD backend + optional session transcript recall (synced to openclaw.json on bootstrap).
   IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
@@ -8430,7 +8433,8 @@ ensure_openclaw_model_defaults() {
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" \
     "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" \
-    "$providers_csv" <<'PY'
+    "$providers_csv" \
+    "$OPENCLAW_STUCK_SESSION_WARN_MS" "$OPENCLAW_STUCK_SESSION_ABORT_MS" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -8439,6 +8443,8 @@ primary, fb1, fb2 = sys.argv[2:5]
 agent_timeout = int(sys.argv[5])
 provider_timeout = int(sys.argv[6])
 providers_csv = sys.argv[7] if len(sys.argv) > 7 else "openrouter"
+stuck_warn_ms = int(sys.argv[8]) if len(sys.argv) > 8 else 300000
+stuck_abort_ms = int(sys.argv[9]) if len(sys.argv) > 9 else 900000
 provider_ids = [p.strip() for p in providers_csv.split(",") if p.strip()]
 fallbacks = [fb1, fb2]
 allowlist = {primary: {}, fb1: {}, fb2: {}}
@@ -8465,6 +8471,11 @@ for pid in known_llm_plugins:
         plugins.setdefault(pid, {})["enabled"] = True
     elif pid in plugins:
         plugins[pid]["enabled"] = False
+
+# Raise above OpenClaw defaults (~2m warn / ~6m abort) so long exec turns are not force-aborted.
+diagnostics = data.setdefault("diagnostics", {})
+diagnostics["stuckSessionWarnMs"] = stuck_warn_ms
+diagnostics["stuckSessionAbortMs"] = max(stuck_abort_ms, stuck_warn_ms)
 
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
@@ -8675,7 +8686,7 @@ write_openclaw_json() {
   "agents": {
     "defaults": {
       "workspace": "/home/node/.openclaw/workspace",
-      "timeoutSeconds": ${OPENCLAW_AGENT_TIMEOUT_SECONDS:-30},
+      "timeoutSeconds": ${OPENCLAW_AGENT_TIMEOUT_SECONDS:-600},
       "models": {
         "${OPENCLAW_MODEL_PRIMARY}": {},
         "${OPENCLAW_MODEL_FALLBACK_1}": {},
@@ -8694,10 +8705,14 @@ write_openclaw_json() {
       }
     }
   },
+  "diagnostics": {
+    "stuckSessionWarnMs": ${OPENCLAW_STUCK_SESSION_WARN_MS:-300000},
+    "stuckSessionAbortMs": ${OPENCLAW_STUCK_SESSION_ABORT_MS:-900000}
+  },
   "models": {
     "providers": {
       "openrouter": {
-        "timeoutSeconds": ${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-30}
+        "timeoutSeconds": ${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-120}
       }
     }
   },
