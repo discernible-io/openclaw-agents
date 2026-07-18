@@ -197,7 +197,7 @@ load_env() {
   OPENCLAW_CONTAINER_GATEWAY_PORT="${OPENCLAW_CONTAINER_GATEWAY_PORT:-18789}"
   resolve_openclaw_model_defaults
   # OpenClaw model failover: provider idle/request watchdog + agent turn cap (seconds).
-  OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-180}"
+  OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-600}"
   OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-120}"
   OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-60000}"
   # Memory: QMD backend + optional session transcript recall (synced to openclaw.json on bootstrap).
