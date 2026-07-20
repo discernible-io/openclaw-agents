@@ -2155,8 +2155,9 @@ a2a_peer_public_base_from_env_slot() {
   return 1
 }
 
-# Public HTTPS base for a peer token_id (env map → local deploy → registry → API /full → env slot).
-a2a_peer_public_base_url() {
+# Fast peer URL sources only (no IdentyClaw API /full). Used at deploy/bootstrap.
+# Full discovery belongs in tests / discover-a2a-peers / runtime resolvePeersByTokenId.
+a2a_peer_public_base_url_static() {
   local token_id="$1"
   local resolver_config_dir="${2:-}"
   local deploy_id public_base
@@ -2166,17 +2167,36 @@ a2a_peer_public_base_url() {
   [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
   deploy_id="$(find_deploy_id_for_token_id "$token_id" 2>/dev/null || true)"
   if [[ -n "$deploy_id" ]]; then
-    public_base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
-    [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+    # Prefer env/ingress for co-located agents — avoid Passport RPC during peer-map build.
+    public_base="$(agent_env_value "$deploy_id" A2A_PUBLIC_BASE_URL "")"
+    if [[ -z "$public_base" && "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]]; then
+      public_base="$(agent_public_base_url "$deploy_id" 2>/dev/null || true)"
+    fi
+    [[ -n "$public_base" ]] && { echo "${public_base%/}"; return 0; }
   fi
   if [[ -n "$resolver_config_dir" ]]; then
     public_base="$(a2a_peer_public_base_from_registry "$token_id" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
-    public_base="$(probe_identyclaw_peer_public_base_url "$resolver_config_dir" "$token_id" 2>/dev/null || true)"
-    [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
   fi
   public_base="$(a2a_peer_public_base_from_env_slot "$token_id" 2>/dev/null || true)"
   [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  return 1
+}
+
+# Public HTTPS base for a peer token_id (static → API /full). Prefer static at deploy;
+# use this (or with_retry) from constitution / discover-a2a-peers.
+a2a_peer_public_base_url() {
+  local token_id="$1"
+  local resolver_config_dir="${2:-}"
+  local public_base
+  [[ -n "$token_id" ]] || return 1
+  is_passport_token_id "$token_id" || return 1
+  public_base="$(a2a_peer_public_base_url_static "$token_id" "$resolver_config_dir" 2>/dev/null || true)"
+  [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  if [[ -n "$resolver_config_dir" ]]; then
+    public_base="$(probe_identyclaw_peer_public_base_url "$resolver_config_dir" "$token_id" 2>/dev/null || true)"
+    [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  fi
   return 1
 }
 
@@ -5796,7 +5816,9 @@ build_a2a_peer_map() {
     [[ -n "$self_token_id" && "$peer_token_id" == "$self_token_id" ]] && continue
     a2a_peer_token_id_on_this_host "$peer_token_id" && continue
 
-    public_base="$(a2a_peer_public_base_url "$peer_token_id" "$self_config_dir")"
+    # Deploy/bootstrap: static URLs only. API /full + agent-card probes belong in
+    # discover-a2a-peers / constitution tests (see a2a_peer_public_base_url_with_retry).
+    public_base="$(a2a_peer_public_base_url_static "$peer_token_id" "$self_config_dir")"
     if [[ -z "$public_base" ]]; then
       if a2a_resolve_peers_by_token_id_enabled; then
         echo "    (${self_id}: peer ${peer_token_id} — no static URL; resolvePeersByTokenId at runtime)" >&2
@@ -5818,6 +5840,8 @@ build_a2a_peer_map() {
   configured_json+="}"
 
   api_json="{}"
+  # Opt-in only (IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1). Default off at deploy —
+  # use ./identyclaw.sh discover-a2a-peers or constitution suites instead.
   if a2a_discover_peers_from_api_enabled; then
     echo "    (${self_id}: proactive API peer discovery — GET /api/agents + live agent-card probe)" >&2
     api_json="$(discover_live_api_peers_json_for_agent "$self_id")"
