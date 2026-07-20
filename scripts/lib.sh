@@ -204,6 +204,9 @@ load_env() {
   # Stuck-session recovery (defaults ~2m warn / ~6m abort) kills long exec mid-turn; keep abort >= agent timeout.
   OPENCLAW_STUCK_SESSION_WARN_MS="${OPENCLAW_STUCK_SESSION_WARN_MS:-300000}"
   OPENCLAW_STUCK_SESSION_ABORT_MS="${OPENCLAW_STUCK_SESSION_ABORT_MS:-900000}"
+  # Thinking/reasoning effort default (off|minimal|low|medium|high|xhigh|adaptive|max).
+  # DeepSeek V4 via OpenRouter otherwise falls back to high and burns latency on tool loops.
+  OPENCLAW_THINKING_DEFAULT="${OPENCLAW_THINKING_DEFAULT:-off}"
   # Memory: QMD backend + optional session transcript recall (synced to openclaw.json on bootstrap).
   IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
@@ -8589,7 +8592,8 @@ ensure_openclaw_model_defaults() {
     "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" \
     "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" \
     "$providers_csv" \
-    "$OPENCLAW_STUCK_SESSION_WARN_MS" "$OPENCLAW_STUCK_SESSION_ABORT_MS" <<'PY'
+    "$OPENCLAW_STUCK_SESSION_WARN_MS" "$OPENCLAW_STUCK_SESSION_ABORT_MS" \
+    "$OPENCLAW_THINKING_DEFAULT" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -8600,6 +8604,12 @@ provider_timeout = int(sys.argv[6])
 providers_csv = sys.argv[7] if len(sys.argv) > 7 else "openrouter"
 stuck_warn_ms = int(sys.argv[8]) if len(sys.argv) > 8 else 300000
 stuck_abort_ms = int(sys.argv[9]) if len(sys.argv) > 9 else 900000
+thinking_default = (sys.argv[10] if len(sys.argv) > 10 else "off").strip().lower() or "off"
+allowed_thinking = {
+    "off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max",
+}
+if thinking_default not in allowed_thinking:
+    thinking_default = "off"
 provider_ids = [p.strip() for p in providers_csv.split(",") if p.strip()]
 fallbacks = [fb1, fb2]
 allowlist = {primary: {}, fb1: {}, fb2: {}}
@@ -8616,6 +8626,7 @@ defaults.setdefault("workspace", "/home/node/.openclaw/workspace")
 defaults["models"] = allowlist
 defaults["model"] = {"primary": primary, "fallbacks": fallbacks}
 defaults["timeoutSeconds"] = agent_timeout
+defaults["thinkingDefault"] = thinking_default
 
 providers = data.setdefault("models", {}).setdefault("providers", {})
 plugins = data.setdefault("plugins", {}).setdefault("entries", {})
@@ -8644,6 +8655,11 @@ changed = False
 for entry in sessions.values():
     if not isinstance(entry, dict):
         continue
+    # Drop sticky /think session overrides so thinkingDefault applies on restart.
+    for key in ("thinkingLevel", "thinking", "thinkingDefault"):
+        if key in entry:
+            entry.pop(key, None)
+            changed = True
     model = entry.get("model")
     if not model:
         continue
@@ -8842,6 +8858,7 @@ write_openclaw_json() {
     "defaults": {
       "workspace": "/home/node/.openclaw/workspace",
       "timeoutSeconds": ${OPENCLAW_AGENT_TIMEOUT_SECONDS:-600},
+      "thinkingDefault": "${OPENCLAW_THINKING_DEFAULT:-off}",
       "models": {
         "${OPENCLAW_MODEL_PRIMARY}": {},
         "${OPENCLAW_MODEL_FALLBACK_1}": {},
