@@ -138,6 +138,9 @@ start_agent_in_pod() {
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
   prepare_agent_state_for_gateway_start "$id" pod
   sync_identyclaw_env "$dir" "$container"
+  # himalaya mounts ~/.config read-only; near-cli-rs must write config elsewhere
+  mkdir -p "$dir/xdg-config"
+  ensure_idcp_wallet_tooling "$id" "$dir" || true
 
   podman run -d \
     --pod "$POD_NAME" \
@@ -147,6 +150,7 @@ start_agent_in_pod() {
     --shm-size=2g \
     --restart unless-stopped \
     -e HOME=/home/node \
+    -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
     --env-file "$dir/.env" \
