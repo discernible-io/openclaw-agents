@@ -301,6 +301,7 @@ start_one() {
   fi
 
   # shellcheck disable=SC2086
+  mkdir -p "$dir/xdg-config"
   podman run -d --replace \
     --name "$container" \
     --init \
@@ -309,6 +310,7 @@ start_one() {
     "${network_args[@]}" \
     $rt \
     -e HOME=/home/node \
+    -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
     --env-file "$dir/.env" \

@@ -13,6 +13,9 @@ MAX_RETRIES=3
 RETRY_DELAY=2
 
 OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
+# himalaya mounts ~/.config read-only; near-cli must write config elsewhere.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$OPENCLAW_HOME/xdg-config}"
+mkdir -p "$XDG_CONFIG_HOME" 2>/dev/null || true
 SECRETS_DIR="${IDENTYCLAW_NEAR_CREDENTIALS_DIR:-$OPENCLAW_HOME/secrets/near-credentials}"
 BLOCKCHAIN_ENV="${BLOCKCHAIN_ENV:-mainnet}"
 RODITCONTRACTID="${NEAR_CONTRACT_ID:-${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}}"

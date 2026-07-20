@@ -13,31 +13,31 @@ Credentials live in `secrets/near-credentials/<account_id>.json`. The active Pas
 
 ```bash
 # List local accounts (marks active)
-sh scripts/idcp-wallet.sh
+bash scripts/idcp-wallet.sh
 
 # Create a new uninitialized implicit account (prefer new accounts; do not reuse retired ones)
-sh scripts/idcp-wallet.sh genaccount
+bash scripts/idcp-wallet.sh genaccount
 
 # Fund / initialize destination with 0.01 NEAR from funding account
-sh scripts/idcp-wallet.sh <funding_account> <new_account> init
+bash scripts/idcp-wallet.sh <funding_account> <new_account> init
 
 # Send NEAR
-sh scripts/idcp-wallet.sh <origin> <dest> near 0.05
-# or: sh scripts/idcp-wallet.sh <origin> <dest> 0.05
+bash scripts/idcp-wallet.sh <origin> <dest> near 0.05
+# or: bash scripts/idcp-wallet.sh <origin> <dest> 0.05
 
 # Transfer Passport / RODiT (token_id is the 12-letter Passport id)
-sh scripts/idcp-wallet.sh <origin> <dest> <passport_token_id>
+bash scripts/idcp-wallet.sh <origin> <dest> <passport_token_id>
 
 # Account summary (RODiTs + balance)
-sh scripts/idcp-wallet.sh <account_id>
+bash scripts/idcp-wallet.sh <account_id>
 
 # Full Passport rotation (create → fund → transfer → re-point active creds)
-sh scripts/idcp-rotate-passport.sh <passport_token_id>
+bash scripts/idcp-rotate-passport.sh <passport_token_id>
 # or with an already-created destination:
-sh scripts/idcp-rotate-passport.sh <passport_token_id> <destination_account_id>
+bash scripts/idcp-rotate-passport.sh <passport_token_id> <destination_account_id>
 
 # Activate an existing account without transferring (re-point only)
-sh scripts/idcp-activate-account.sh <account_id>
+bash scripts/idcp-activate-account.sh <account_id>
 ```
 
 ## After rotation / activate

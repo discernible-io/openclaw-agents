@@ -3752,8 +3752,14 @@ recreate_pod_agent_container() {
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
 
-  image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
-  [[ -n "$image" ]] || image="$(openclaw_agent_image)"
+  image="$(openclaw_agent_image)"
+  if [[ -z "$image" ]] || ! podman image exists "$image" 2>/dev/null; then
+    image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
+  fi
+  [[ -n "$image" ]] || {
+    echo "No OpenClaw image configured — set OPENCLAW_LOCAL_IMAGE or OPENCLAW_IMAGE" >&2
+    return 1
+  }
 
   # Drop container ownership, then map state back to the deploy user so --env-file is readable.
   prepare_agent_state_for_gateway_start "$id" pod
@@ -3764,7 +3770,10 @@ recreate_pod_agent_container() {
     return 1
   fi
   sync_identyclaw_env "$dir" ""
+  ensure_idcp_wallet_tooling "$id" "$dir" || true
+  mkdir -p "$dir/xdg-config"
 
+  echo "    (${id}: recreating with image ${image})" >&2
   podman run -d \
     --pod "$pod_name" \
     --name "$container" \
@@ -3773,6 +3782,7 @@ recreate_pod_agent_container() {
     --shm-size=2g \
     --restart unless-stopped \
     -e HOME=/home/node \
+    -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
     --env-file "$dir/.env" \
@@ -3807,6 +3817,7 @@ start_pod_agent() {
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
     ensure_agent_mail_tooling_refresh "$id" "$dir"
+    ensure_idcp_wallet_tooling "$id" "$dir" || true
     ensure_agent_security_hardening "$id" "$dir" "$container" || true
     ensure_main_ingress_config "$id" "$dir" "$container" || true
     # Skip openclaw.json mutations here — host often cannot write container-owned
@@ -5504,13 +5515,13 @@ Sensitive (operator approval + HOLA for chat senders). Prefer **new** implicit a
 
 | Need | Command |
 |------|---------|
-| List accounts | \`sh scripts/idcp-wallet.sh\` |
-| Create account | \`sh scripts/idcp-wallet.sh genaccount\` |
-| Fund (0.01 NEAR) | \`sh scripts/idcp-wallet.sh <funding> <new> init\` |
-| Send NEAR | \`sh scripts/idcp-wallet.sh <origin> <dest> near <amount>\` |
-| Transfer Passport | \`sh scripts/idcp-wallet.sh <origin> <dest> <passport_token_id>\` |
-| Full rotate + re-point | \`sh scripts/idcp-rotate-passport.sh <passport_token_id>\` |
-| Activate only | \`sh scripts/idcp-activate-account.sh <account_id>\` |
+| List accounts | \`bash scripts/idcp-wallet.sh\` |
+| Create account | \`bash scripts/idcp-wallet.sh genaccount\` |
+| Fund (0.01 NEAR) | \`bash scripts/idcp-wallet.sh <funding> <new> init\` |
+| Send NEAR | \`bash scripts/idcp-wallet.sh <origin> <dest> near <amount>\` |
+| Transfer Passport | \`bash scripts/idcp-wallet.sh <origin> <dest> <passport_token_id>\` |
+| Full rotate + re-point | \`bash scripts/idcp-rotate-passport.sh <passport_token_id>\` |
+| Activate only | \`bash scripts/idcp-activate-account.sh <account_id>\` |
 
 After rotate/activate, scripts print \`RESTART_REQUIRED\` — ask the operator to run \`./identyclaw.sh restart ${id}\` (or \`./identyclaw.sh near-activate ${id}\`). Never paste private keys into chat. See workspace skill \`idcp-wallet\`.
 
@@ -6407,6 +6418,8 @@ recreate_pod_agent_gateway() {
     echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
     return 1
   fi
+  mkdir -p "$dir/xdg-config"
+  ensure_idcp_wallet_tooling "$id" "$dir" || true
   podman run -d \
     --pod "$pod_name" \
     --name "$container" \
@@ -6415,6 +6428,7 @@ recreate_pod_agent_gateway() {
     --shm-size=2g \
     --restart unless-stopped \
     -e HOME=/home/node \
+    -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
     --env-file "$dir/.env" \

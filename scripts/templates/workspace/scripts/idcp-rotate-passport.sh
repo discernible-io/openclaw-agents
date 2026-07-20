@@ -18,6 +18,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WALLET="${SCRIPT_DIR}/idcp-wallet.sh"
 ACTIVATE="${SCRIPT_DIR}/idcp-activate-account.sh"
+# Prefer bash: /bin/sh is dash in the agent image and rejects [[ / regex.
+run_wallet() { bash "$WALLET" "$@"; }
+run_activate() { bash "$ACTIVATE" "$@"; }
 
 OPENCLAW_HOME="${OPENCLAW_HOME:-/home/node/.openclaw}"
 SECRETS_DIR="${IDENTYCLAW_NEAR_CREDENTIALS_DIR:-$OPENCLAW_HOME/secrets/near-credentials}"
@@ -56,7 +59,7 @@ fi
 
 if [ -z "$dest_account" ]; then
   echo "==> Creating new implicit account (not for reuse of retired wallets)..."
-  dest_account="$("$WALLET" genaccount | awk '/^[0-9a-f]{64}$/{print; exit}')"
+  dest_account="$(run_wallet genaccount | awk '/^[0-9a-f]{64}$/{print; exit}')"
   if [ -z "$dest_account" ]; then
     echo "ERROR: genaccount did not return an account id" >&2
     exit 1
@@ -75,13 +78,13 @@ if [ "$origin" = "$dest_account" ]; then
 fi
 
 echo "==> Funding $dest_account with 0.01 NEAR from $origin..."
-"$WALLET" "$origin" "$dest_account" init
+run_wallet "$origin" "$dest_account" init
 
 echo "==> Transferring Passport $passport_id from $origin to $dest_account..."
-"$WALLET" "$origin" "$dest_account" "$passport_id"
+run_wallet "$origin" "$dest_account" "$passport_id"
 
 echo "==> Re-pointing active credentials to $dest_account..."
-"$ACTIVATE" "$dest_account"
+run_activate "$dest_account"
 
 echo ""
 echo "Passport $passport_id now owned by $dest_account (previous owner $origin left inactive)."
