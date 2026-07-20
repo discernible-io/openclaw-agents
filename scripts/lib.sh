@@ -911,9 +911,10 @@ a2a_remote_peer_token_ids() {
 }
 
 # Public agent registry at GET /api/agents (same as identyclaw_list_agents tool).
+# Default off — deploy/bootstrap must stay fast; enable for discover-a2a-peers / tests.
 a2a_discover_peers_from_api_enabled() {
   load_env
-  [[ "${IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API:-1}" != "0" ]]
+  [[ "${IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API:-0}" == "1" ]]
 }
 
 # JSON line: {"tokenIds":[...],"apiBase":"...","pages":N} — excludes local AGENT_IDS token_ids.
@@ -1778,7 +1779,8 @@ probe_rodit_own_owner_id() {
   sync_quiet_plugin_env "$config_dir"
 
   cache="$config_dir/.rodit-own-owner-id"
-  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  # Use mtime:size (no spaces) — space-delimited keys break read(1) cache hits.
+  cred_stat="$(stat -c '%Y:%s' "$cred_file" 2>/dev/null || stat -f '%m:%z' "$cred_file" 2>/dev/null || true)"
   if [[ -n "$cred_stat" && -f "$cache" ]]; then
     read -r cached_key cached_id <"$cache" || true
     if [[ "$cached_key" == "$cred_stat" && -n "$cached_id" ]]; then
@@ -1829,7 +1831,8 @@ probe_rodit_own_token_id() {
   sync_quiet_plugin_env "$config_dir"
 
   cache="$config_dir/.rodit-own-token-id"
-  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  # Use mtime:size (no spaces) — space-delimited keys break read(1) cache hits.
+  cred_stat="$(stat -c '%Y:%s' "$cred_file" 2>/dev/null || stat -f '%m:%z' "$cred_file" 2>/dev/null || true)"
   if [[ -n "$cred_stat" && -f "$cache" ]]; then
     read -r cached_key cached_id <"$cache" || true
     if [[ "$cached_key" == "$cred_stat" && -n "$cached_id" ]]; then
@@ -2155,25 +2158,16 @@ a2a_peer_public_base_from_env_slot() {
   return 1
 }
 
-# Fast peer URL sources only (no IdentyClaw API /full). Used at deploy/bootstrap.
-# Full discovery belongs in tests / discover-a2a-peers / runtime resolvePeersByTokenId.
+# Fast peer URL sources only (no IdentyClaw API /full, no per-peer Passport RPC).
+# Used at deploy/bootstrap. Full discovery belongs in tests / discover-a2a-peers.
 a2a_peer_public_base_url_static() {
   local token_id="$1"
   local resolver_config_dir="${2:-}"
-  local deploy_id public_base
+  local public_base
   [[ -n "$token_id" ]] || return 1
   is_passport_token_id "$token_id" || return 1
   public_base="$(a2a_peer_public_base_url_from_env_map "$token_id" 2>/dev/null || true)"
   [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
-  deploy_id="$(find_deploy_id_for_token_id "$token_id" 2>/dev/null || true)"
-  if [[ -n "$deploy_id" ]]; then
-    # Prefer env/ingress for co-located agents — avoid Passport RPC during peer-map build.
-    public_base="$(agent_env_value "$deploy_id" A2A_PUBLIC_BASE_URL "")"
-    if [[ -z "$public_base" && "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]]; then
-      public_base="$(agent_public_base_url "$deploy_id" 2>/dev/null || true)"
-    fi
-    [[ -n "$public_base" ]] && { echo "${public_base%/}"; return 0; }
-  fi
   if [[ -n "$resolver_config_dir" ]]; then
     public_base="$(a2a_peer_public_base_from_registry "$token_id" "$resolver_config_dir" 2>/dev/null || true)"
     [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
@@ -2183,16 +2177,25 @@ a2a_peer_public_base_url_static() {
   return 1
 }
 
-# Public HTTPS base for a peer token_id (static → API /full). Prefer static at deploy;
-# use this (or with_retry) from constitution / discover-a2a-peers.
+# Public HTTPS base for a peer token_id (static → local deploy → API /full).
+# Prefer a2a_peer_public_base_url_static at deploy; use this from tests / discover-a2a-peers.
 a2a_peer_public_base_url() {
   local token_id="$1"
   local resolver_config_dir="${2:-}"
-  local public_base
+  local deploy_id public_base
   [[ -n "$token_id" ]] || return 1
   is_passport_token_id "$token_id" || return 1
   public_base="$(a2a_peer_public_base_url_static "$token_id" "$resolver_config_dir" 2>/dev/null || true)"
   [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
+  deploy_id="$(find_deploy_id_for_token_id "$token_id" 2>/dev/null || true)"
+  if [[ -n "$deploy_id" ]]; then
+    public_base="$(agent_env_value "$deploy_id" A2A_PUBLIC_BASE_URL "")"
+    if [[ -z "$public_base" && "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]]; then
+      public_base="$(agent_public_base_url "$deploy_id" 2>/dev/null || true)"
+    fi
+    [[ -z "$public_base" ]] && public_base="$(agent_a2a_public_base_url "$deploy_id" 2>/dev/null || true)"
+    [[ -n "$public_base" ]] && { echo "${public_base%/}"; return 0; }
+  fi
   if [[ -n "$resolver_config_dir" ]]; then
     public_base="$(probe_identyclaw_peer_public_base_url "$resolver_config_dir" "$token_id" 2>/dev/null || true)"
     [[ -n "$public_base" ]] && { echo "$public_base"; return 0; }
@@ -2870,7 +2873,8 @@ probe_rodit_passport_urls_json() {
   sync_quiet_plugin_env "$config_dir" "$(agent_container "${config_dir##*/}")"
 
   cache="$config_dir/.rodit-passport-urls.json"
-  cred_stat="$(stat -c '%Y %s' "$cred_file" 2>/dev/null || stat -f '%m %z' "$cred_file" 2>/dev/null || true)"
+  # Use mtime:size (no spaces) — space-delimited keys break read(1) cache hits.
+  cred_stat="$(stat -c '%Y:%s' "$cred_file" 2>/dev/null || stat -f '%m:%z' "$cred_file" 2>/dev/null || true)"
   if [[ -n "$cred_stat" && -f "$cache" ]]; then
     read -r cached_key cached_json <"$cache" || true
     if [[ "$cached_key" == "$cred_stat" && -n "$cached_json" ]]; then
@@ -5803,18 +5807,25 @@ ensure_agent_identyclaw_tooling() {
 build_a2a_peer_map() {
   local self_id="$1"
   local self_config_dir self_token_id configured_json api_json peers_json
+  local local_token_ids="" local_tid
   load_env
   warn_invalid_a2a_peer_agents
   self_config_dir="$(agent_home "$self_id")"
   self_token_id="$(probe_rodit_own_token_id "$self_config_dir" 2>/dev/null || true)"
+  # Resolve local token_ids once — avoid N peers × M agents of Passport RPC.
+  local_token_ids="$(local_host_agent_token_ids 2>/dev/null || true)"
 
-  local peer_token_id public_base card_url
+  local peer_token_id public_base card_url skip_local
   local first=1
   configured_json="{"
   for peer_token_id in $A2A_PEER_AGENTS; do
     is_passport_token_id "$peer_token_id" || continue
     [[ -n "$self_token_id" && "$peer_token_id" == "$self_token_id" ]] && continue
-    a2a_peer_token_id_on_this_host "$peer_token_id" && continue
+    skip_local=0
+    for local_tid in $local_token_ids; do
+      [[ "$local_tid" == "$peer_token_id" ]] && { skip_local=1; break; }
+    done
+    [[ "$skip_local" -eq 1 ]] && continue
 
     # Deploy/bootstrap: static URLs only. API /full + agent-card probes belong in
     # discover-a2a-peers / constitution tests (see a2a_peer_public_base_url_with_retry).
