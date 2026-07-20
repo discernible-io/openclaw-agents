@@ -138,6 +138,8 @@ start_agent_in_pod() {
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
   prepare_agent_state_for_gateway_start "$id" pod
   sync_identyclaw_env "$dir" "$container"
+  # Bootstrap may have left state on the container uid — reclaim before host mkdir/cp.
+  restore_pod_path_for_host "$dir"
   # himalaya mounts ~/.config read-only; near-cli-rs must write config elsewhere
   mkdir -p "$dir/xdg-config"
   ensure_idcp_wallet_tooling "$id" "$dir" || true
@@ -159,6 +161,7 @@ start_agent_in_pod() {
     -v "$dir/.config:/home/node/.config:ro${z}" \
     "$OPENCLAW_IMAGE" \
     node dist/index.js gateway --bind lan --port "$gw_port"
+  ensure_pod_agent_state_for_container "$id"
 }
 
 require_podman
