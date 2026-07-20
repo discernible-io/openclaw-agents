@@ -12,12 +12,13 @@
  *   node scripts/slc-helper.mjs tasks
  *   node scripts/slc-helper.mjs status
  *   node scripts/slc-helper.mjs join <gameId> [--name "Display Name"]
+ *   node scripts/slc-helper.mjs create [--force] [--name "Display Name"]
  *
  * Anti-patterns (do NOT do these):
  *   - Treat this script or operator TUI chat as the game rules
  *   - Invent /leave /exit /quit endpoints (they do not exist)
  *   - Use gameId 0 or /games/0/...
- *   - create-and-join solo lobbies (minAgents: 3 → empty lobbies cancel)
+ *   - Hand-roll curl/node -e against the API (strictInlineEval + JWT mistakes)
  *   - Call /honors before status is finished
  *   - Wait for operator chat to advance a turn
  *
@@ -46,9 +47,11 @@ function usage() {
   node scripts/slc-helper.mjs tasks
   node scripts/slc-helper.mjs status
   node scripts/slc-helper.mjs join <gameId> [--name "Display Name"]
+  node scripts/slc-helper.mjs create [--force] [--name "Display Name"]
 
 Play: follow GET ${apiBase}/api/game/skill.md + poll GET /api/game/tasks.
-Do not create lobbies unless skill.md says so and teammates share the same gameId.`);
+create: POST /api/game/games then join. Skips create if an open lobby exists unless --force.
+Share the printed gameId ULID with peers (minAgents: 3).`);
   process.exit(2);
 }
 
@@ -225,7 +228,7 @@ async function cmdStatus() {
         roditId: cache.roditId,
         playbook: `${apiBase}/api/game/skill.md`,
         reminder:
-          "Prefer an existing lobby; share the exact gameId ULID. Do not create solo lobbies.",
+          "Prefer an existing lobby; share the exact gameId ULID. If none: node scripts/slc-helper.mjs create --name \"Your Name\".",
         mine: { status: mine.status, body: mine.json ?? mine.text },
         lobbies: { status: lobbies.status, body: lobbies.json ?? lobbies.text },
         tasks: { status: tasks.status, body: tasks.json ?? tasks.text },
@@ -234,6 +237,110 @@ async function cmdStatus() {
       2,
     ),
   );
+}
+
+function extractLobbyGames(lobbiesBody) {
+  if (!lobbiesBody || typeof lobbiesBody !== "object") return [];
+  if (Array.isArray(lobbiesBody.games)) return lobbiesBody.games;
+  if (Array.isArray(lobbiesBody)) return lobbiesBody;
+  return [];
+}
+
+function extractGameId(createBody) {
+  if (!createBody || typeof createBody !== "object") return "";
+  return (
+    createBody.game?.id ||
+    createBody.gameId ||
+    createBody.id ||
+    createBody.game?.gameId ||
+    ""
+  );
+}
+
+async function cmdCreate(displayName, { force = false } = {}) {
+  const cache = await getJwt();
+  const headers = authHeaders(cache.jwt);
+  const lobbies = await fetchJson(`${apiBase}/api/game/games?status=lobby`, { headers });
+  const existing = extractLobbyGames(lobbies.json);
+  if (!force && existing.length > 0) {
+    const ids = existing
+      .map((g) => g?.id || g?.gameId)
+      .filter(Boolean);
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          skippedCreate: true,
+          reason: "open lobby(s) already exist — join one instead (use --force to create anyway)",
+          gameIds: ids,
+          lobbies: { status: lobbies.status, body: lobbies.json ?? lobbies.text },
+          next: ids[0]
+            ? `node scripts/slc-helper.mjs join ${ids[0]} --name "${displayName || "Display Name"}"`
+            : "node scripts/slc-helper.mjs status",
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  const created = await fetchJson(`${apiBase}/api/game/games`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({}),
+  });
+  if (created.status < 200 || created.status >= 300) {
+    console.log(
+      JSON.stringify(
+        { ok: false, create: { status: created.status, body: created.json ?? created.text } },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const gameId = extractGameId(created.json);
+  if (!gameId) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          error: "create succeeded but no gameId in response",
+          create: { status: created.status, body: created.json ?? created.text },
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const name = displayName || cache.roditId || "Agent";
+  const join = await fetchJson(`${apiBase}/api/game/games/${gameId}/join`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ displayName: name }),
+  });
+  const mine = await fetchJson(`${apiBase}/api/game/games/mine`, { headers });
+  console.log(
+    JSON.stringify(
+      {
+        ok: join.status >= 200 && join.status < 300,
+        gameId,
+        shareWithPeers: gameId,
+        displayName: name,
+        create: { status: created.status, body: created.json ?? created.text },
+        join: { status: join.status, body: join.json ?? join.text },
+        mine: { status: mine.status, body: mine.json ?? mine.text },
+        next: "Email/share gameId ULID with peers. Poll: node scripts/slc-helper.mjs tasks",
+      },
+      null,
+      2,
+    ),
+  );
+  if (join.status < 200 || join.status >= 300) process.exit(1);
 }
 
 async function cmdJoin(gameId, displayName) {
@@ -285,18 +392,11 @@ try {
   } else if (cmd === "join") {
     const gameId = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : "";
     await cmdJoin(gameId, displayName);
+  } else if (cmd === "create") {
+    await cmdCreate(displayName, { force: hasFlag("--force") });
   } else if (cmd === "create-and-join") {
-    console.error(`ERROR: create-and-join was removed — it caused solo lobbies that cancel at minAgents: 3.
-
-Playbook:
-  1) node scripts/slc-helper.mjs skill --save
-  2) node scripts/slc-helper.mjs status   # list open lobbies
-  3) Share one gameId ULID with teammates, then:
-     node scripts/slc-helper.mjs join <gameId> [--name "Display Name"]
-  4) Poll: node scripts/slc-helper.mjs tasks
-
-Only POST /api/game/games to create if status shows zero usable lobbies AND teammates agree on that new id.`);
-    process.exit(2);
+    // Backward-compatible alias — same as create (POST + join).
+    await cmdCreate(displayName, { force: hasFlag("--force") });
   } else {
     usage();
   }
