@@ -5,7 +5,7 @@
 # Rootful (optional):      sudo IDENTITYCLAW_ROOTLESS=0 ./identyclaw.sh <cmd>
 #
 # Commands:
-#   build-image          Pull base + build openclaw-himalaya:local
+#   build-image          Pull base + build openclaw-agent:local
 #   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-c, agent-e)
 #   set-password <id|all>  Set Migadu mailbox password (agent-{a-z} or all AGENT_IDS)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
@@ -53,6 +53,7 @@
 #   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins (pinned in env.local)
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents
+#   near-activate <id> [account_id]  Set active NEAR creds (.active + .env + plugin) then restart
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
@@ -64,7 +65,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -86,19 +87,22 @@ require_rootless_user() {
 cmd_build_image() {
   require_podman
   load_env
-  local arch
+  local arch near_target
   arch="$(detect_himalaya_arch)"
+  near_target="$(detect_near_cli_rs_target)"
   echo "==> Pulling ${OPENCLAW_BASE_IMAGE}"
   podman pull "$OPENCLAW_BASE_IMAGE"
   local bundled_plugins
   bundled_plugins="$(resolve_openclaw_bundled_plugins)"
-  echo "==> Building ${OPENCLAW_LOCAL_IMAGE} (gateway ${OPENCLAW_GATEWAY_VERSION}, himalaya ${HIMALAYA_VERSION}, arch ${arch})"
-  podman build -f "$ROOT/Containerfile.himalaya" -t "$OPENCLAW_LOCAL_IMAGE" "$ROOT" \
+  echo "==> Building ${OPENCLAW_LOCAL_IMAGE} (gateway ${OPENCLAW_GATEWAY_VERSION}, himalaya ${HIMALAYA_VERSION}, near-cli-rs ${NEAR_CLI_RS_VERSION}, arch ${arch})"
+  podman build -f "$ROOT/Containerfile.agent" -t "$OPENCLAW_LOCAL_IMAGE" "$ROOT" \
     --build-arg "OPENCLAW_BASE_IMAGE=${OPENCLAW_BASE_IMAGE}" \
     --build-arg "OPENCLAW_GATEWAY_VERSION=${OPENCLAW_GATEWAY_VERSION}" \
     --build-arg "OPENCLAW_BUNDLED_PLUGINS=${bundled_plugins}" \
     --build-arg "HIMALAYA_VERSION=${HIMALAYA_VERSION}" \
-    --build-arg "HIMALAYA_ARCH=${arch}"
+    --build-arg "HIMALAYA_ARCH=${arch}" \
+    --build-arg "NEAR_CLI_RS_VERSION=${NEAR_CLI_RS_VERSION}" \
+    --build-arg "NEAR_CLI_RS_TARGET=${near_target}"
   podman images "$OPENCLAW_LOCAL_IMAGE"
 }
 
@@ -121,6 +125,7 @@ init_one_agent() {
   write_himalaya_inbox_script "$dir"
   write_himalaya_read_script "$dir"
   write_agent_email_doc "$email" "$display_name" "$dir"
+  write_idcp_wallet_scripts "$dir" "$id"
   write_openclaw_json "$dir" "$gateway_port"
   ensure_agent_env "$dir"
   ensure_main_ingress_config "$id" "$dir"
@@ -393,6 +398,54 @@ cmd_restart() {
   fi
   cmd_stop "$target"
   cmd_start "$target"
+}
+
+# Re-point active NEAR credentials then restart the gateway so plugins load the new key.
+cmd_near_activate() {
+  local id="${1:?Usage: $0 near-activate <agent-id> [account_id]}"
+  local account_id="${2:-}"
+  local config_dir container activate_script cred_dir
+  require_podman
+  load_env
+  config_dir="$(agent_home "$id")"
+  ensure_idcp_wallet_tooling "$id" "$config_dir"
+  cred_dir="$config_dir/secrets/near-credentials"
+  if [[ -z "$account_id" ]]; then
+    if [[ -f "$cred_dir/.active" ]]; then
+      account_id="$(tr -d '[:space:]' <"$cred_dir/.active")"
+    else
+      account_id="$(basename "$(resolve_near_credentials_file "$config_dir" 2>/dev/null || true)" .json)"
+    fi
+  fi
+  [[ -n "$account_id" ]] || {
+    echo "Usage: $0 near-activate <agent-id> [account_id]" >&2
+    echo "No account_id and no readable credentials under ${cred_dir}" >&2
+    exit 1
+  }
+  container="$(agent_container "$id")"
+  activate_script="$config_dir/workspace/scripts/idcp-activate-account.sh"
+  echo "==> Activating NEAR account ${account_id} for ${id}"
+  if _agent_container_name_running "$container" 2>/dev/null; then
+    # Ensure scripts exist in the mounted workspace, then run inside the container.
+    ensure_idcp_wallet_tooling "$id" "$config_dir"
+    IDENTYCLAW_AGENT_ID="$id" podman exec -e IDENTYCLAW_AGENT_ID="$id" \
+      -e OPENCLAW_HOME=/home/node/.openclaw \
+      "$container" sh /home/node/.openclaw/workspace/scripts/idcp-activate-account.sh "$account_id" \
+      || {
+        # Fallback: run on host against agent state dir
+        OPENCLAW_HOME="$config_dir" IDENTYCLAW_AGENT_ID="$id" \
+          sh "$activate_script" "$account_id"
+      }
+  else
+    OPENCLAW_HOME="$config_dir" IDENTYCLAW_AGENT_ID="$id" \
+      sh "$activate_script" "$account_id"
+  fi
+  # Re-sync plugin config from the newly active file, then bounce gateway.
+  ensure_near_credentials_active "$config_dir"
+  sync_identyclaw_env "$config_dir" "$container" || true
+  ensure_identyclaw_config "$config_dir" "$container" || true
+  echo "==> Restarting ${id} to load activated credentials"
+  cmd_restart "$id"
 }
 
 cmd_enable_boot() {
@@ -2403,6 +2456,7 @@ main() {
     start) cmd_start "$@" ;;
     stop) cmd_stop "$@" ;;
     restart) cmd_restart "$@" ;;
+    near-activate) cmd_near_activate "$@" ;;
     restore-host-access) cmd_restore_host_access "$@" ;;
     enable-boot) cmd_enable_boot "$@" ;;
     status) cmd_status "$@" ;;

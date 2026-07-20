@@ -26,7 +26,7 @@ env:
   POD_NAME: identyclaw-agents-pod
   NGINX_CONTAINER_NAME: identyclaw-nginx
   REGISTRY: ghcr.io
-  OPENCLAW_IMAGE_NAME: ${{ github.repository }}/openclaw-himalaya
+  OPENCLAW_IMAGE_NAME: ${{ github.repository }}/openclaw-agent
   NGINX_IMAGE_NAME: ${{ github.repository }}/identyclaw-nginx
   HEALTH_CHECK_MAX_ATTEMPTS: 5
   HEALTH_CHECK_INTERVAL: 5
@@ -64,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Containerfile.himalaya
+          file: ./Containerfile.agent
           push: true
           build-args: |
             OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.11-slim
@@ -72,6 +72,8 @@ jobs:
             OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.6.11
             HIMALAYA_VERSION=v1.2.0
             HIMALAYA_ARCH=x86_64-linux
+            NEAR_CLI_RS_VERSION=v0.29.0
+            NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
           tags: |
             ${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}
           cache-from: type=gha

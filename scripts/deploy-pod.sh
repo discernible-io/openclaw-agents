@@ -4,7 +4,7 @@
 #
 # Required env:
 #   APP_DIR              Host app root (default: ../identyclaw-agents-app sibling of repo)
-#   OPENCLAW_IMAGE       Full image ref (ghcr.io/.../openclaw-himalaya:SHA)
+#   OPENCLAW_IMAGE       Full image ref (ghcr.io/.../openclaw-agent:SHA)
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #
 # Optional env (defaults match deploy.yml):

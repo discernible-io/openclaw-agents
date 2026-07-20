@@ -78,7 +78,7 @@ github_repository_from_origin() {
   printf '%s' "$url"
 }
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$(github_repository_from_origin || echo discernible-io/identyclaw-agents)}"
-OPENCLAW_IMAGE_NAME="${OPENCLAW_IMAGE_NAME:-${GITHUB_REPOSITORY}/openclaw-himalaya}"
+OPENCLAW_IMAGE_NAME="${OPENCLAW_IMAGE_NAME:-${GITHUB_REPOSITORY}/openclaw-agent}"
 NGINX_IMAGE_NAME="${NGINX_IMAGE_NAME:-${GITHUB_REPOSITORY}/identyclaw-nginx}"
 IMAGE_TAG="${DEPLOY_SHA}-${DEPLOY_TIER}"
 OPENCLAW_IMAGE="${REGISTRY}/${OPENCLAW_IMAGE_NAME}:${IMAGE_TAG}"
@@ -92,12 +92,16 @@ build_images() {
   bundled_plugins="$(resolve_openclaw_bundled_plugins)"
   arch="$(uname -m | sed 's/x86_64/x86_64-linux/;s/aarch64/aarch64-linux/')"
   echo "==> Building ${OPENCLAW_IMAGE} (gateway ${OPENCLAW_GATEWAY_VERSION})"
-  podman build -f "$REPO_ROOT/Containerfile.himalaya" -t "$OPENCLAW_IMAGE" "$REPO_ROOT" \
+  local near_target
+  near_target="$(uname -m | sed 's/x86_64/x86_64-unknown-linux-gnu/;s/aarch64/aarch64-unknown-linux-gnu/')"
+  podman build -f "$REPO_ROOT/Containerfile.agent" -t "$OPENCLAW_IMAGE" "$REPO_ROOT" \
     --build-arg "OPENCLAW_BASE_IMAGE=${OPENCLAW_BASE_IMAGE}" \
     --build-arg "OPENCLAW_GATEWAY_VERSION=${OPENCLAW_GATEWAY_VERSION}" \
     --build-arg "OPENCLAW_BUNDLED_PLUGINS=${bundled_plugins}" \
     --build-arg "HIMALAYA_VERSION=${HIMALAYA_VERSION}" \
-    --build-arg "HIMALAYA_ARCH=${arch}"
+    --build-arg "HIMALAYA_ARCH=${arch}" \
+    --build-arg "NEAR_CLI_RS_VERSION=${NEAR_CLI_RS_VERSION:-v0.29.0}" \
+    --build-arg "NEAR_CLI_RS_TARGET=${near_target}"
   echo "==> Building ${NGINX_IMAGE} (NODE_ENV=${NGINX_BUILD_ENV}, INGRESS_PORT=${APP_PORT})"
   podman build -f "$REPO_ROOT/nginx.Dockerfile" -t "$NGINX_IMAGE" "$REPO_ROOT" \
     --build-arg "NODE_ENV=${NGINX_BUILD_ENV}" \

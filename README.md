@@ -20,7 +20,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | Area | What this repo provides |
 | --- | --- |
 | **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (main / development tiers) |
-| **Image** | Local `openclaw-himalaya:local` from GHCR OpenClaw **2026.6.10-slim**, Himalaya **v1.2.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
+| **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.6.10-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, IdentyClaw API workflows |
 | **A2A** | **identyclaw-a2a** @0.4.8 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
@@ -53,7 +53,7 @@ This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/d
 | **Sibling app directory** | Default `../identyclaw-agents-app` — created by `./identyclaw.sh init` |
 | **Migadu mailboxes** | One per agent you enable in `AGENT_IDS`; set `AGENT_*_EMAIL` in `env.local` |
 | **OpenRouter or OpenCode key** | Before onboard/chat: `./identyclaw.sh set-api-key` or `set-opencode-key` |
-| **NEAR Passport credentials** | `secrets/near-credentials/*.json` per agent for A2A, webhooks, and HOLA signing |
+| **NEAR Passport credentials** | `secrets/near-credentials/*.json` per agent for A2A, webhooks, and HOLA signing; active owner in `.active`. Wallet helpers: `workspace/scripts/idcp-*.sh` (create/fund/transfer/rotate) |
 | **Optional host CLI** | `openclaw` on the host for advanced management outside containers |
 
 Mailbox passwords are **not** required for `init`, `build-image`, or `start` — add them later (see [Set email passwords later](#set-email-passwords-later)).
@@ -453,7 +453,9 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 | **identyclaw-a2a** plugin | [ClawHub: @identyclaw/openclaw-a2a-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-a2a-plugin) | Agent-to-agent messaging (`a2a_send_message`, tasks, files) with RODiT JWT auth |
 | **identyclaw-webhooks** plugin | [ClawHub: @identyclaw/openclaw-identyclaw-webhooks-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-identyclaw-webhooks-plugin) | RODiT-signed inbound webhooks + outbound `send_rodit_webhook` to configured peers |
 
-Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars).
+Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). The active signing account is recorded in `secrets/near-credentials/.active`.
+
+**NEAR wallet / Passport rotation:** after `build-image` (near-cli-rs) and bootstrap, agents get `workspace/scripts/idcp-wallet.sh`, `idcp-rotate-passport.sh`, and `idcp-activate-account.sh` plus the `idcp-wallet` skill. Rotate transfers the Passport on-chain and re-points `.active` / `.env` / plugin config; the agent then asks for `./identyclaw.sh restart <id>` (or operators run `./identyclaw.sh near-activate <id>`). Prefer new implicit accounts; do not reuse retired wallets.
 
 **A2A peer discovery:** list partner Passport **token_id** values in `A2A_PEER_AGENTS` (optional seed list). With `IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` (default), each agent proactively calls **`GET /api/agents`**, resolves each peer’s gateway via **`/full`** `metadata.webhook_url` (on-chain fallback), probes **`/.well-known/agent-card.json`** for liveness, and seeds `openclaw.json` `outbound.agents`. Manual refresh: `./identyclaw.sh discover-a2a-peers all`.
 
@@ -809,20 +811,20 @@ Skip slow or failing suites while debugging via `CONSTITUTION_SKIP_SUITES` in `e
 
 ### `build-image`: Himalaya download 404
 
-If the build log shows a URL like `.../releases/download//himalaya..tgz`, build-args were not applied in the image `RUN` step. The repo’s `Containerfile.himalaya` re-declares `ARG HIMALAYA_VERSION` and `ARG HIMALAYA_ARCH` **after** `FROM` so the correct asset is fetched (e.g. `himalaya.x86_64-linux.tgz` for amd64). Pull the latest repo and run `./identyclaw.sh build-image` again.
+If the build log shows a URL like `.../releases/download//himalaya..tgz`, build-args were not applied in the image `RUN` step. The repo’s `Containerfile.agent` re-declares `ARG HIMALAYA_VERSION` and `ARG HIMALAYA_ARCH` **after** `FROM` so the correct asset is fetched (e.g. `himalaya.x86_64-linux.tgz` for amd64). Pull the latest repo and run `./identyclaw.sh build-image` again.
 
-### `start`: tries to pull `registry.access.redhat.com/openclaw-himalaya:local`
+### `start`: tries to pull `registry.access.redhat.com/openclaw-agent:local`
 
 On AlmaLinux / RHEL / CentOS, Podman `short-name-mode = "enforcing"` resolves bare image names to Red Hat’s registry. Use the fully qualified local name in `env.local`:
 
 ```bash
-OPENCLAW_LOCAL_IMAGE=localhost/openclaw-himalaya:local
+OPENCLAW_LOCAL_IMAGE=localhost/openclaw-agent:local
 ```
 
 Then rebuild and start. Confirm the image exists:
 
 ```bash
-podman images localhost/openclaw-himalaya
+podman images localhost/openclaw-agent
 ```
 
 ### `build-image` failed but `start` ran anyway
@@ -891,7 +893,7 @@ podman exec -it openclaw-agent-a node dist/index.js configure --section model
 
 Choose OpenRouter → **API key** → paste `sk-or-...` (not a shell command).
 
-Rebuild the image to bake in the symlink (`Containerfile.himalaya`):
+Rebuild the image to bake in the symlink (`Containerfile.agent`):
 
 ```bash
 ./identyclaw.sh build-image
@@ -929,7 +931,8 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 
 | Command | Description |
 |---------|-------------|
-| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.6.10+ + Himalaya + Discord plugin layer |
+| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.6.10+ + Himalaya + near-cli-rs + Discord plugin layer |
+| `./identyclaw.sh near-activate <id> [account]` | Set active NEAR creds (`.active` + `.env` + plugin) then restart |
 | `./identyclaw.sh init` | Create agent state dirs (`agent-a`, `agent-c`, `agent-e` from `env.example`) and `env.local` |
 | `./identyclaw.sh set-password agent-a` | Store Migadu password locally |
 | `./identyclaw.sh set-discord-token agent-a` | Store Discord bot token in `secrets/` (synced to `.env` on start) |
@@ -1072,10 +1075,12 @@ Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tu
   workspace/
     IDENTITYCLAW.md       # operator guidance (A2A + identity)
     EMAIL.md              # Himalaya / concierge instructions
-    scripts/              # himalaya-inbox.sh, himalaya-read.sh, himalaya-delete.sh, send helpers
+    scripts/              # himalaya-*.sh, idcp-wallet.sh, idcp-rotate-passport.sh, idcp-activate-account.sh
+    skills/idcp-wallet/   # NEAR wallet / Passport rotation skill
   .config/himalaya/config.toml
   secrets/imap.pass       # never commit
   secrets/near-credentials/*.json
+  secrets/near-credentials/.active  # active Passport owner account id
   secrets/imap.sh         # auth helper for Himalaya
 
 ~/identyclaw-agents-app/agents/agent-c/      # same structure

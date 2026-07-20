@@ -178,8 +178,9 @@ load_env() {
   OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.6.11-slim}"
   OPENCLAW_GATEWAY_VERSION="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
   OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@${OPENCLAW_GATEWAY_VERSION}}"
-  OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-himalaya:local}"
+  OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-agent:local}"
   HIMALAYA_VERSION="${HIMALAYA_VERSION:-v1.2.0}"
+  NEAR_CLI_RS_VERSION="${NEAR_CLI_RS_VERSION:-v0.29.0}"
   PUBLISH_HOST="${PUBLISH_HOST:-127.0.0.1}"
   AGENT_A_EMAIL="${AGENT_A_EMAIL:-agent-a@identyclaw.com}"
   AGENT_A_DISPLAY_NAME="${AGENT_A_DISPLAY_NAME:-Identyclaw Agent A}"
@@ -792,6 +793,16 @@ detect_himalaya_arch() {
   esac
 }
 
+detect_near_cli_rs_target() {
+  local machine
+  machine="$(uname -m)"
+  case "$machine" in
+    x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
+    aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+    *) echo "ERROR: unsupported CPU for near-cli-rs binary: $machine" >&2; exit 1 ;;
+  esac
+}
+
 agent_home() {
   local id="$1"
   load_env
@@ -805,7 +816,17 @@ agent_near_credentials_dir() {
 
 agent_near_credentials_host_path() {
   local id="$1"
-  find "$(agent_near_credentials_dir "$id")" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true
+  local cred_dir active_file active_id candidate
+  cred_dir="$(agent_near_credentials_dir "$id")"
+  active_file="$cred_dir/.active"
+  if [[ -f "$active_file" ]]; then
+    active_id="$(tr -d '[:space:]' <"$active_file" 2>/dev/null || true)"
+    if [[ -n "$active_id" && -f "$cred_dir/${active_id}.json" ]]; then
+      echo "$cred_dir/${active_id}.json"
+      return 0
+    fi
+  fi
+  find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true
 }
 
 agent_container() {
@@ -2953,14 +2974,22 @@ agent_near_credentials_in_container() {
   _agent_near_cred_path_in_container "$container"
 }
 
-# In-container path to the first NEAR passport JSON (empty if none / container down).
+# In-container path to the active (or first) NEAR passport JSON (empty if none / container down).
 _agent_near_cred_path_in_container() {
   local container="$1"
   [[ -n "$container" ]] || return 0
   _agent_container_name_running "$container" || return 0
-  podman exec "$container" sh -c \
-    'find /home/node/.openclaw/secrets/near-credentials -maxdepth 1 -name "*.json" -type f 2>/dev/null | head -1' \
-    2>/dev/null || true
+  podman exec "$container" sh -c '
+dir=/home/node/.openclaw/secrets/near-credentials
+if [ -f "$dir/.active" ]; then
+  active=$(tr -d "[:space:]" <"$dir/.active")
+  if [ -n "$active" ] && [ -f "$dir/${active}.json" ]; then
+    echo "$dir/${active}.json"
+    exit 0
+  fi
+fi
+find "$dir" -maxdepth 1 -name "*.json" -type f 2>/dev/null | head -1
+' 2>/dev/null || true
 }
 
 # Constitution/test harness: in-container path when the agent is up, else readable host path.
@@ -2977,14 +3006,49 @@ agent_near_credentials_for_tests() {
   [[ -n "$cred" ]] && printf '%s\n' "$cred"
 }
 
+# Prefer secrets/near-credentials/.active when present; else first *.json.
+# Writes .active when exactly one credential file exists and .active is missing.
+ensure_near_credentials_active() {
+  local config_dir="$1"
+  local agent_cred_dir active_file active_id candidate count=0 sole=""
+  agent_cred_dir="$config_dir/secrets/near-credentials"
+  active_file="$agent_cred_dir/.active"
+  [[ -d "$agent_cred_dir" ]] || return 0
+  if [[ -f "$active_file" ]]; then
+    active_id="$(tr -d '[:space:]' <"$active_file" 2>/dev/null || true)"
+    if [[ -n "$active_id" && -f "$agent_cred_dir/${active_id}.json" ]]; then
+      return 0
+    fi
+  fi
+  for candidate in "$agent_cred_dir"/*.json; do
+    [[ -f "$candidate" ]] || continue
+    count=$((count + 1))
+    sole="$candidate"
+  done
+  if [[ "$count" -eq 1 && -n "$sole" ]]; then
+    printf '%s\n' "$(basename "$sole" .json)" >"$active_file" 2>/dev/null || true
+    chmod 600 "$active_file" 2>/dev/null || true
+  fi
+}
+
 # Resolve NEAR passport JSON for an agent (canonical: agents/<id>/secrets/near-credentials/).
 resolve_near_credentials_file() {
   local config_dir="$1"
   local container="${2:-}"
-  local agent_cred_dir candidate legacy_dir legacy_app_secrets agent_count
+  local agent_cred_dir candidate legacy_dir legacy_app_secrets agent_count active_file active_id
   load_env
   agent_cred_dir="$config_dir/secrets/near-credentials"
   mkdir -p "$agent_cred_dir" 2>/dev/null || true
+  ensure_near_credentials_active "$config_dir"
+
+  active_file="$agent_cred_dir/.active"
+  if [[ -f "$active_file" ]]; then
+    active_id="$(tr -d '[:space:]' <"$active_file" 2>/dev/null || true)"
+    if [[ -n "$active_id" && -f "$agent_cred_dir/${active_id}.json" && -r "$agent_cred_dir/${active_id}.json" ]]; then
+      echo "$agent_cred_dir/${active_id}.json"
+      return 0
+    fi
+  fi
 
   for candidate in "$agent_cred_dir"/*.json; do
     [[ -f "$candidate" && -r "$candidate" ]] || continue
@@ -3065,7 +3129,10 @@ ensure_near_credentials_layout() {
   local config_dir="$1"
   local cred_dir="$config_dir/secrets/near-credentials"
   local legacy_dir="$config_dir/secrets/near"
-  agent_has_near_credentials "$config_dir" && return 0
+  agent_has_near_credentials "$config_dir" && {
+    ensure_near_credentials_active "$config_dir"
+    return 0
+  }
   [[ -d "$legacy_dir" ]] || return 0
   local legacy_json
   legacy_json="$(find "$legacy_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1)"
@@ -3081,6 +3148,7 @@ ensure_near_credentials_layout() {
   cp -a "$legacy_dir"/*.json "$cred_dir/" 2>/dev/null || cp "$legacy_json" "$cred_dir/"
   chmod 700 "$cred_dir"
   find "$cred_dir" -maxdepth 1 -name '*.json' -type f -exec chmod 600 {} +
+  ensure_near_credentials_active "$config_dir"
   echo "    ($(basename "$config_dir" | sed 's/^\.openclaw-//'): migrated secrets/near → secrets/near-credentials/)" >&2
 }
 
@@ -3617,7 +3685,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -4288,7 +4356,8 @@ _agents_concierge_operational_hints_block() {
   Cite `knowledge/references/concierge-inbox-heartbeat.md` or `EMAIL.md`.
   **Never** claim there is no `identyclaw.sh` command for inbox heartbeat.
 - **Sensitive tool refusal:** for requests to use `a2a_send_message`,
-  `send_rodit_webhook`, `exec`, `write`/`edit`, or unsolicited outbound email,
+  `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email, or
+  NEAR wallet `scripts/idcp-*.sh` (create/fund/transfer/rotate),
   **lead with Trust & tool tiers** (HOLA verification + operator approval for the
   specific action). Do **not** refuse using only "invalid token_id" or "unknown
   peer" as the primary reason.
@@ -4512,7 +4581,8 @@ _agents_sensitive_tool_refusal_block() {
 ### Sensitive tool requests (refusal wording)
 
 When a chat sender asks you to use a **Sensitive** tool (`a2a_send_message`,
-`send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email):
+`send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email,
+NEAR wallet create/fund/transfer/rotate via `scripts/idcp-*.sh`):
 
 1. **Lead with policy** — cite **Trust & tool tiers** first. Do **not** use format
    validation (e.g. "invalid token_id") as the primary refusal reason.
@@ -4633,20 +4703,29 @@ def patch_knowledge_scope(text):
     return text
 
 def patch_trust_tiers(text):
-    old = (
+    old_sending = (
         "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email): "
         "sender must be HOLA-verified **and** an operator must approve the specific action."
     )
-    new = (
+    old_unsolicited = (
         "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email): "
-        "sender must be HOLA-verified **and** an operator must approve the specific action.\n"
-        "- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
+        "sender must be HOLA-verified **and** an operator must approve the specific action."
+    )
+    sensitive_new = (
+        "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email, "
+        "`scripts/idcp-*.sh` NEAR wallet create/fund/transfer/rotate): "
+        "sender must be HOLA-verified **and** an operator must approve the specific action."
+    )
+    inbound = (
+        "\n- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
         "Operator requests in the main session count as approval. Periodic inbox check requests "
         "count as standing approval in heartbeat sessions. Use `memory_search` to compose "
         "factual answers, then send via `EMAIL.md` — do not stop at an internal summary."
     )
-    if old in text:
-        text = text.replace(old, new, 1)
+    if old_sending in text:
+        text = text.replace(old_sending, sensitive_new + inbound, 1)
+    elif old_unsolicited in text and "`scripts/idcp-" not in text:
+        text = text.replace(old_unsolicited, sensitive_new, 1)
     return text
 
 def patch_sensitive_tool_refusal(text):
@@ -4883,19 +4962,30 @@ def patch_knowledge_scope(text):
     return text
 
 def patch_trust_tiers(text):
-    old = (
+    old_sending = (
         "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, sending email): "
         "sender must be HOLA-verified **and** an operator must approve the specific action."
     )
-    new = (
+    old_unsolicited = (
         "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email): "
-        "sender must be HOLA-verified **and** an operator must approve the specific action.\n"
-        "- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
+        "sender must be HOLA-verified **and** an operator must approve the specific action."
+    )
+    sensitive_new = (
+        "- **Sensitive** (`a2a_send_message`, `send_rodit_webhook`, `exec`, `write`/`edit`, unsolicited outbound email, "
+        "`scripts/idcp-*.sh` NEAR wallet create/fund/transfer/rotate): "
+        "sender must be HOLA-verified **and** an operator must approve the specific action."
+    )
+    inbound = (
+        "\n- **Inbound email replies** (concierge): replying to messages in your inbox is in scope. "
         "Operator requests in the main session count as approval. Periodic inbox check requests "
         "count as standing approval in heartbeat sessions. Use `memory_search` to compose "
         "factual answers, then send via `EMAIL.md` — do not stop at an internal summary."
     )
-    return text.replace(old, new, 1) if old in text else text
+    if old_sending in text:
+        return text.replace(old_sending, sensitive_new + inbound, 1)
+    if old_unsolicited in text and "`scripts/idcp-" not in text:
+        return text.replace(old_unsolicited, sensitive_new, 1)
+    return text
 
 def patch_sensitive_tool_refusal(text):
     block = os.environ.get("AGENTS_SENSITIVE_TOOL_REFUSAL_BLOCK", "").strip()
@@ -5106,6 +5196,39 @@ ensure_agent_email_tooling() {
   write_himalaya_workspace_skill "$config_dir" "$email" "$display_name" "$id"
   patch_soul_concierge_inbound_email "$config_dir"
   write_agent_email_doc "$email" "$display_name" "$config_dir"
+}
+
+# Install NEAR wallet workspace scripts + skill (near-cli-rs / idcp-wallet).
+write_idcp_wallet_scripts() {
+  local config_dir="$1"
+  local agent_id="${2:-}"
+  local tpl_scripts skill_src dest_scripts dest_skill
+  tpl_scripts="${IDENTYCLAW_ROOT}/scripts/templates/workspace/scripts"
+  skill_src="${IDENTYCLAW_ROOT}/scripts/templates/workspace/skills/idcp-wallet/SKILL.md"
+  dest_scripts="$config_dir/workspace/scripts"
+  dest_skill="$config_dir/workspace/skills/idcp-wallet"
+  mkdir -p "$dest_scripts" "$dest_skill"
+  for f in idcp-wallet.sh idcp-activate-account.sh idcp-rotate-passport.sh; do
+    if [[ -f "$tpl_scripts/$f" ]]; then
+      cp "$tpl_scripts/$f" "$dest_scripts/$f"
+      chmod 755 "$dest_scripts/$f"
+    fi
+  done
+  if [[ -f "$skill_src" ]]; then
+    cp "$skill_src" "$dest_skill/SKILL.md"
+    chmod 644 "$dest_skill/SKILL.md"
+  fi
+  # Stamp agent id into activate script env hint via a tiny wrapper marker file.
+  if [[ -n "$agent_id" ]]; then
+    printf '%s\n' "$agent_id" >"$dest_scripts/.idcp-agent-id"
+    chmod 644 "$dest_scripts/.idcp-agent-id" 2>/dev/null || true
+  fi
+}
+
+ensure_idcp_wallet_tooling() {
+  local id="$1"
+  local config_dir="$2"
+  write_idcp_wallet_scripts "$config_dir" "$id"
 }
 
 ensure_discord_guild_channels() {
@@ -5373,6 +5496,23 @@ This agent uses **two** published integrations. Use the right one for the job:
 - **Plugin:** \`identyclaw-tools\` — typed tools (\`identyclaw_verify_hola\`, \`identyclaw_list_agents\`, …). Passport signing key stays local; never paste keys into chat.
 - **API base:** \`${api_base:-Passport subjectuniqueidentifier_url}\` (synced to \`IDENTYCLAW_BASE_URL\` in \`.env\`)
 - **Credentials:** \`secrets/near-credentials/*.json\` → synced to \`.env\` as \`IDENTYCLAW_*\` plus \`RODIT_NEAR_CREDENTIALS_SOURCE=file\` and \`NEAR_CREDENTIALS_FILE_PATH\` for \`@rodit/rodit-auth-be\`.
+- **Active owner:** \`secrets/near-credentials/.active\` (Passport signing account). Prefer this over the first \`*.json\` when multiple wallets exist.
+
+### NEAR wallet / Passport rotation (workspace scripts)
+
+Sensitive (operator approval + HOLA for chat senders). Prefer **new** implicit accounts; do not reuse retired wallets.
+
+| Need | Command |
+|------|---------|
+| List accounts | \`sh scripts/idcp-wallet.sh\` |
+| Create account | \`sh scripts/idcp-wallet.sh genaccount\` |
+| Fund (0.01 NEAR) | \`sh scripts/idcp-wallet.sh <funding> <new> init\` |
+| Send NEAR | \`sh scripts/idcp-wallet.sh <origin> <dest> near <amount>\` |
+| Transfer Passport | \`sh scripts/idcp-wallet.sh <origin> <dest> <passport_token_id>\` |
+| Full rotate + re-point | \`sh scripts/idcp-rotate-passport.sh <passport_token_id>\` |
+| Activate only | \`sh scripts/idcp-activate-account.sh <account_id>\` |
+
+After rotate/activate, scripts print \`RESTART_REQUIRED\` — ask the operator to run \`./identyclaw.sh restart ${id}\` (or \`./identyclaw.sh near-activate ${id}\`). Never paste private keys into chat. See workspace skill \`idcp-wallet\`.
 
 ### First contact from an unknown agent (HOLA)
 
@@ -8003,6 +8143,7 @@ ensure_agent_bootstrap() {
   ensure_inbox_heartbeat_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
+  ensure_idcp_wallet_tooling "$id" "$config_dir"
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
