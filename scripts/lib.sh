@@ -6604,6 +6604,8 @@ install_identyclaw_plugin() {
     # Host build cached under app/repo; upgrade-plugins clears the marker to refresh once.
     build_dir="$(ensure_identyclaw_git_plugin_build "$plugin_spec" 0)" || return 1
     stage_dir="/tmp/.identyclaw-tools-plugin-src"
+    local host_stage="${config_dir}/.identyclaw-plugin-build"
+    local container_stage="/home/node/.openclaw/.identyclaw-plugin-build"
     if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
       podman exec "$container" rm -rf "$stage_dir" 2>/dev/null || true
       podman cp "$build_dir" "$container:$stage_dir" >/dev/null || return 1
@@ -6612,9 +6614,15 @@ install_identyclaw_plugin() {
       fi
       podman exec "$container" rm -rf "$stage_dir" 2>/dev/null || true
     else
-      if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$build_dir" >&2; then
+      # One-shot openclaw_agent_exec only mounts config_dir — stage build there so the
+      # container path resolves (host app/repo path is invisible inside the image).
+      rm -rf "$host_stage"
+      cp -a "$build_dir" "$host_stage" || return 1
+      if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$container_stage" >&2; then
+        rm -rf "$host_stage"
         return 1
       fi
+      rm -rf "$host_stage"
     fi
   else
     if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
