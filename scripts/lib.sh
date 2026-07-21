@@ -5174,6 +5174,7 @@ ensure_agent_mail_tooling_refresh() {
   fi
   ensure_concierge_inbox_reply_guidance "$id" "$config_dir"
   ensure_inbox_heartbeat_from_env "$id" "$config_dir"
+  ensure_slc_heartbeat_from_env "$id" "$config_dir"
 }
 
 ensure_concierge_inbox_reply_guidance() {
@@ -5374,12 +5375,12 @@ sync_identyclaw_env() {
     echo "    (${config_dir##*/}: skip .env sync — no Passport api_base; set IDENTYCLAW_API_BASE_URL to override)" >&2
     return 0
   }
-  _agent_env_python "$config_dir" "$container" "$use_container_env" "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" "${IDENTYCLAW_DEPLOY_MODE:-standalone}" <<'PY'
+  _agent_env_python "$config_dir" "$container" "$use_container_env" "$cred_file" "$env_file" "$contract_id" "$api_base" "$near_rpc_url" "${IDENTYCLAW_DEPLOY_MODE:-standalone}" "${IDENTYCLAW_API_ENDPOINTS:-}" <<'PY'
 import json, os, sys
 from pathlib import Path
 
-cred_file, env_file, contract_id, api_base, near_rpc_url, deploy_mode = (
-    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+cred_file, env_file, contract_id, api_base, near_rpc_url, deploy_mode, api_endpoints = (
+    Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7] if len(sys.argv) > 7 else ""
 )
 creds = json.loads(cred_file.read_text(encoding="utf-8"))
 account_id = creds.get("implicit_account_id") or creds.get("account_id", "")
@@ -5398,6 +5399,7 @@ strip_prefixes = (
     "IDENTYCLAW_ACCOUNT_ID=",
     "IDENTYCLAW_NEAR_PRIVATE_KEY=",
     "IDENTYCLAW_BASE_URL=",
+    "IDENTYCLAW_API_ENDPOINTS=",
     "NEAR_CONTRACT_ID=",
     "NEAR_RPC_URL=",
     "RODIT_NEAR_CREDENTIALS_SOURCE=",
@@ -5410,6 +5412,8 @@ if env_file.is_file():
         lines = [ln for ln in f if not ln.startswith(strip_prefixes)]
 
 lines.append(f"IDENTYCLAW_BASE_URL={api_base.rstrip('/')}\n")
+if api_endpoints.strip():
+    lines.append(f"IDENTYCLAW_API_ENDPOINTS={api_endpoints.strip()}\n")
 lines.append(f"IDENTYCLAW_ACCOUNT_ID={account_id}\n")
 lines.append(f"IDENTYCLAW_NEAR_PRIVATE_KEY={private_key}\n")
 lines.append(f"NEAR_CONTRACT_ID={contract_id}\n")
@@ -5691,10 +5695,15 @@ ensure_identyclaw_config() {
     sync_identyclaw_env "$config_dir" "$container"
   fi
   local api_base=""
+  local api_endpoints="${IDENTYCLAW_API_ENDPOINTS:-}"
+  local slc_mcp_url="${IDENTYCLAW_SLC_MCP_URL:-https://slc.discernible.io:8443/mcp}"
   if [[ "$has_creds" -eq 1 ]]; then
     api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
   fi
-  _agent_openclaw_json_python "$config_dir" "$container" "$has_creds" "$cred_path" "$api_base" <<'PY'
+  load_env
+  api_endpoints="${IDENTYCLAW_API_ENDPOINTS:-$api_endpoints}"
+  slc_mcp_url="${IDENTYCLAW_SLC_MCP_URL:-$slc_mcp_url}"
+  _agent_openclaw_json_python "$config_dir" "$container" "$has_creds" "$cred_path" "$api_base" "$api_endpoints" "$slc_mcp_url" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -5702,6 +5711,8 @@ path = Path(sys.argv[1])
 has_creds = sys.argv[2] == "1"
 cred_path = sys.argv[3]
 api_base = sys.argv[4] if len(sys.argv) > 4 else ""
+api_endpoints_raw = sys.argv[5] if len(sys.argv) > 5 else ""
+slc_mcp_url = sys.argv[6] if len(sys.argv) > 6 else "https://slc.discernible.io:8443/mcp"
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
@@ -5718,6 +5729,15 @@ if entry.get("enabled") is not True:
 cfg = entry.setdefault("config", {})
 if api_base and cfg.get("baseUrl") != api_base:
     cfg["baseUrl"] = api_base
+    changed = True
+
+api_endpoints = []
+for part in api_endpoints_raw.replace(";", ",").split(","):
+    u = part.strip().rstrip("/")
+    if u and u not in api_endpoints:
+        api_endpoints.append(u)
+if api_endpoints and cfg.get("apiEndpoints") != api_endpoints:
+    cfg["apiEndpoints"] = api_endpoints
     changed = True
 
 if has_creds and cred_path:
@@ -5739,6 +5759,8 @@ identyclaw_tools = [
 ]
 if has_creds:
     identyclaw_tools.extend([
+        "identyclaw_ensure_session",
+        "identyclaw_list_sessions",
         "identyclaw_get_my_identity",
         "identyclaw_get_nonce",
         "identyclaw_create_hola",
@@ -5746,11 +5768,27 @@ if has_creds:
         "identyclaw_get_agent_identity",
         "identyclaw_check_subagent_signer",
         "identyclaw_resolve_did",
+        "identyclaw_game_tasks",
+        "identyclaw_game_state",
+        "identyclaw_game_join",
+        "identyclaw_game_message_report",
+        "identyclaw_game_action",
+        "identyclaw_game_tick",
+        "identyclaw_game_skill",
     ])
 allow = data.setdefault("tools", {}).setdefault("allow", [])
 for tool in identyclaw_tools:
     if tool not in allow:
         allow.append(tool)
+        changed = True
+
+# Wire OpenClaw MCP client to SLC streamable /mcp when federated SLC is configured.
+if any("slc.discernible.io" in u or "slc.dihola.io" in u for u in api_endpoints):
+    mcp = data.setdefault("mcp", {}).setdefault("servers", {})
+    slc_entry = mcp.setdefault("slc", {})
+    desired = {"url": slc_mcp_url, "transport": "streamable-http"}
+    if slc_entry.get("url") != desired["url"] or slc_entry.get("transport") != desired["transport"]:
+        slc_entry.update(desired)
         changed = True
 
 if changed:
@@ -8122,6 +8160,147 @@ enable_inbox_heartbeat() {
   fi
 }
 
+_heartbeat_slc_game_prompt() {
+  cat <<'EOF'
+Fetch live playbook: identyclaw_game_skill({ apiEndpoint: "https://slc.discernible.io:8443" }) (or GET https://slc.discernible.io:8443/api/game/skill.md). Require skill version >= 1.4.0 and api_base with :8443. Then identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" }) and identyclaw_game_tick({ apiEndpoint: "https://slc.discernible.io:8443" }) once. If tasks empty but waitingOn lists peers, note their displayNames — do not invent submits for them. Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat. Casual message-report/action block the table until all living agents submit.
+EOF
+}
+
+write_slc_heartbeat_doc() {
+  local config_dir="$1"
+  local interval="${2:-10m}"
+  local prompt
+  prompt="$(_heartbeat_slc_game_prompt)"
+  _upsert_heartbeat_task \
+    "$config_dir/workspace/HEARTBEAT.md" \
+    "slc-game" "$interval" "$prompt" \
+    "# Synthetics' Last Cradle — fetch skill from the game; play via identyclaw_game_* (JWT never to model)."
+}
+
+_write_slc_heartbeat_doc_in_container() {
+  local container="$1"
+  local interval="${2:-10m}"
+  local prompt
+  prompt="$(_heartbeat_slc_game_prompt)"
+  _upsert_heartbeat_task_in_container \
+    "$container" \
+    "slc-game" "$interval" "$prompt" \
+    "# Synthetics' Last Cradle — fetch skill from the game; play via identyclaw_game_* (JWT never to model)."
+}
+
+ensure_slc_heartbeat_config() {
+  ensure_heartbeat_config "$1" "${2:-10m}"
+}
+
+_ensure_slc_heartbeat_config_in_container() {
+  _ensure_heartbeat_config_in_container "$1" "${2:-10m}"
+}
+
+slc_heartbeat_interval_for_agent() {
+  local id="$1"
+  local config_dir="$2"
+  local interval="" env_interval="" marker_file="$config_dir/secrets/slc-heartbeat.interval"
+  load_env
+  env_interval="$(agent_env_value "$id" SLC_HEARTBEAT_INTERVAL "")"
+  [[ -n "$env_interval" ]] && interval="$env_interval"
+  if [[ -z "$interval" ]]; then
+    case "$(agent_env_value "$id" ENABLE_SLC_HEARTBEAT "")" in
+      1|true|yes|on) interval="${IDENTYCLAW_SLC_HEARTBEAT_INTERVAL:-10m}" ;;
+    esac
+  fi
+  if [[ -z "$interval" ]]; then
+    case "${IDENTYCLAW_ENABLE_SLC_HEARTBEAT:-}" in
+      1|true|yes|on) interval="${IDENTYCLAW_SLC_HEARTBEAT_INTERVAL:-10m}" ;;
+    esac
+  fi
+  if [[ -z "$interval" && -f "$marker_file" ]]; then
+    interval="$(tr -d '[:space:]' <"$marker_file")"
+  fi
+  [[ -n "$interval" ]] && echo "$interval"
+}
+
+_read_slc_heartbeat_interval() {
+  local id="$1"
+  local config_dir="$2"
+  local interval container
+  interval="$(slc_heartbeat_interval_for_agent "$id" "$config_dir")"
+  [[ -n "$interval" ]] && { echo "$interval"; return 0; }
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    interval="$(podman exec "$container" cat /home/node/.openclaw/secrets/slc-heartbeat.interval 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$interval" ]] && echo "$interval"
+  fi
+  return 0
+}
+
+write_slc_heartbeat_marker() {
+  local config_dir="$1"
+  local interval="$2"
+  mkdir -p "$config_dir/secrets"
+  printf '%s\n' "$interval" >"$config_dir/secrets/slc-heartbeat.interval"
+  chmod 600 "$config_dir/secrets/slc-heartbeat.interval"
+}
+
+_write_slc_heartbeat_marker_in_container() {
+  local container="$1"
+  local interval="$2"
+  podman exec -i "$container" python3 - "$interval" <<'PY'
+import os, sys
+from pathlib import Path
+
+interval = sys.argv[1]
+path = Path("/home/node/.openclaw/secrets/slc-heartbeat.interval")
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(interval + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY
+}
+
+_apply_slc_heartbeat() {
+  local id="$1"
+  local config_dir="$2"
+  local interval="$3"
+  local container
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_slc_heartbeat_doc_in_container "$container" "$interval"
+    _ensure_slc_heartbeat_config_in_container "$container" "$interval"
+  fi
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    write_slc_heartbeat_doc "$config_dir" "$interval"
+    ensure_slc_heartbeat_config "$config_dir" "$interval"
+  fi
+}
+
+ensure_slc_heartbeat_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local interval
+  interval="$(_read_slc_heartbeat_interval "$id" "$config_dir")"
+  [[ -n "$interval" ]] || return 0
+  _apply_slc_heartbeat "$id" "$config_dir" "$interval"
+}
+
+enable_slc_heartbeat() {
+  local id="$1"
+  local interval="${2:-10m}"
+  local config_dir container
+  config_dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  if ! [[ -d "$config_dir" ]] && ! podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    echo "Run ./identyclaw.sh init first" >&2
+    return 1
+  fi
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_slc_heartbeat_marker_in_container "$container" "$interval"
+    _apply_slc_heartbeat "$id" "$config_dir" "$interval"
+  elif [[ -d "$config_dir" ]]; then
+    write_slc_heartbeat_marker "$config_dir" "$interval"
+    write_slc_heartbeat_doc "$config_dir" "$interval"
+    ensure_slc_heartbeat_config "$config_dir" "$interval"
+  fi
+}
+
 ensure_twitter_secrets_from_env() {
   local id="$1"
   local config_dir="$2"
@@ -8201,6 +8380,7 @@ ensure_agent_bootstrap() {
   ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_twitter_secrets_from_env "$id" "$config_dir"
   ensure_inbox_heartbeat_from_env "$id" "$config_dir"
+  ensure_slc_heartbeat_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
   ensure_idcp_wallet_tooling "$id" "$config_dir"
