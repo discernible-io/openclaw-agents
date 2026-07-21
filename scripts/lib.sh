@@ -5752,35 +5752,15 @@ if has_creds and cred_path:
             cfg["nearPrivateKey"] = private_key
             changed = True
 
-identyclaw_tools = [
-    "identyclaw_list_agents",
-    "identyclaw_list_resources",
-    "identyclaw_get_resource",
-]
-if has_creds:
-    identyclaw_tools.extend([
-        "identyclaw_ensure_session",
-        "identyclaw_list_sessions",
-        "identyclaw_get_my_identity",
-        "identyclaw_get_nonce",
-        "identyclaw_create_hola",
-        "identyclaw_verify_hola",
-        "identyclaw_get_agent_identity",
-        "identyclaw_check_subagent_signer",
-        "identyclaw_resolve_did",
-        "identyclaw_game_tasks",
-        "identyclaw_game_state",
-        "identyclaw_game_join",
-        "identyclaw_game_message_report",
-        "identyclaw_game_action",
-        "identyclaw_game_tick",
-        "identyclaw_game_skill",
-    ])
-allow = data.setdefault("tools", {}).setdefault("allow", [])
-for tool in identyclaw_tools:
-    if tool not in allow:
-        allow.append(tool)
-        changed = True
+# Do not maintain a hard tools.allow. A non-empty allow without "*" is
+# deny-by-default and strips runtime MCP tools (e.g. slc__slc_create) that
+# agents need to dynamically join/create games when an operator prompts.
+tools = data.setdefault("tools", {})
+allow = tools.get("allow")
+allow_entries = allow if isinstance(allow, list) else []
+if not allow_entries or not any(str(e).strip() == "*" for e in allow_entries):
+    tools["allow"] = ["*"]
+    changed = True
 
 # Wire OpenClaw MCP client to SLC streamable /mcp when federated SLC is configured.
 if any("slc.discernible.io" in u or "slc.dihola.io" in u for u in api_endpoints):
@@ -6144,20 +6124,8 @@ elif "agents" in outbound:
     del outbound["agents"]
     changed = True
 
-a2a_tools = [
-    "a2a_get_agents",
-    "a2a_get_agent",
-    "a2a_send_message",
-    "a2a_get_task",
-    "a2a_view_text_artifact",
-    "a2a_view_data_artifact",
-    "a2a_update_agent_card",
-]
-allow = data.setdefault("tools", {}).setdefault("allow", [])
-for tool in a2a_tools:
-    if tool not in allow:
-        allow.append(tool)
-        changed = True
+# Do not append A2A tool names onto tools.allow (hard allowlists strip MCP tools).
+# Unrestricted policy is ["*"] — see ensure_identyclaw_config.
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -6400,10 +6368,7 @@ for key, value in desired.items():
         cfg[key] = value
         changed = True
 
-allow = data.setdefault("tools", {}).setdefault("allow", [])
-if "send_rodit_webhook" not in allow:
-    allow.append("send_rodit_webhook")
-    changed = True
+# Do not append send_rodit_webhook onto tools.allow (hard allowlists strip MCP tools).
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -7193,24 +7158,7 @@ if skills.get(slug, {}).get("enabled") is not True:
     changed = True
 
 tools = data.setdefault("tools", {})
-allow = tools.setdefault("allow", [])
-clawlink_tools = [
-    "clawlink_begin_pairing",
-    "clawlink_get_pairing_status",
-    "clawlink_start_connection",
-    "clawlink_get_connection_status",
-    "clawlink_list_integrations",
-    "clawlink_list_tools",
-    "clawlink_search_tools",
-    "clawlink_describe_tool",
-    "clawlink_preview_tool",
-    "clawlink_call_tool",
-]
-for name in clawlink_tools:
-    if name not in allow:
-        allow.append(name)
-        changed = True
-tools["allow"] = allow
+# Do not append clawlink tool names onto tools.allow (hard allowlists strip MCP tools).
 if "alsoAllow" in tools:
     del tools["alsoAllow"]
     changed = True
@@ -7246,23 +7194,7 @@ if skills.get(slug, {}).get("enabled") is not True:
     changed = True
 
 tools = data.setdefault("tools", {})
-allow = tools.setdefault("allow", [])
-for name in (
-    "clawlink_begin_pairing",
-    "clawlink_get_pairing_status",
-    "clawlink_start_connection",
-    "clawlink_get_connection_status",
-    "clawlink_list_integrations",
-    "clawlink_list_tools",
-    "clawlink_search_tools",
-    "clawlink_describe_tool",
-    "clawlink_preview_tool",
-    "clawlink_call_tool",
-):
-    if name not in allow:
-        allow.append(name)
-        changed = True
-tools["allow"] = allow
+# Do not append clawlink tool names onto tools.allow (hard allowlists strip MCP tools).
 if "alsoAllow" in tools:
     del tools["alsoAllow"]
     changed = True
