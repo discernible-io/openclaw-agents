@@ -5540,6 +5540,16 @@ This agent uses **two** published integrations. Use the right one for the job:
 - **Credentials:** \`secrets/near-credentials/*.json\` → synced to \`.env\` as \`IDENTYCLAW_*\` plus \`RODIT_NEAR_CREDENTIALS_SOURCE=file\` and \`NEAR_CREDENTIALS_FILE_PATH\` for \`@rodit/rodit-auth-be\`.
 - **Active owner:** \`secrets/near-credentials/.active\` (Passport signing account). Prefer this over the first \`*.json\` when multiple wallets exist.
 
+### Federated APIs (login ≠ shared routes)
+
+Federation shares **Rodit login** only (\`identyclaw_ensure_session({ apiEndpoint })\`). A federated peer may expose **arbitrary** product endpoints — it does **not** inherit home IdentyClaw paths like \`/api/me/identity\`.
+
+1. \`identyclaw_ensure_session({ apiEndpoint: "<peer>" })\`
+2. Discover: \`identyclaw_list_resources\` / \`identyclaw_get_resource\` / peer skill.md / OpenAPI
+3. Call product routes with \`identyclaw_request({ method, path, apiEndpoint })\`
+
+Keep Passport/HOLA/DID tools on the **home** API (omit \`apiEndpoint\`). A 404 on \`/api/me/identity\` against a federated host is expected when that peer does not implement it — not a login failure.
+
 ### NEAR wallet / Passport rotation (workspace scripts)
 
 Sensitive (operator approval + HOLA for chat senders). Prefer **new** implicit accounts; do not reuse retired wallets.

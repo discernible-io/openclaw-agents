@@ -45,6 +45,8 @@ Set `IDENTYCLAW_API_ENDPOINTS` (comma-separated) so the IdentyClaw plugin knows 
 
 The IdentyClaw plugin stays **generic** (home API + federated login + `identyclaw_request`). Product routes live in the peer skill, not as plugin-specific tools.
 
+**Important:** federation shares **Rodit login only**. Do not expect home IdentyClaw routes (`/api/me/identity`, HOLA, DID, …) on a federated peer. After `ensure_session`, discover that peer’s surface and call its paths via `identyclaw_request`. Keep Passport/HOLA tools on `api.identyclaw.com` (omit `apiEndpoint`).
+
 ### OpenClaw limitation: remote MCP and federated JWT
 
 OpenClaw’s `mcp.servers.*.headers` are **static** at connect time. They do **not** call into the IdentyClaw plugin’s per-URL JWT cache. So wiring `mcp.servers.slc` → `https://slc.discernible.io:8443/mcp` leaves game tools unauthenticated (`AUTH_REQUIRED`) even after a successful `ensure_session`.
