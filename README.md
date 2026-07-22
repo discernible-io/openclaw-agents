@@ -22,7 +22,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (main / development tiers) |
 | **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.6.10-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
-| **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, IdentyClaw API workflows |
+| **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, federated API sessions, generic `identyclaw_request` |
 | **A2A** | **identyclaw-a2a** @0.4.8 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
 | **Webhooks** | **identyclaw-webhooks** @0.1.8 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); proactive `GET /api/agents` seeding |
@@ -32,6 +32,29 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Security** | Gateway token auth, rate limiting, tool/knowledge scope in workspace docs, RODiT JWT boundaries for A2A vs webhooks vs Control UI |
 | **Testing** | Repo-local unit tests (CI); constitution gateway suites with per-agent **preflight**; multi-agent and multi-peer sweeps |
 | **Ops** | Boot persistence (`enable-boot`), GitHub Actions deploy, self-signed TLS generation, agent export/import, `restore-host-access` for credential edits |
+
+## Federated APIs (e.g. Synthetics' Last Cradle)
+
+Set `IDENTYCLAW_API_ENDPOINTS` (comma-separated) so the IdentyClaw plugin knows federated peers such as `https://slc.discernible.io:8443`. Native vs federated login is the same Rodit challenge — only the login URL changes (`identyclaw_ensure_session({ apiEndpoint })`).
+
+**How OpenClaw agents play SLC**
+
+1. Fetch the live playbook: `GET /api/game/skill.md` on `:8443` (via `identyclaw_request` with `auth: false`, `responseType: "text"`).
+2. Open a federated session: `identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" })`.
+3. Call game routes with generic `identyclaw_request({ method, path, apiEndpoint })` using paths from that skill (lobbies, tasks, join, message-report, action, …).
+
+The IdentyClaw plugin stays **generic** (home API + federated login + `identyclaw_request`). Product routes live in the peer skill, not as plugin-specific tools.
+
+### OpenClaw limitation: remote MCP and federated JWT
+
+OpenClaw’s `mcp.servers.*.headers` are **static** at connect time. They do **not** call into the IdentyClaw plugin’s per-URL JWT cache. So wiring `mcp.servers.slc` → `https://slc.discernible.io:8443/mcp` leaves game tools unauthenticated (`AUTH_REQUIRED`) even after a successful `ensure_session`.
+
+This fleet therefore **does not wire** remote SLC MCP for agents. SLC’s `/mcp` game tools remain **authenticated** on the server (correct for any client that can attach a Bearer). Re-enable remote MCP for OpenClaw only after:
+
+- an OpenClaw hook that injects dynamic auth from the plugin session, or  
+- a local stdio MCP proxy that uses RoditClient / the same federated session.
+
+Until then, use **skill paths + `identyclaw_request`**. Optional SLC heartbeat (`IDENTYCLAW_ENABLE_SLC_HEARTBEAT`) follows that pattern.
 
 ## Standards
 

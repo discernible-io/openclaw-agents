@@ -5696,14 +5696,12 @@ ensure_identyclaw_config() {
   fi
   local api_base=""
   local api_endpoints="${IDENTYCLAW_API_ENDPOINTS:-}"
-  local slc_mcp_url="${IDENTYCLAW_SLC_MCP_URL:-https://slc.discernible.io:8443/mcp}"
   if [[ "$has_creds" -eq 1 ]]; then
     api_base="$(identyclaw_api_base_url_for_config_dir "$config_dir" 2>/dev/null || true)"
   fi
   load_env
   api_endpoints="${IDENTYCLAW_API_ENDPOINTS:-$api_endpoints}"
-  slc_mcp_url="${IDENTYCLAW_SLC_MCP_URL:-$slc_mcp_url}"
-  _agent_openclaw_json_python "$config_dir" "$container" "$has_creds" "$cred_path" "$api_base" "$api_endpoints" "$slc_mcp_url" <<'PY'
+  _agent_openclaw_json_python "$config_dir" "$container" "$has_creds" "$cred_path" "$api_base" "$api_endpoints" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -5712,7 +5710,6 @@ has_creds = sys.argv[2] == "1"
 cred_path = sys.argv[3]
 api_base = sys.argv[4] if len(sys.argv) > 4 else ""
 api_endpoints_raw = sys.argv[5] if len(sys.argv) > 5 else ""
-slc_mcp_url = sys.argv[6] if len(sys.argv) > 6 else "https://slc.discernible.io:8443/mcp"
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
@@ -5753,8 +5750,7 @@ if has_creds and cred_path:
             changed = True
 
 # Do not maintain a hard tools.allow. A non-empty allow without "*" is
-# deny-by-default and strips runtime MCP tools (e.g. slc__slc_create) that
-# agents need to dynamically join/create games when an operator prompts.
+# deny-by-default and strips runtime tools agents need.
 tools = data.setdefault("tools", {})
 allow = tools.get("allow")
 allow_entries = allow if isinstance(allow, list) else []
@@ -5762,14 +5758,21 @@ if not allow_entries or not any(str(e).strip() == "*" for e in allow_entries):
     tools["allow"] = ["*"]
     changed = True
 
-# Wire OpenClaw MCP client to SLC streamable /mcp when federated SLC is configured.
-if any("slc.discernible.io" in u or "slc.dihola.io" in u for u in api_endpoints):
-    mcp = data.setdefault("mcp", {}).setdefault("servers", {})
-    slc_entry = mcp.setdefault("slc", {})
-    desired = {"url": slc_mcp_url, "transport": "streamable-http"}
-    if slc_entry.get("url") != desired["url"] or slc_entry.get("transport") != desired["transport"]:
-        slc_entry.update(desired)
-        changed = True
+# Do NOT wire remote SLC MCP for OpenClaw agents. OpenClaw mcp.servers.headers
+# are static; they cannot use the IdentyClaw plugin's per-URL federated JWT
+# cache. Game MCP tools remain authenticated on the server — agents play via
+# identyclaw_ensure_session + identyclaw_request (paths from skill.md) until a
+# proxy or OpenClaw dynamic MCP auth exists.
+mcp_servers = data.get("mcp", {}).get("servers")
+if isinstance(mcp_servers, dict) and "slc" in mcp_servers:
+    del mcp_servers["slc"]
+    changed = True
+    if not mcp_servers:
+        mcp = data.get("mcp")
+        if isinstance(mcp, dict) and "servers" in mcp:
+            del mcp["servers"]
+        if isinstance(mcp, dict) and not mcp:
+            del data["mcp"]
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -8094,7 +8097,7 @@ enable_inbox_heartbeat() {
 
 _heartbeat_slc_game_prompt() {
   cat <<'EOF'
-Fetch live playbook: identyclaw_game_skill({ apiEndpoint: "https://slc.discernible.io:8443" }) (or GET https://slc.discernible.io:8443/api/game/skill.md). Require skill version >= 1.4.0 and api_base with :8443. Then identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" }) and identyclaw_game_tick({ apiEndpoint: "https://slc.discernible.io:8443" }) once. If tasks empty but waitingOn lists peers, note their displayNames — do not invent submits for them. Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat. Casual message-report/action block the table until all living agents submit.
+Fetch live playbook: identyclaw_request({ method: "GET", path: "/api/game/skill.md", apiEndpoint: "https://slc.discernible.io:8443", auth: false, responseType: "text" }). Require skill version >= 1.5.0 and api_base with :8443. Then identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" }). GET /api/game/tasks via identyclaw_request; if a required submit_message_report or submit_execution_action exists, POST it once (defaults sent/received 0 or action type none). If tasks empty but waitingOn lists peers, note their displayNames — do not invent submits for them. Do not use remote slc_* MCP (OpenClaw cannot attach the federated JWT). Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
 EOF
 }
 
@@ -8106,7 +8109,7 @@ write_slc_heartbeat_doc() {
   _upsert_heartbeat_task \
     "$config_dir/workspace/HEARTBEAT.md" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — fetch skill from the game; play via identyclaw_game_* (JWT never to model)."
+    "# Synthetics' Last Cradle — skill paths via identyclaw_request after federated ensure_session (JWT never to model)."
 }
 
 _write_slc_heartbeat_doc_in_container() {
@@ -8117,7 +8120,7 @@ _write_slc_heartbeat_doc_in_container() {
   _upsert_heartbeat_task_in_container \
     "$container" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — fetch skill from the game; play via identyclaw_game_* (JWT never to model)."
+    "# Synthetics' Last Cradle — skill paths via identyclaw_request after federated ensure_session (JWT never to model)."
 }
 
 ensure_slc_heartbeat_config() {
