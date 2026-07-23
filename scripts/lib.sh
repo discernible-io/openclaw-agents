@@ -5546,7 +5546,7 @@ Federation shares **Rodit login** only (\`identyclaw_ensure_session({ apiEndpoin
 
 1. \`identyclaw_ensure_session({ apiEndpoint: "<peer>" })\`
 2. Discover: \`identyclaw_list_resources\` / \`identyclaw_get_resource\` / peer skill.md / OpenAPI
-3. Call product routes with \`identyclaw_request({ method, path, apiEndpoint })\`
+3. Call product routes with \`identyclaw_request({ method, path, apiEndpoint })\`. For SLC required submits prefer \`identyclaw_game_tick({ apiEndpoint })\` (or \`POST /api/game/tick\` with body \`{}\`) so heartbeats cannot observe-only.
 
 Keep Passport/HOLA/DID tools on the **home** API (omit \`apiEndpoint\`). A 404 on \`/api/me/identity\` against a federated host is expected when that peer does not implement it — not a login failure.
 
@@ -8107,7 +8107,7 @@ enable_inbox_heartbeat() {
 
 _heartbeat_slc_game_prompt() {
   cat <<'EOF'
-Fetch live playbook: identyclaw_request({ method: "GET", path: "/api/game/skill.md", apiEndpoint: "https://slc.discernible.io:8443", auth: false, responseType: "text" }). Require skill version >= 1.5.0 and api_base with :8443. Then identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" }). GET /api/game/tasks via identyclaw_request; if a required submit_message_report or submit_execution_action exists, POST it once (defaults sent/received 0 or action type none). If tasks empty but waitingOn lists peers, note their displayNames — do not invent submits for them. Do not use remote slc_* MCP (OpenClaw cannot attach the federated JWT). Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
+Fetch live playbook: identyclaw_request({ method: "GET", path: "/api/game/skill.md", apiEndpoint: "https://slc.discernible.io:8443", auth: false, responseType: "text" }). Require skill version >= 1.5.2 and api_base with :8443. Then identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" }). Prefer identyclaw_game_tick({ apiEndpoint: "https://slc.discernible.io:8443" }) once — it submits one required message-report (defaults 0/0) or action (none) if pending. Fallback: identyclaw_request POST /api/game/tick with body {}. Do not only GET /tasks. If tick returns submitted:false and waitingOn lists peers, note their displayNames — do not invent submits for them. Prefer join over create; ignore cancelled lobby IDs; never bare-GET /api/game/games/{id}. Do not use remote slc_* MCP (OpenClaw cannot attach the federated JWT). Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
 EOF
 }
 
@@ -8119,7 +8119,7 @@ write_slc_heartbeat_doc() {
   _upsert_heartbeat_task \
     "$config_dir/workspace/HEARTBEAT.md" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — skill paths via identyclaw_request after federated ensure_session (JWT never to model)."
+    "# Synthetics' Last Cradle — prefer identyclaw_game_tick after ensure_session (JWT never to model)."
 }
 
 _write_slc_heartbeat_doc_in_container() {
@@ -8130,7 +8130,7 @@ _write_slc_heartbeat_doc_in_container() {
   _upsert_heartbeat_task_in_container \
     "$container" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — skill paths via identyclaw_request after federated ensure_session (JWT never to model)."
+    "# Synthetics' Last Cradle — prefer identyclaw_game_tick after ensure_session (JWT never to model)."
 }
 
 ensure_slc_heartbeat_config() {

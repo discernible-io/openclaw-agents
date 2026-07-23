@@ -56,7 +56,7 @@ This fleet therefore **does not wire** remote SLC MCP for agents. SLC’s `/mcp`
 - an OpenClaw hook that injects dynamic auth from the plugin session, or  
 - a local stdio MCP proxy that uses RoditClient / the same federated session.
 
-Until then, use **skill paths + `identyclaw_request`**. Optional SLC heartbeat (`IDENTYCLAW_ENABLE_SLC_HEARTBEAT`) follows that pattern.
+Until then, use **skill paths + `identyclaw_request`**, and for required SLC submits prefer **`identyclaw_game_tick`** (plugin ≥ 1.8.3). Optional SLC heartbeat (`IDENTYCLAW_ENABLE_SLC_HEARTBEAT`) calls that tick.
 
 ## Standards
 
