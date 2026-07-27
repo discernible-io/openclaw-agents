@@ -2145,18 +2145,20 @@ cmd_cache_stats() {
   for id in "${ids[@]}"; do
     dir="$(agent_home "$id")"
     container="$(agent_container "$id")"
+    # Prefer in-container read when host cannot open container-owned openclaw.json (pod mode).
+    if command -v podman >/dev/null 2>&1 \
+      && podman container inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+      podman cp "${IDENTYCLAW_ROOT}/scripts/lib-openclaw-cache-config.mjs" \
+        "${container}:/tmp/lib-openclaw-cache-config.mjs" >/dev/null 2>&1 || true
+      podman cp "${IDENTYCLAW_ROOT}/scripts/summarize-cache-stats.mjs" \
+        "${container}:/tmp/summarize-cache-stats.mjs" >/dev/null 2>&1 || true
+      podman exec "$container" node /tmp/summarize-cache-stats.mjs \
+        --state-dir /home/node/.openclaw --agent "$id" || true
+      continue
+    fi
     if [[ -r "$dir/openclaw.json" ]]; then
       node "${IDENTYCLAW_ROOT}/scripts/summarize-cache-stats.mjs" \
         --state-dir "$dir" --agent "$id" || true
-      continue
-    fi
-    if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-      podman cp "${IDENTYCLAW_ROOT}/scripts/lib-openclaw-cache-config.mjs" \
-        "${container}:/tmp/lib-openclaw-cache-config.mjs" >/dev/null || true
-      podman cp "${IDENTYCLAW_ROOT}/scripts/summarize-cache-stats.mjs" \
-        "${container}:/tmp/summarize-cache-stats.mjs" >/dev/null || true
-      podman exec "$container" node /tmp/summarize-cache-stats.mjs \
-        --state-dir /home/node/.openclaw --agent "$id" || true
       continue
     fi
     echo "${id}: (no readable state — start the agent or restore-host-access)"

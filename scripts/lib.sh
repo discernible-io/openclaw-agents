@@ -3883,7 +3883,7 @@ start_pod_agent() {
     sync_a2a_peers_from_logs "$id" || true
     ensure_agent_state_for_container_exec "$id"
     ensure_agent_mail_tooling_refresh "$id" "$dir"
-    ensure_idcp_wallet_tooling "$id" "$dir" || true
+    ensure_idcp_wallet_tooling "$id" "$dir" "$container" || true
     ensure_agent_security_hardening "$id" "$dir" "$container" || true
     ensure_main_ingress_config "$id" "$dir" "$container" || true
     # Skip openclaw.json mutations here — host often cannot write container-owned
@@ -5277,14 +5277,42 @@ ensure_agent_email_tooling() {
 }
 
 # Install NEAR wallet workspace scripts + skill (near-cli-rs / idcp-wallet).
+# Pod mode: workspace is often container-owned (0700) — write via podman exec when host cannot.
 write_idcp_wallet_scripts() {
   local config_dir="$1"
   local agent_id="${2:-}"
+  local container="${3:-}"
   local tpl_scripts skill_src dest_scripts dest_skill
   tpl_scripts="${IDENTYCLAW_ROOT}/scripts/templates/workspace/scripts"
   skill_src="${IDENTYCLAW_ROOT}/scripts/templates/workspace/skills/idcp-wallet/SKILL.md"
   dest_scripts="$config_dir/workspace/scripts"
   dest_skill="$config_dir/workspace/skills/idcp-wallet"
+
+  if [[ ! -w "$config_dir/workspace" && ! -w "$config_dir" ]]; then
+    [[ -n "$container" ]] || container="$(agent_container "${agent_id:-${config_dir##*/}}")"
+    if [[ -n "$container" ]] && podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+      podman exec "$container" bash -c 'mkdir -p /home/node/.openclaw/workspace/scripts /home/node/.openclaw/workspace/skills/idcp-wallet' \
+        >/dev/null 2>&1 || true
+      for f in idcp-wallet.sh idcp-activate-account.sh idcp-rotate-passport.sh; do
+        if [[ -f "$tpl_scripts/$f" ]]; then
+          podman cp "$tpl_scripts/$f" "${container}:/home/node/.openclaw/workspace/scripts/$f" >/dev/null 2>&1 || true
+          podman exec "$container" chmod 755 "/home/node/.openclaw/workspace/scripts/$f" >/dev/null 2>&1 || true
+        fi
+      done
+      if [[ -f "$skill_src" ]]; then
+        podman cp "$skill_src" "${container}:/home/node/.openclaw/workspace/skills/idcp-wallet/SKILL.md" >/dev/null 2>&1 || true
+        podman exec "$container" chmod 644 /home/node/.openclaw/workspace/skills/idcp-wallet/SKILL.md >/dev/null 2>&1 || true
+      fi
+      if [[ -n "$agent_id" ]]; then
+        podman exec "$container" bash -c "printf '%s\n' '$agent_id' > /home/node/.openclaw/workspace/scripts/.idcp-agent-id && chmod 644 /home/node/.openclaw/workspace/scripts/.idcp-agent-id" \
+          >/dev/null 2>&1 || true
+      fi
+      return 0
+    fi
+    echo "    (${agent_id:-agent}: skip idcp-wallet workspace sync — host cannot write container-owned state)" >&2
+    return 0
+  fi
+
   mkdir -p "$dest_scripts" "$dest_skill"
   for f in idcp-wallet.sh idcp-activate-account.sh idcp-rotate-passport.sh; do
     if [[ -f "$tpl_scripts/$f" ]]; then
@@ -5306,7 +5334,8 @@ write_idcp_wallet_scripts() {
 ensure_idcp_wallet_tooling() {
   local id="$1"
   local config_dir="$2"
-  write_idcp_wallet_scripts "$config_dir" "$id"
+  local container="${3:-}"
+  write_idcp_wallet_scripts "$config_dir" "$id" "$container"
 }
 
 ensure_discord_guild_channels() {
@@ -8367,7 +8396,7 @@ ensure_agent_bootstrap() {
   ensure_slc_heartbeat_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
-  ensure_idcp_wallet_tooling "$id" "$config_dir"
+  ensure_idcp_wallet_tooling "$id" "$config_dir" "$container"
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"

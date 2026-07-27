@@ -3,13 +3,10 @@
  * Summarize prompt-cache hit metrics for one OpenClaw agent state dir.
  *
  * Usage:
- *   node scripts/summarize-cache-stats.mjs --state-dir <dir> --agent <id> [--json]
+ *   node scripts/summarize-cache-stats.mjs --state-dir DIR --agent ID [--json]
  *
- * Reads:
- *   <dir>/openclaw.json
- *   <dir>/agents/*/sessions/sessions.json
- *   <dir>/agents/*/sessions/*.jsonl
- *   <dir>/logs/cache-trace.jsonl
+ * Reads under DIR: openclaw.json, agents/.../sessions/sessions.json,
+ * agents/.../sessions/*.jsonl, logs/cache-trace.jsonl
  */
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
