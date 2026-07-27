@@ -27,7 +27,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Webhooks** | **identyclaw-webhooks** @0.1.8 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); proactive `GET /api/agents` seeding |
 | **Channels** | Discord (bundled); optional Telegram, Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
-| **LLM** | **OpenRouter** (default) or **OpenCode** Zen/Go; model chain + failover timeouts synced from `env.local` |
+| **LLM** | **OpenRouter** (default) or **OpenCode** Zen/Go; model chain + failover timeouts synced from `env.local`; OpenRouter sticky `session_id` + prompt-cache stats (`cache-stats`) |
 | **Memory** | QMD backend with session-memory hook and configurable retention |
 | **Security** | Gateway token auth, rate limiting, tool/knowledge scope in workspace docs, RODiT JWT boundaries for A2A vs webhooks vs Control UI |
 | **Testing** | Repo-local unit tests (CI); constitution gateway suites with per-agent **preflight**; multi-agent and multi-peer sweeps |
@@ -668,6 +668,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | Gateway bind | `lan` (reachable from nginx sidecar inside the pod) |
 | Gateway auth | token |
 | Model | **Primary:** `openrouter/deepseek/deepseek-v4-flash` → **fallback 1:** `openrouter/qwen/qwen3-coder` → **fallback 2:** `openrouter/google/gemini-2.5-flash` (override via `OPENCLAW_MODEL_*` in `env.local`) |
+| OpenRouter cache | Sticky `session_id` / `x-session-id` = `OPENCLAW_OPENROUTER_SESSION_ID` (default `identyclaw`); `diagnostics.cacheTrace` when `OPENCLAW_CACHE_TRACE=1`; inspect with `./identyclaw.sh cache-stats` |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
 | Memory | `qmd` |
@@ -688,9 +689,15 @@ Key `openclaw.json` excerpts (secrets redacted):
   "agents": {
     "defaults": {
       "models": {
-        "openrouter/deepseek/deepseek-v4-flash": {},
-        "openrouter/qwen/qwen3-coder": {},
-        "openrouter/google/gemini-2.5-flash": {}
+        "openrouter/deepseek/deepseek-v4-flash": {
+          "params": { "extra_body": { "session_id": "identyclaw" } }
+        },
+        "openrouter/qwen/qwen3-coder": {
+          "params": { "extra_body": { "session_id": "identyclaw" } }
+        },
+        "openrouter/google/gemini-2.5-flash": {
+          "params": { "extra_body": { "session_id": "identyclaw" } }
+        }
       },
       "model": {
         "primary": "openrouter/deepseek/deepseek-v4-flash",
@@ -698,6 +705,22 @@ Key `openclaw.json` excerpts (secrets redacted):
           "openrouter/qwen/qwen3-coder",
           "openrouter/google/gemini-2.5-flash"
         ]
+      }
+    }
+  },
+  "diagnostics": {
+    "cacheTrace": {
+      "enabled": true,
+      "includeMessages": false,
+      "includePrompt": false,
+      "includeSystem": false
+    }
+  },
+  "models": {
+    "providers": {
+      "openrouter": {
+        "headers": { "x-session-id": "identyclaw" },
+        "request": { "headers": { "x-session-id": "identyclaw" } }
       }
     }
   },
@@ -978,6 +1001,7 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 | `./identyclaw.sh restore-host-access [id\|all]` | Stop pod agents and restore host ownership (edit creds/`.env` on host) |
 | `./identyclaw.sh enable-boot` | One-time: background + start agents in `AGENT_IDS` after reboot |
 | `./identyclaw.sh status` | Show podman + health URLs |
+| `./identyclaw.sh cache-stats [id\|all]` | Prompt-cache hit rate / sticky OpenRouter `session_id` summary |
 | `./identyclaw.sh logs agent-a` | Follow logs |
 | `./identyclaw.sh test [id]` | Unit tests + **preflight** + full constitution suite (default: first `AGENT_IDS` entry) |
 | `./identyclaw.sh test-unit` | Repo-local unit tests only (no Podman) |

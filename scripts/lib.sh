@@ -207,6 +207,11 @@ load_env() {
   # Thinking/reasoning effort default (off|minimal|low|medium|high|xhigh|adaptive|max).
   # DeepSeek V4 via OpenRouter otherwise falls back to high and burns latency on tool loops.
   OPENCLAW_THINKING_DEFAULT="${OPENCLAW_THINKING_DEFAULT:-off}"
+  # OpenRouter sticky routing key (session_id + x-session-id). One fixed fleet value
+  # keeps KV/prompt cache warm across agents. Empty/off disables injection.
+  OPENCLAW_OPENROUTER_SESSION_ID="${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}"
+  # Prompt-cache diagnostics (diagnostics.cacheTrace) + ./identyclaw.sh cache-stats.
+  OPENCLAW_CACHE_TRACE="${OPENCLAW_CACHE_TRACE:-1}"
   # Memory: QMD backend + optional session transcript recall (synced to openclaw.json on bootstrap).
   IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
@@ -695,6 +700,40 @@ _agent_openclaw_json_python() {
     echo "    (cannot update openclaw.json — not writable and container ${container:-<none>} unavailable)" >&2
     return 1
   fi
+}
+
+# Apply sticky OpenRouter session_id + diagnostics.cacheTrace (host or in-container).
+_agent_openclaw_cache_config_patch() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local session_id="${3:-identyclaw}"
+  local cache_trace="${4:-1}"
+  local openrouter_enabled="${5:-1}"
+  local patch_js="${IDENTYCLAW_ROOT}/scripts/patch-openclaw-cache-config.mjs"
+  local lib_js="${IDENTYCLAW_ROOT}/scripts/lib-openclaw-cache-config.mjs"
+  [[ -f "$patch_js" && -f "$lib_js" ]] || {
+    echo "    (cache config patch scripts missing under ${IDENTYCLAW_ROOT}/scripts)" >&2
+    return 1
+  }
+  if [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
+    node "$patch_js" "$config_dir/openclaw.json" \
+      --session-id "$session_id" \
+      --cache-trace "$cache_trace" \
+      --openrouter "$openrouter_enabled" || return 1
+    return 0
+  fi
+  if agent_config_use_container "$config_dir" "$container"; then
+    podman cp "$lib_js" "${container}:/tmp/lib-openclaw-cache-config.mjs" >/dev/null || return 1
+    podman cp "$patch_js" "${container}:/tmp/patch-openclaw-cache-config.mjs" >/dev/null || return 1
+    podman exec "$container" node /tmp/patch-openclaw-cache-config.mjs \
+      /home/node/.openclaw/openclaw.json \
+      --session-id "$session_id" \
+      --cache-trace "$cache_trace" \
+      --openrouter "$openrouter_enabled" || return 1
+    return 0
+  fi
+  echo "    (cannot patch cache config — openclaw.json not writable and container ${container:-<none>} unavailable)" >&2
+  return 1
 }
 
 sync_agent_plugin_configs() {
@@ -8752,10 +8791,13 @@ ensure_pod_nginx_ingress_config() {
 ensure_openclaw_model_defaults() {
   local config_dir="$1"
   local container="${2:-}"
+  local providers_csv openrouter_enabled=0
   load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  local providers_csv
   providers_csv="$(openclaw_model_chain_providers_csv)"
+  case ",${providers_csv}," in
+    *,openrouter,*) openrouter_enabled=1 ;;
+  esac
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" \
     "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" \
@@ -8849,6 +8891,11 @@ if changed:
     sessions_path.write_text(json.dumps(sessions, indent=2) + "\n", encoding="utf-8")
     sessions_path.chmod(0o600)
 PY
+  # Sticky OpenRouter session_id (body + x-session-id) + diagnostics.cacheTrace.
+  _agent_openclaw_cache_config_patch "$config_dir" "$container" \
+    "${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}" \
+    "${OPENCLAW_CACHE_TRACE:-1}" \
+    "$openrouter_enabled" || true
 }
 
 ensure_memory_config() {

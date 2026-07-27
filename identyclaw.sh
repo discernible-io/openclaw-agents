@@ -57,6 +57,7 @@
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
+#   cache-stats [id|all] Prompt-cache hit metrics (OpenRouter sticky session_id + usage)
 
 set -euo pipefail
 
@@ -2122,6 +2123,48 @@ cmd_token() {
   agent_gateway_token "$id"
 }
 
+cmd_cache_stats() {
+  local target="${1:-all}"
+  local id dir container ids=()
+  load_env
+  if [[ "$target" == "all" ]]; then
+    # shellcheck disable=SC2206
+    ids=($AGENT_IDS)
+  else
+    is_valid_agent_id "$target" || {
+      echo "Usage: $0 cache-stats [agent-id|all]" >&2
+      return 1
+    }
+    ids=("$target")
+  fi
+  [[ ${#ids[@]} -gt 0 ]] || {
+    echo "No AGENT_IDS in env.local" >&2
+    return 1
+  }
+  echo "==> Prompt-cache stats (sticky session_id=${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}, cacheTrace=${OPENCLAW_CACHE_TRACE:-1})"
+  for id in "${ids[@]}"; do
+    dir="$(agent_home "$id")"
+    container="$(agent_container "$id")"
+    if [[ -r "$dir/openclaw.json" ]]; then
+      node "${IDENTYCLAW_ROOT}/scripts/summarize-cache-stats.mjs" \
+        --state-dir "$dir" --agent "$id" || true
+      continue
+    fi
+    if command -v podman >/dev/null 2>&1 && podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+      podman cp "${IDENTYCLAW_ROOT}/scripts/lib-openclaw-cache-config.mjs" \
+        "${container}:/tmp/lib-openclaw-cache-config.mjs" >/dev/null || true
+      podman cp "${IDENTYCLAW_ROOT}/scripts/summarize-cache-stats.mjs" \
+        "${container}:/tmp/summarize-cache-stats.mjs" >/dev/null || true
+      podman exec "$container" node /tmp/summarize-cache-stats.mjs \
+        --state-dir /home/node/.openclaw --agent "$id" || true
+      continue
+    fi
+    echo "${id}: (no readable state — start the agent or restore-host-access)"
+  done
+  echo ""
+  echo "Tips: /usage full in chat; DeepSeek may report cached_tokens=0 on the first warm-up turn."
+}
+
 require_agent_running() {
   local id="$1"
   local container attempt=0 max_attempts=5
@@ -2489,6 +2532,7 @@ main() {
     send-rodit-webhook) cmd_send_rodit_webhook "$@" ;;
     webhook-url) cmd_webhook_url "$@" ;;
     token) cmd_token "$@" ;;
+    cache-stats) cmd_cache_stats "$@" ;;
     chat) cmd_chat "$@" ;;
     ask) cmd_ask "$@" ;;
     onboard) cmd_onboard "$@" ;;

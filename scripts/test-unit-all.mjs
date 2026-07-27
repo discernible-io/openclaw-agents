@@ -18,6 +18,7 @@ const suites = [
   "test-a2a-hola-smoke-responder-unit.mjs",
   "test-agent-card-validate-unit.mjs",
   "test-mail-responder-format-unit.mjs",
+  "test-openclaw-cache-config-unit.mjs",
 ];
 
 process.stdout.write("Unit test orchestrator\n\n");
