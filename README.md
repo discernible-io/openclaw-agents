@@ -58,7 +58,7 @@ This fleet therefore **does not wire** remote SLC MCP for agents. SLC’s `/mcp`
 
 Until then, use **skill paths + `identyclaw_request`**, and for required SLC submits prefer **`identyclaw_game_tick`** (plugin ≥ 1.8.3). Optional SLC heartbeat (`IDENTYCLAW_ENABLE_SLC_HEARTBEAT`) calls that tick.
 
-**Ask to play unattended (chat → cron → email):** paste the operator prompt in [`scripts/templates/knowledge/slc-play-unattended.md`](scripts/templates/knowledge/slc-play-unattended.md). The agent arms an isolated cron tick loop and emails status so you can leave the Control UI / TUI.
+**Ask to play unattended:** paste [`scripts/templates/knowledge/slc-play-unattended.md`](scripts/templates/knowledge/slc-play-unattended.md) — a short operator prompt that points at the live skill (not a local playbook).
 
 ## Standards
 
