@@ -5614,7 +5614,7 @@ Federation shares **Rodit login** only (\`identyclaw_ensure_session({ apiEndpoin
 
 1. \`identyclaw_ensure_session({ apiEndpoint: "<peer>" })\`
 2. Discover: \`identyclaw_list_resources\` / \`identyclaw_get_resource\` / peer skill.md / OpenAPI
-3. Call product routes with \`identyclaw_request({ method, path, apiEndpoint })\`. For SLC required submits prefer \`identyclaw_game_tick({ apiEndpoint })\` (or \`POST /api/game/tick\` with body \`{}\`) so heartbeats cannot observe-only.
+3. Call product routes with \`identyclaw_request({ method, path, apiEndpoint })\`. For SLC: refresh live \`https://slc.discernible.io:8443/api/game/skill.md\` (≥ 1.8.5) — no local playbook — then GET tasks+state(+messages), choose an explicit action from state (\`transfer\`|\`invest\`|\`transfer_and_invest\`|\`none\`), then \`identyclaw_game_tick({ apiEndpoint, … })\` or \`POST /api/game/tick\` / \`…/action\` **with that action body**. Empty tick bodies return \`action_required\` — they are not a silent \`none\`.
 
 Keep Passport/HOLA/DID tools on the **home** API (omit \`apiEndpoint\`). A 404 on \`/api/me/identity\` against a federated host is expected when that peer does not implement it — not a login failure.
 
@@ -8173,9 +8173,189 @@ enable_inbox_heartbeat() {
   fi
 }
 
+_slc_kb_template_path() {
+  echo "${IDENTYCLAW_ROOT}/scripts/templates/knowledge/slc-play-unattended.md"
+}
+
+write_slc_kb_doc() {
+  local config_dir="$1"
+  local kb_dir="$config_dir/workspace/knowledge/references"
+  local template dest
+  template="$(_slc_kb_template_path)"
+  dest="$kb_dir/slc-play-unattended.md"
+  [[ -f "$template" ]] || return 0
+  mkdir -p "$kb_dir"
+  cp -f "$template" "$dest"
+  chmod 644 "$dest"
+  _patch_slc_kb_scope "$config_dir/workspace/knowledge/SCOPE.md"
+}
+
+_patch_slc_kb_scope() {
+  local scope_file="$1"
+  [[ -f "$scope_file" ]] || return 0
+  python3 - "$scope_file" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+needle = "- SLC unattended play (`./identyclaw.sh enable-slc-heartbeat`)"
+if needle in text:
+    sys.exit(0)
+for anchor in (
+    "- Concierge inbox heartbeat (`./identyclaw.sh enable-inbox-check`)",
+    "- Migadu email / Himalaya skill (when documented here)",
+):
+    if anchor in text:
+        text = text.replace(anchor, anchor + "\n" + needle, 1)
+        path.write_text(text, encoding="utf-8")
+        sys.exit(0)
+PY
+}
+
+_write_slc_kb_doc_in_container() {
+  local container="$1"
+  local template tmp
+  template="$(_slc_kb_template_path)"
+  [[ -f "$template" ]] || return 1
+  tmp="$(mktemp)"
+  cp -f "$template" "$tmp"
+  podman exec "$container" mkdir -p /home/node/.openclaw/workspace/knowledge/references
+  podman cp "$tmp" "$container:/home/node/.openclaw/workspace/knowledge/references/slc-play-unattended.md"
+  rm -f "$tmp"
+  podman exec "$container" chmod 644 /home/node/.openclaw/workspace/knowledge/references/slc-play-unattended.md
+  podman exec -i "$container" python3 - <<'PY'
+import os
+
+workspace = "/home/node/.openclaw/workspace"
+scope_path = os.path.join(workspace, "knowledge", "SCOPE.md")
+if not os.path.isfile(scope_path):
+    raise SystemExit(0)
+with open(scope_path, encoding="utf-8") as f:
+    scope = f.read()
+needle = "- SLC unattended play (`./identyclaw.sh enable-slc-heartbeat`)"
+if needle in scope:
+    raise SystemExit(0)
+for anchor in (
+    "- Concierge inbox heartbeat (`./identyclaw.sh enable-inbox-check`)",
+    "- Migadu email / Himalaya skill (when documented here)",
+):
+    if anchor in scope:
+        scope = scope.replace(anchor, anchor + "\n" + needle, 1)
+        with open(scope_path, "w", encoding="utf-8") as f:
+            f.write(scope)
+        break
+PY
+}
+
+# Remove local SLC playbooks so agents use :8443 skill.md only (fleet ops stay in heartbeat + unattended KB).
+purge_stale_slc_local_docs() {
+  local config_dir="$1"
+  rm -f "$config_dir/workspace/SLC.md" \
+    "$config_dir/workspace/SLC-STANDING-ORDERS.md"
+  rm -rf "$config_dir/workspace/skills/synthetics-last-cradle"
+  write_slc_kb_doc "$config_dir"
+  _patch_agents_slc_host_pointer "$config_dir/workspace/AGENTS.md"
+}
+
+_purge_stale_slc_local_docs_in_container() {
+  local container="$1"
+  podman exec "$container" sh -c \
+    'rm -f /home/node/.openclaw/workspace/SLC.md \
+           /home/node/.openclaw/workspace/SLC-STANDING-ORDERS.md; \
+     rm -rf /home/node/.openclaw/workspace/skills/synthetics-last-cradle' || true
+  _write_slc_kb_doc_in_container "$container" || true
+  podman exec -i "$container" python3 - <<'PY'
+from pathlib import Path
+import re
+
+agents = Path("/home/node/.openclaw/workspace/AGENTS.md")
+if not agents.is_file():
+    raise SystemExit(0)
+block = """## SLC (fleet)
+
+Playbook is only the live host skill: refresh `https://slc.discernible.io:8443/api/game/skill.md` (≥ 1.8.5) each session. Do not keep local `SLC.md` / cached `synthetics-last-cradle` skills. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
+"""
+text = agents.read_text(encoding="utf-8")
+text = re.sub(
+    r"\n## SLC standing orders \(fleet\)\n.*?(?=\n## |\Z)",
+    "\n",
+    text,
+    flags=re.S,
+)
+text = re.sub(
+    r"\n## SLC \(fleet\)\n.*?(?=\n## |\Z)",
+    "\n",
+    text,
+    flags=re.S,
+)
+if "## SLC active game (operator pin)" in text:
+    text = text.replace(
+        "## SLC active game (operator pin)",
+        block.rstrip() + "\n\n## SLC active game (operator pin)",
+        1,
+    )
+elif "## Heartbeats" in text:
+    text = text.replace("## Heartbeats", block.rstrip() + "\n\n## Heartbeats", 1)
+else:
+    text = text.rstrip() + "\n\n" + block
+agents.write_text(text, encoding="utf-8")
+PY
+}
+
+_patch_agents_slc_host_pointer() {
+  local agents_file="$1"
+  [[ -f "$agents_file" ]] || return 0
+  python3 - "$agents_file" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+block = """## SLC (fleet)
+
+Playbook is only the live host skill: refresh `https://slc.discernible.io:8443/api/game/skill.md` (≥ 1.8.5) each session. Do not keep local `SLC.md` / cached `synthetics-last-cradle` skills. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
+"""
+text = path.read_text(encoding="utf-8")
+text = re.sub(
+    r"\n## SLC standing orders \(fleet\)\n.*?(?=\n## |\Z)",
+    "\n",
+    text,
+    flags=re.S,
+)
+text = re.sub(
+    r"\n## SLC \(fleet\)\n.*?(?=\n## |\Z)",
+    "\n",
+    text,
+    flags=re.S,
+)
+if "## SLC active game (operator pin)" in text:
+    text = text.replace(
+        "## SLC active game (operator pin)",
+        block.rstrip() + "\n\n## SLC active game (operator pin)",
+        1,
+    )
+elif "## Heartbeats" in text:
+    text = text.replace("## Heartbeats", block.rstrip() + "\n\n## Heartbeats", 1)
+else:
+    text = text.rstrip() + "\n\n" + block
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+# Back-compat aliases used by apply/enable paths.
+write_slc_workspace_docs() {
+  purge_stale_slc_local_docs "$1"
+}
+
+_write_slc_workspace_docs_in_container() {
+  _purge_stale_slc_local_docs_in_container "$1"
+}
+
 _heartbeat_slc_game_prompt() {
+  # Single line: HEARTBEAT.md stores prompt in double quotes (no " inside).
   cat <<'EOF'
-Fetch live playbook: identyclaw_request({ method: "GET", path: "/api/game/skill.md", apiEndpoint: "https://slc.discernible.io:8443", auth: false, responseType: "text" }). Require skill version >= 1.5.2 and api_base with :8443. Then identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" }). Prefer identyclaw_game_tick({ apiEndpoint: "https://slc.discernible.io:8443" }) once — it submits one required message-report (defaults 0/0) or action (none) if pending. Fallback: identyclaw_request POST /api/game/tick with body {}. Do not only GET /tasks. If tick returns submitted:false and waitingOn lists peers, note their displayNames — do not invent submits for them. Prefer join over create; ignore cancelled lobby IDs; never bare-GET /api/game/games/{id}. Do not use remote slc_* MCP (OpenClaw cannot attach the federated JWT). Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
+Refresh live skill only: identyclaw_request GET /api/game/skill.md apiEndpoint https://slc.discernible.io:8443 auth false responseType text. Require version >= 1.8.5 and api_base with :8443. Do not use local SLC.md or cached synthetics-last-cradle skills — delete/ignore them. ensure_session for that apiEndpoint. Standing operator approval while this task is armed: a2a_send_message and game-related email to living co-players in this game are approved; wallet create/fund/transfer/rotate stay gated. GET tasks + state + messages (and inbox if concierge). Peer map: players[].id = game ULID for transfers; players[].roditId = Passport for identity/A2A/email lookup; displayName is label only. Prefer A2A if routable else email+HOLA; advertise Passport once in public message body if unknown. If negotiation_open: GET messages then reply or post (messaging only in negotiation). If submit_execution_action: from state choose transfer|invest|transfer_and_invest|none with explicit action body (ULID toAgentId); soft preference to export surplus/specialty trade or invest when survival cushion allows — never AFK-default none from empty tick; cap invest at actionHints.maxInvestAmountAfterSurvival; optional hide/find when compute surplus remains after cushion. Call identyclaw_game_tick or POST /api/game/tick or .../action WITH that action body — empty body returns action_required. If waitingOn non-empty note displayNames; do not invent peer submits. Prefer join over create; ignore cancelled lobby IDs; never bare-GET /api/game/games/{id}. No remote slc_* MCP. Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
 EOF
 }
 
@@ -8184,10 +8364,11 @@ write_slc_heartbeat_doc() {
   local interval="${2:-10m}"
   local prompt
   prompt="$(_heartbeat_slc_game_prompt)"
+  prompt="${prompt//$'\n'/ }"
   _upsert_heartbeat_task \
     "$config_dir/workspace/HEARTBEAT.md" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — prefer identyclaw_game_tick after ensure_session (JWT never to model)."
+    "# Synthetics' Last Cradle — live skill.md >=1.8.5 only; explicit action body."
 }
 
 _write_slc_heartbeat_doc_in_container() {
@@ -8195,10 +8376,11 @@ _write_slc_heartbeat_doc_in_container() {
   local interval="${2:-10m}"
   local prompt
   prompt="$(_heartbeat_slc_game_prompt)"
+  prompt="${prompt//$'\n'/ }"
   _upsert_heartbeat_task_in_container \
     "$container" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — prefer identyclaw_game_tick after ensure_session (JWT never to model)."
+    "# Synthetics' Last Cradle — live skill.md >=1.8.5 only; explicit action body."
 }
 
 ensure_slc_heartbeat_config() {
@@ -8276,12 +8458,28 @@ _apply_slc_heartbeat() {
   local container
   container="$(agent_container "$id")"
   if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_slc_workspace_docs_in_container "$container"
     _write_slc_heartbeat_doc_in_container "$container" "$interval"
     _ensure_slc_heartbeat_config_in_container "$container" "$interval"
   fi
   if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    write_slc_workspace_docs "$config_dir"
     write_slc_heartbeat_doc "$config_dir" "$interval"
     ensure_slc_heartbeat_config "$config_dir" "$interval"
+  fi
+}
+
+# Install SLC KB + stub playbooks even when heartbeat is not armed (RAG / refuse stale).
+ensure_slc_workspace_docs() {
+  local id="$1"
+  local config_dir="$2"
+  local container
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _write_slc_workspace_docs_in_container "$container" || true
+  fi
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    write_slc_workspace_docs "$config_dir" || true
   fi
 }
 
@@ -8289,6 +8487,7 @@ ensure_slc_heartbeat_from_env() {
   local id="$1"
   local config_dir="$2"
   local interval
+  ensure_slc_workspace_docs "$id" "$config_dir"
   interval="$(_read_slc_heartbeat_interval "$id" "$config_dir")"
   [[ -n "$interval" ]] || return 0
   _apply_slc_heartbeat "$id" "$config_dir" "$interval"
@@ -8309,6 +8508,7 @@ enable_slc_heartbeat() {
     _apply_slc_heartbeat "$id" "$config_dir" "$interval"
   elif [[ -d "$config_dir" ]]; then
     write_slc_heartbeat_marker "$config_dir" "$interval"
+    write_slc_workspace_docs "$config_dir"
     write_slc_heartbeat_doc "$config_dir" "$interval"
     ensure_slc_heartbeat_config "$config_dir" "$interval"
   fi

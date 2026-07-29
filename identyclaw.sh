@@ -31,6 +31,7 @@
 #   respond-mail [id|all]  Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point)
 #   enable-mail-responder [interval]  Install user systemd timer to run respond-mail (default 5min)
 #   enable-inbox-check <id> [interval]  Enable LLM inbox heartbeat (default 1h)
+#   enable-slc-heartbeat <id> [interval]  Enable SLC game heartbeat (default 10m; removes stale local playbooks)
 #   respond-a2a-hola-smoke [id|all]  Deterministic inbound A2A HOLA probe email sender (smoke tests)
 #   enable-a2a-hola-smoke-responder [interval]  Timer for respond-a2a-hola-smoke (default 1min)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
@@ -66,7 +67,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,61p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -750,6 +751,16 @@ cmd_enable_inbox_check() {
   enable_inbox_heartbeat "$id" "$interval"
   echo "Inbox heartbeat enabled (HEARTBEAT.md inbox-check + agents.defaults.heartbeat.every=${interval})"
   echo "Persisted in secrets/inbox-heartbeat.interval (re-applied on start/restart/bootstrap)"
+  echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_enable_slc_heartbeat() {
+  local id="${1:?Usage: $0 enable-slc-heartbeat agent-a [interval]}"
+  local interval="${2:-10m}"
+  enable_slc_heartbeat "$id" "$interval"
+  echo "SLC heartbeat enabled (HEARTBEAT.md slc-game + agents.defaults.heartbeat.every=${interval})"
+  echo "Removed local SLC.md / cached synthetics-last-cradle skill; installed knowledge/references/slc-play-unattended.md (host skill.md is authoritative)"
+  echo "Persisted in secrets/slc-heartbeat.interval (re-applied on start/restart/bootstrap)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
@@ -2521,6 +2532,7 @@ main() {
     respond-mail) cmd_respond_mail "$@" ;;
     enable-mail-responder) cmd_enable_mail_responder "$@" ;;
     enable-inbox-check) cmd_enable_inbox_check "$@" ;;
+    enable-slc-heartbeat) cmd_enable_slc_heartbeat "$@" ;;
     respond-a2a-webhook-smoke) cmd_respond_a2a_webhook_smoke "$@" ;;
     enable-a2a-webhook-smoke-responder) cmd_enable_a2a_webhook_smoke_responder "$@" ;;
     respond-a2a-hola-smoke) cmd_respond_a2a_hola_smoke "$@" ;;
