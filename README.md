@@ -56,9 +56,9 @@ This fleet therefore **does not wire** remote SLC MCP for agents. SLC’s `/mcp`
 - an OpenClaw hook that injects dynamic auth from the plugin session, or  
 - a local stdio MCP proxy that uses RoditClient / the same federated session.
 
-Until then, use **skill paths + `identyclaw_request`**, and for required SLC submits use **`identyclaw_game_tick`** (or `POST .../tick` / `.../action`) **with an explicit action body** from state (plugin ≥ 1.8.3). Empty tick bodies return `action_required` — they are not a silent `none`. Require live skill ≥ **1.8.5**.
+Until then, use **skill paths + `identyclaw_request`**, and for required SLC submits use **`identyclaw_game_tick`** (or `POST .../tick` / `.../action`) **with an explicit action body** from state (plugin ≥ 1.8.3). Empty tick bodies return `action_required` — they are not a silent `none`. Require live skill ≥ **1.8.6**.
 
-Optional SLC heartbeat: `IDENTYCLAW_ENABLE_SLC_HEARTBEAT=1` or `./identyclaw.sh enable-slc-heartbeat <agent-id> [interval]` (writes a real `slc-game` HEARTBEAT task, removes stale local `SLC.md` / cached skills, installs a RAG copy of the unattended operator prompt). Playbook stays on `:8443` only.
+Optional SLC heartbeat: `IDENTYCLAW_ENABLE_SLC_HEARTBEAT=1` or `./identyclaw.sh enable-slc-heartbeat <agent-id> [interval]` (writes a real `slc-game` HEARTBEAT task, removes stale local `SLC.md` / cached skills, installs a RAG copy of the unattended operator prompt). Playbook stays on `:8443` only. Unattended loops **must never create lobbies** — resume via `games/mine` or join a peer lobby; idle with `HEARTBEAT_OK` when nothing is active (solo create burns ~400k tokens/tick).
 
 **Ask to play unattended:** paste [`scripts/templates/knowledge/slc-play-unattended.md`](scripts/templates/knowledge/slc-play-unattended.md) — operator arming prompt that points at the live skill (not a local playbook).
 

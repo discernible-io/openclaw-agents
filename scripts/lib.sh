@@ -8274,7 +8274,7 @@ if not agents.is_file():
     raise SystemExit(0)
 block = """## SLC (fleet)
 
-Playbook is only the live host skill: refresh `https://slc.discernible.io:8443/api/game/skill.md` (≥ 1.8.5) each session. Do not keep local `SLC.md` / cached `synthetics-last-cradle` skills. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
+Playbook is only the live host skill: refresh `https://slc.discernible.io:8443/api/game/skill.md` (≥ 1.8.6) each session. Unattended loops never create lobbies — resume/join only. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
 """
 text = agents.read_text(encoding="utf-8")
 text = re.sub(
@@ -8314,7 +8314,7 @@ import sys
 path = Path(sys.argv[1])
 block = """## SLC (fleet)
 
-Playbook is only the live host skill: refresh `https://slc.discernible.io:8443/api/game/skill.md` (≥ 1.8.5) each session. Do not keep local `SLC.md` / cached `synthetics-last-cradle` skills. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
+Playbook is only the live host skill: refresh `https://slc.discernible.io:8443/api/game/skill.md` (≥ 1.8.6) each session. Unattended loops never create lobbies — resume/join only. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
 """
 text = path.read_text(encoding="utf-8")
 text = re.sub(
@@ -8354,8 +8354,9 @@ _write_slc_workspace_docs_in_container() {
 
 _heartbeat_slc_game_prompt() {
   # Single line: HEARTBEAT.md stores prompt in double quotes (no " inside).
+  # Unattended must never POST /api/game/games — solo/empty lobbies cancel and burn ~400k tokens/tick.
   cat <<'EOF'
-Refresh live skill only: identyclaw_request GET /api/game/skill.md apiEndpoint https://slc.discernible.io:8443 auth false responseType text. Require version >= 1.8.5 and api_base with :8443. Do not use local SLC.md or cached synthetics-last-cradle skills — delete/ignore them. ensure_session for that apiEndpoint. Standing operator approval while this task is armed: a2a_send_message and game-related email to living co-players in this game are approved; wallet create/fund/transfer/rotate stay gated. GET tasks + state + messages (and inbox if concierge). Peer map: players[].id = game ULID for transfers; players[].roditId = Passport for identity/A2A/email lookup; displayName is label only. Prefer A2A if routable else email+HOLA; advertise Passport once in public message body if unknown. If negotiation_open: GET messages then reply or post (messaging only in negotiation). If submit_execution_action: from state choose transfer|invest|transfer_and_invest|none with explicit action body (ULID toAgentId); soft preference to export surplus/specialty trade or invest when survival cushion allows — never AFK-default none from empty tick; cap invest at actionHints.maxInvestAmountAfterSurvival; optional hide/find when compute surplus remains after cushion. Call identyclaw_game_tick or POST /api/game/tick or .../action WITH that action body — empty body returns action_required. If waitingOn non-empty note displayNames; do not invent peer submits. Prefer join over create; ignore cancelled lobby IDs; never bare-GET /api/game/games/{id}. No remote slc_* MCP. Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
+ensure_session apiEndpoint https://slc.discernible.io:8443. Fast idle gate first: GET /api/game/games/mine then GET /api/game/games?status=lobby. NEVER create lobbies (no POST /api/game/games, no slc_create, no empty/solo lobby). Resume only an active mine game (lobby|running); join an open lobby only if agentCount>=1 already seated. If mine has nothing active and no joinable peer lobby: reply HEARTBEAT_OK immediately — do not create, do not open contests, do not refresh skill or explore further. When playing: refresh skill GET /api/game/skill.md auth false responseType text (require >= 1.8.6, api_base with :8443); ignore local SLC.md / cached synthetics-last-cradle. Standing approval while armed: a2a_send_message and game-related email to living co-players; wallet create/fund/transfer/rotate stay gated. GET tasks + state + messages (and inbox if concierge). Peer map: players[].id = game ULID for transfers; players[].roditId = Passport for identity/A2A/email; displayName is label only. Prefer A2A if routable else email+HOLA; advertise Passport once in public message body if unknown. If negotiation_open: GET messages then reply or post (messaging only in negotiation). If submit_execution_action: from state choose transfer|invest|transfer_and_invest|none with explicit action body (ULID toAgentId); soft preference to export surplus/specialty trade or invest when survival cushion allows — never AFK-default none from empty tick; cap invest at actionHints.maxInvestAmountAfterSurvival; optional hide/find when compute surplus remains after cushion. Call identyclaw_game_tick or POST /api/game/tick or .../action WITH that action body — empty body returns action_required. If waitingOn non-empty note displayNames; do not invent peer submits. On view_honors / finished / cancelled / GAME_NOT_FOUND: HEARTBEAT_OK and do not start another game. Ignore cancelled lobby IDs; never bare-GET /api/game/games/{id}. No remote slc_* MCP. Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
 EOF
 }
 
@@ -8368,7 +8369,7 @@ write_slc_heartbeat_doc() {
   _upsert_heartbeat_task \
     "$config_dir/workspace/HEARTBEAT.md" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — live skill.md >=1.8.5 only; explicit action body."
+    "# Synthetics' Last Cradle — never create lobbies; resume/join only; skill >=1.8.6."
 }
 
 _write_slc_heartbeat_doc_in_container() {
@@ -8380,7 +8381,7 @@ _write_slc_heartbeat_doc_in_container() {
   _upsert_heartbeat_task_in_container \
     "$container" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — live skill.md >=1.8.5 only; explicit action body."
+    "# Synthetics' Last Cradle — never create lobbies; resume/join only; skill >=1.8.6."
 }
 
 ensure_slc_heartbeat_config() {
