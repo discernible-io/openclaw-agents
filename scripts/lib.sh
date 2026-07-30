@@ -9152,6 +9152,22 @@ if memory.get("backend") != backend:
     memory["backend"] = backend
     changed = True
 
+# QMD BM25-only by default (no GGUF download). Pin command so gateway PATH
+# quirks cannot resurrect spawn ENOENT after image upgrades.
+if backend == "qmd":
+    qmd = memory.setdefault("qmd", {})
+    if qmd.get("command") != "/usr/local/bin/qmd":
+        qmd["command"] = "/usr/local/bin/qmd"
+        changed = True
+    if qmd.get("searchMode") != "search":
+        qmd["searchMode"] = "search"
+        changed = True
+
+# Drop legacy memory.search (invalid on OpenClaw 2026.6.x — crashes gateway).
+if isinstance(memory.get("search"), dict):
+    del memory["search"]
+    changed = True
+
 hooks = data.setdefault("hooks", {}).setdefault("internal", {})
 entries = hooks.setdefault("entries", {})
 entry = entries.setdefault("session-memory", {})
@@ -9162,10 +9178,16 @@ if entry.get("enabled") is not True:
     entry["enabled"] = True
     changed = True
 
+agents = data.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+memory_search = defaults.setdefault("memorySearch", {})
+# Builtin fallback must not require OpenAI embeddings — without this, a missing
+# qmd binary marks memory_search unavailable (provider openai + no API key).
+if memory_search.get("provider") != "none":
+    memory_search["provider"] = "none"
+    changed = True
+
 if session_recall:
-    agents = data.setdefault("agents", {})
-    defaults = agents.setdefault("defaults", {})
-    memory_search = defaults.setdefault("memorySearch", {})
     experimental = memory_search.setdefault("experimental", {})
     if experimental.get("sessionMemory") is not True:
         experimental["sessionMemory"] = True
@@ -9190,18 +9212,14 @@ if session_recall:
         sessions_tool["visibility"] = "agent"
         changed = True
 else:
-    agents = data.get("agents", {})
-    defaults = agents.get("defaults", {}) if isinstance(agents, dict) else {}
-    memory_search = defaults.get("memorySearch", {}) if isinstance(defaults, dict) else {}
-    if isinstance(memory_search, dict) and memory_search:
-        experimental = memory_search.get("experimental", {})
-        if isinstance(experimental, dict) and experimental.get("sessionMemory") is True:
-            experimental["sessionMemory"] = False
-            changed = True
-        sources = memory_search.get("sources")
-        if isinstance(sources, list) and "sessions" in sources:
-            memory_search["sources"] = [s for s in sources if s != "sessions"] or ["memory"]
-            changed = True
+    experimental = memory_search.get("experimental", {})
+    if isinstance(experimental, dict) and experimental.get("sessionMemory") is True:
+        experimental["sessionMemory"] = False
+        changed = True
+    sources = memory_search.get("sources")
+    if isinstance(sources, list) and "sessions" in sources:
+        memory_search["sources"] = [s for s in sources if s != "sessions"] or ["memory"]
+        changed = True
     qmd = memory.get("qmd", {})
     sessions_cfg = qmd.get("sessions", {}) if isinstance(qmd, dict) else {}
     if isinstance(sessions_cfg, dict) and sessions_cfg.get("enabled") is True:
@@ -9317,6 +9335,7 @@ write_openclaw_json() {
         ]
       },
       "memorySearch": {
+        "provider": "none",
         "experimental": { "sessionMemory": true },
         "sources": ["memory", "sessions"]
       }
@@ -9336,6 +9355,8 @@ write_openclaw_json() {
   "memory": {
     "backend": "${IDENTYCLAW_MEMORY_BACKEND:-qmd}",
     "qmd": {
+      "command": "/usr/local/bin/qmd",
+      "searchMode": "search",
       "sessions": {
         "enabled": true,
         "retentionDays": ${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}

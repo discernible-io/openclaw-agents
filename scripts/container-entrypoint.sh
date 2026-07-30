@@ -34,4 +34,10 @@ if [ "$needs_seed" = 1 ] && [ -d "$BUNDLED" ]; then
   cp -a "${BUNDLED}/." "${TARGET}/"
 fi
 
+# QMD is required when memory.backend=qmd. Older images omit it; install once.
+if ! command -v qmd >/dev/null 2>&1; then
+  echo "[identyclaw] installing missing qmd binary (@tobilu/qmd@2.5.3)" >&2
+  sudo npm install -g "@tobilu/qmd@2.5.3" >/dev/null
+fi
+
 exec tini -s -- "$@"

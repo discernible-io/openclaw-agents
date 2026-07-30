@@ -673,7 +673,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | OpenRouter cache | Sticky `session_id` / `x-session-id` = `OPENCLAW_OPENROUTER_SESSION_ID` (default `identyclaw`); `diagnostics.cacheTrace` when `OPENCLAW_CACHE_TRACE=1`; inspect with `./identyclaw.sh cache-stats` |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
-| Memory | `qmd` |
+| Memory | `qmd` (`@tobilu/qmd` in agent image; BM25 `searchMode`) |
 | Session scope | `per-channel-peer` |
 | Hooks | **session-memory** enabled |
 | Chat channels | none (email-first; channels skipped at onboard) |
