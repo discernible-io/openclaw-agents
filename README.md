@@ -30,7 +30,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | Area | What this repo provides |
 | --- | --- |
 | **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (main / development tiers) |
-| **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.6.11-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
+| **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.7.1-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, federated API sessions, generic `identyclaw_request` |
 | **A2A** | **identyclaw-a2a** @0.4.8 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
@@ -43,7 +43,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Testing** | Repo-local unit tests (CI); constitution gateway suites with per-agent **preflight**; multi-agent and multi-peer sweeps |
 | **Ops** | Boot persistence (`enable-boot`), GitHub Actions deploy, self-signed TLS generation, agent export/import, `restore-host-access` for credential edits |
 
-## Federated APIs (e.g. Synthetics' Last Cradle)
+## Federated APIs
 
 Set `IDENTYCLAW_API_ENDPOINTS` (comma-separated) so the IdentyClaw plugin knows federated peers such as `https://slc.discernible.io:8443`. Native vs federated login is the same Rodit challenge — only the login URL changes (`identyclaw_ensure_session({ apiEndpoint })`).
 
@@ -184,14 +184,14 @@ When Migadu passwords are ready, configure **each agent in `AGENT_IDS`**:
 # repeat set-password / set-api-key / onboard for each agent in AGENT_IDS
 ```
 
-**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.6.11+**, and bundled plugins (Discord) are in the image:
+**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.7.1+**, and bundled plugins (Discord) are in the image:
 
 ```bash
 ./identyclaw.sh build-image
 ./identyclaw.sh restart all
 ```
 
-The local image pins `ghcr.io/openclaw/openclaw:2026.6.11-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.6.11` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
+The local image pins `ghcr.io/openclaw/openclaw:2026.7.1-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.7.1` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
 - **Pod mode** (per agent): `https://<AGENT_*_PUBLIC_HOST>:<ingress-port>/` — token: `./identyclaw.sh token <agent-id>`
 - **Standalone dev** (default ports from `env.local`): agent-a → `http://127.0.0.1:18789/`, agent-c → `http://127.0.0.1:18793/`, agent-e → `http://127.0.0.1:18797/`
@@ -1000,7 +1000,7 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 
 | Command | Description |
 |---------|-------------|
-| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.6.11+ + Himalaya + near-cli-rs + Discord plugin layer |
+| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.7.1+ + Himalaya + near-cli-rs + Discord plugin layer |
 | `./identyclaw.sh near-activate <id> [account]` | Set active NEAR creds (`.active` + `.env` + plugin) then restart |
 | `./identyclaw.sh init` | Create agent state dirs (`agent-a`, `agent-c`, `agent-e` from `env.example`) and `env.local` |
 | `./identyclaw.sh set-password agent-a` | Store Migadu password locally |

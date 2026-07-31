@@ -175,7 +175,7 @@ load_env() {
       esac
     done <"$f"
   fi
-  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.6.11-slim}"
+  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.7.1-slim}"
   OPENCLAW_GATEWAY_VERSION="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
   OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@${OPENCLAW_GATEWAY_VERSION}}"
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-agent:local}"
@@ -8370,7 +8370,7 @@ write_slc_heartbeat_doc() {
   _upsert_heartbeat_task \
     "$config_dir/workspace/HEARTBEAT.md" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — never create lobbies; resume/join only; skill >=1.8.12; honor deal log."
+    "# SLC — never create lobbies; resume/join only; skill >=1.8.12; honor deal log."
 }
 
 _write_slc_heartbeat_doc_in_container() {
@@ -8382,7 +8382,7 @@ _write_slc_heartbeat_doc_in_container() {
   _upsert_heartbeat_task_in_container \
     "$container" \
     "slc-game" "$interval" "$prompt" \
-    "# Synthetics' Last Cradle — never create lobbies; resume/join only; skill >=1.8.12; honor deal log."
+    "# SLC — never create lobbies; resume/join only; skill >=1.8.12; honor deal log."
 }
 
 ensure_slc_heartbeat_config() {
