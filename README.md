@@ -15,17 +15,27 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 
 **You choose how many agents run on each host** via `AGENT_IDS` in `env.local` (see [Choosing agents on this host](#choosing-agents-on-this-host)). The defaults in `env.example` illustrate a three-agent layout (`agent-a`, `agent-c`, `agent-e`); trim or extend that list to match your deployment.
 
+## Related guides
+
+| Guide | Use when |
+| --- | --- |
+| [Agent hive (A2A + email)](https://dev.to/discernible-io/build-an-openclaw-agent-hive-with-identyclaw-a2a-email-out-of-the-box-125b) | Narrative walkthrough of this repo |
+| [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k) | Mint, plugins, collaboration envelopes |
+| [Verify before execute](https://dev.to/discernible-io/verify-before-execute-hola-recipes-for-agent-verifiers-4a0d) | HOLA / task trust on inbound work |
+| [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0) | Decide whether to mint |
+| [Passport threat model](https://dev.to/discernible-io/passport-threat-model-triangle-of-trust-threats-and-how-the-architecture-counters-them-3mo6) | Triangle of Trust / threat → control |
+
 ## Features & capabilities
 
 | Area | What this repo provides |
 | --- | --- |
 | **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (main / development tiers) |
-| **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.6.10-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
+| **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.6.11-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, federated API sessions, generic `identyclaw_request` |
 | **A2A** | **identyclaw-a2a** @0.4.8 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
 | **Webhooks** | **identyclaw-webhooks** @0.1.8 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
-| **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); proactive `GET /api/agents` seeding |
+| **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); optional `GET /api/agents` seeding (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` or `./identyclaw.sh discover-a2a-peers`) |
 | **Channels** | Discord (bundled); optional Telegram, Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
 | **LLM** | **OpenRouter** (default) or **OpenCode** Zen/Go; model chain + failover timeouts synced from `env.local`; OpenRouter sticky `session_id` + prompt-cache stats (`cache-stats`) |
 | **Memory** | QMD backend with session-memory hook and configurable retention |
@@ -125,6 +135,9 @@ Default (if unset): `AGENT_IDS=agent-a agent-c agent-e`.
 AGENT_IDS=agent-a
 
 # Two agents on one host
+AGENT_IDS=agent-a agent-c
+
+# Stock three-agent template
 AGENT_IDS=agent-a agent-c agent-e
 
 # Split across hosts — peers identified by Passport token_id; URLs from API
@@ -171,14 +184,14 @@ When Migadu passwords are ready, configure **each agent in `AGENT_IDS`**:
 # repeat set-password / set-api-key / onboard for each agent in AGENT_IDS
 ```
 
-**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.6.10+**, and bundled plugins (Discord) are in the image:
+**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.6.11+**, and bundled plugins (Discord) are in the image:
 
 ```bash
 ./identyclaw.sh build-image
 ./identyclaw.sh restart all
 ```
 
-The local image pins `ghcr.io/openclaw/openclaw:2026.6.10-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.6.10` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
+The local image pins `ghcr.io/openclaw/openclaw:2026.6.11-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.6.11` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
 - **Pod mode** (per agent): `https://<AGENT_*_PUBLIC_HOST>:<ingress-port>/` — token: `./identyclaw.sh token <agent-id>`
 - **Standalone dev** (default ports from `env.local`): agent-a → `http://127.0.0.1:18789/`, agent-c → `http://127.0.0.1:18793/`, agent-e → `http://127.0.0.1:18797/`
@@ -484,9 +497,11 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 
 Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). The active signing account is recorded in `secrets/near-credentials/.active`.
 
+**Enrollment (Passport per agent):** generate NEAR credentials into that agent’s `secrets/near-credentials/`, mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), restart so `IDENTYCLAW_*` syncs, then confirm with `identyclaw_get_my_identity` (or `GET /api/me/identity`) and register Passport metadata `webhook_url` as the agent’s HTTPS base (`./identyclaw.sh webhook-url <id>`). Full walkthrough: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Skip minting only when peers stay inside one closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0).
+
 **NEAR wallet / Passport rotation:** after `build-image` (near-cli-rs) and bootstrap, agents get `workspace/scripts/idcp-wallet.sh`, `idcp-rotate-passport.sh`, and `idcp-activate-account.sh` plus the `idcp-wallet` skill. Rotate transfers the Passport on-chain and re-points `.active` / `.env` / plugin config; the agent then asks for `./identyclaw.sh restart <id>` (or operators run `./identyclaw.sh near-activate <id>`). Prefer new implicit accounts; do not reuse retired wallets.
 
-**A2A peer discovery:** list partner Passport **token_id** values in `A2A_PEER_AGENTS` (optional seed list). With `IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` (default), each agent proactively calls **`GET /api/agents`**, resolves each peer’s gateway via **`/full`** `metadata.webhook_url` (on-chain fallback), probes **`/.well-known/agent-card.json`** for liveness, and seeds `openclaw.json` `outbound.agents`. Manual refresh: `./identyclaw.sh discover-a2a-peers all`.
+**A2A peer discovery:** list partner Passport **token_id** values in `A2A_PEER_AGENTS` (optional seed list). API roster seeding is **off by default** (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=0` in `env.example` — slow at deploy). Set it to `1`, or run `./identyclaw.sh discover-a2a-peers all`, so agents call **`GET /api/agents`**, resolve each peer’s gateway via **`/full`** `metadata.webhook_url` (on-chain fallback), probe **`/.well-known/agent-card.json`** for liveness, and seed `openclaw.json` `outbound.agents`.
 
 Enable API-based peer URL resolution (pick one in `env.local`):
 
@@ -540,7 +555,7 @@ Peer collaboration uses **two HTTP surfaces**. They are complementary, not inter
 | **A2A** | `GET /.well-known/agent-card.json`, `POST /a2a` | Structured **messaging, files, tasks, artifacts** between agents |
 | **Webhooks** | `POST /hooks/wake`, `/hooks/agent`, custom `/hooks/<name>` | Signed **wake / event ping** — nudge a peer gateway, record an event |
 
-**Guidance:** prefer **A2A** for ongoing work with known peers (`a2a_send_message`). Use **`send_rodit_webhook`** to wake a peer via RODiT-signed webhook (not A2A). Use **HOLA / IdentyClaw API tools** (`identyclaw_*`) for identity verification of unknown senders — that is a separate surface from A2A wire protocol.
+**Guidance:** prefer **A2A** for ongoing work with known peers (`a2a_send_message`). Use **`send_rodit_webhook`** to wake a peer via RODiT-signed webhook (not A2A). Use **HOLA / IdentyClaw API tools** (`identyclaw_*`) for identity verification of unknown senders — that is a separate surface from A2A wire protocol. For delegated task payloads, [verify before execute](https://dev.to/discernible-io/verify-before-execute-hola-recipes-for-agent-verifiers-4a0d).
 
 #### A2A — permitted and forbidden
 
@@ -618,7 +633,9 @@ A2A is **not text-only**: the plugin supports messages, file attachments (plugin
 | **IdentyClaw API JWT** (`login_server`) | `identyclaw_*` API tools (HOLA, identity) — **not** used for A2A wire auth |
 | **P2P JWT** (peer `/api/login`) | Direct peer A2A |
 
-Rotating one credential does not automatically revoke the others. See trust-boundary notes in local `security-compliance-improvements.md` (operator doc, not in this repo).
+Rotating one credential does not automatically revoke the others. See trust-boundary notes in local `security-compliance-improvements.md` (operator doc, not in this repo). Threat table behind these surfaces: [Passport threat model (Triangle of Trust)](https://dev.to/discernible-io/passport-threat-model-triangle-of-trust-threats-and-how-the-architecture-counters-them-3mo6).
+
+**Wire auth ≠ task trust.** A valid A2A JWT or signed webhook proves who may speak on the channel. It does **not** prove which Passport delegated `task.payload`. On inbound work that carries a HOLA line or `identyclaw.collaboration.v1` envelope: verify HOLA first, match `peerTokenId` to `from.tokenId` / published canonical id, then execute — [verify before execute](https://dev.to/discernible-io/verify-before-execute-hola-recipes-for-agent-verifiers-4a0d).
 
 #### Collaboration summary
 
@@ -633,7 +650,7 @@ Rotating one credential does not automatically revoke the others. See trust-boun
 | Call peer without Passport JWT | No | No |
 | Administer peer gateway | No | No |
 
-**Typical flow:** (1) public Agent Card discovery → (2) optional HOLA trust via `identyclaw-tools` → (3) ongoing work via **`a2a_send_message`** → (4) optional **`send_rodit_webhook`** wake when a lightweight signed ping is enough.
+**Typical flow:** (1) public Agent Card discovery → (2) optional HOLA trust via `identyclaw-tools` → (3) ongoing work via **`a2a_send_message`** (verify HOLA in collaboration envelopes before tools) → (4) optional **`send_rodit_webhook`** wake when a lightweight signed ping is enough.
 
 **Verify:** `./identyclaw.sh test` — unit tests, **preflight**, then A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail (suites per [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)).
 
@@ -975,7 +992,7 @@ Each agent’s webhooks are HTTP paths on **that agent’s gateway** — they do
 
 Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at origin** with RODiT/Passport credentials (`x-signature` + `x-timestamp`) — not the Control UI gateway token. External services must call the correct subdomain. See [Main-tier ingress](#main-tier-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
 
-### Run as `dedalo46`, not `root`
+### Run as your normal user, not `root`
 
 `init` / `start` / `onboard` expect rootless mode as your normal user. State lives under `~/identyclaw-agents-app/agents/<agent-id>/` for each provisioned agent. Use root only for `dnf install podman` or optional rootful mode above.
 
@@ -983,7 +1000,7 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 
 | Command | Description |
 |---------|-------------|
-| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.6.10+ + Himalaya + near-cli-rs + Discord plugin layer |
+| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.6.11+ + Himalaya + near-cli-rs + Discord plugin layer |
 | `./identyclaw.sh near-activate <id> [account]` | Set active NEAR creds (`.active` + `.env` + plugin) then restart |
 | `./identyclaw.sh init` | Create agent state dirs (`agent-a`, `agent-c`, `agent-e` from `env.example`) and `env.local` |
 | `./identyclaw.sh set-password agent-a` | Store Migadu password locally |
@@ -1084,7 +1101,7 @@ chmod 600 ~/identyclaw-agents-app/env.local
 # TLS — self-signed bootstrap (same pattern as clienttest-idc):
 ./identyclaw.sh generate-certs
 # Writes ~/identyclaw-agents-app/certs/{fullchain.pem,privkey.pem} with SANs for
-# AGENT_A/B/C_PUBLIC_HOST. RODiT JWT handles A2A/webhook mutual auth — CA-issued
+# AGENT_A/C/E_PUBLIC_HOST. RODiT JWT handles A2A/webhook mutual auth — CA-issued
 # certs are optional. Replace with real PEMs when ready (infra/CERTIFICATE-MANAGEMENT.md).
 ```
 
