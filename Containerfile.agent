@@ -1,39 +1,54 @@
-# Build: podman build -f Containerfile.himalaya -t openclaw-himalaya:local .
+# Agent runtime image: OpenClaw gateway + Himalaya + near-cli-rs + Chromium + seeded plugins.
+# Build: podman build -f Containerfile.agent -t openclaw-agent:local .
 # Args: --build-arg OPENCLAW_BASE_IMAGE=... --build-arg HIMALAYA_ARCH=x86_64-linux
+#       --build-arg NEAR_CLI_RS_VERSION=v0.29.0 --build-arg NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.10-slim
-ARG OPENCLAW_GATEWAY_VERSION=2026.6.10
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.11-slim
+ARG OPENCLAW_GATEWAY_VERSION=2026.6.11
 ARG HIMALAYA_VERSION=v1.2.0
 ARG HIMALAYA_ARCH=x86_64-linux
+ARG NEAR_CLI_RS_VERSION=v0.29.0
+ARG NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
+# QMD memory sidecar (memory.backend=qmd). Without this, OpenClaw falls back to
+# builtin embeddings and fails when no OpenAI key is configured.
+ARG QMD_NPM_SPEC="@tobilu/qmd@2.5.3"
 # Space-separated npm specs installed into the image (seeded into agent homes at start).
 # Pin @openclaw/discord to OPENCLAW_GATEWAY_VERSION — mismatches crash the channel provider.
-ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.6.10"
+ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.6.11"
 
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ARGs before FROM are not visible in RUN — re-declare after FROM.
 ARG HIMALAYA_VERSION
 ARG HIMALAYA_ARCH
+ARG NEAR_CLI_RS_VERSION
+ARG NEAR_CLI_RS_TARGET
 ARG OPENCLAW_GATEWAY_VERSION
 ARG OPENCLAW_BUNDLED_PLUGINS
+ARG QMD_NPM_SPEC
 
 USER root
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl sudo wget fonts-liberation libvulkan1 \
+      ca-certificates curl sudo chromium jq \
  && curl -fsSL -o /tmp/himalaya.tgz \
       "https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/himalaya.${HIMALAYA_ARCH}.tgz" \
  && tar -xzf /tmp/himalaya.tgz -C /usr/local/bin \
  && chmod 755 /usr/local/bin/himalaya \
  && himalaya --version \
- && wget -q -O /tmp/google-chrome-stable.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/google-chrome-stable.deb \
- && google-chrome-stable --version \
- && rm -f /tmp/himalaya.tgz /tmp/google-chrome-stable.deb \
+ && curl -fsSL -o /tmp/near-cli-rs.tgz \
+      "https://github.com/near/near-cli-rs/releases/download/${NEAR_CLI_RS_VERSION}/near-cli-rs-${NEAR_CLI_RS_TARGET}.tar.gz" \
+ && tar -xzf /tmp/near-cli-rs.tgz -C /tmp \
+ && install -m 755 "/tmp/near-cli-rs-${NEAR_CLI_RS_TARGET}/near" /usr/local/bin/near \
+ && near --version \
+ && npm install -g "${QMD_NPM_SPEC}" \
+ && qmd --version \
+ && chromium --version \
+ && jq --version \
+ && rm -rf /tmp/himalaya.tgz /tmp/near-cli-rs.tgz "/tmp/near-cli-rs-${NEAR_CLI_RS_TARGET}" \
  && rm -rf /var/lib/apt/lists/* \
  && ln -sf /app/openclaw.mjs /openclaw.mjs \
- && ln -sf /usr/bin/google-chrome-stable /usr/bin/chromium \
- && ln -sf /usr/bin/google-chrome-stable /usr/bin/chromium-browser \
+ && ln -sf /usr/bin/chromium /usr/bin/chromium-browser \
  && echo "node ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/node \
  && chmod 440 /etc/sudoers.d/node
 

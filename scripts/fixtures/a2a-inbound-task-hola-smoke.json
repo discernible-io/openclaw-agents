@@ -1,0 +1,18 @@
+{
+  "kind": "task",
+  "id": "task-hola-smoke-fixture-001",
+  "contextId": "ctx-hola-smoke-001",
+  "status": { "state": "working", "timestamp": "2026-07-06T08:00:00.000Z" },
+  "history": [
+    {
+      "role": "user",
+      "messageId": "msg-hola-smoke-001",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "IDENTYCLAW_SMOKE inbound email HOLA test. Do exactly this: (1) call identyclaw_create_hola for recipient token_id \"lmsfckzncdbw\". (2) send an email via himalaya to \"andrew@example.com\" with EXACT subject \"IDENTYCLAW_HOLA_PROBE:hola-mail-in-fixture:good\" and the HOLA line in the body. Reply with the subject line you sent."
+        }
+      ]
+    }
+  ]
+}

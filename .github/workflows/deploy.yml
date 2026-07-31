@@ -2,7 +2,7 @@ name: Deploy identyclaw-agents
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, development ]
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -12,19 +12,21 @@ on:
 
 env:
   DEPLOY_SHA: ${{ github.event.inputs.commit_sha || github.sha }}
-  DEPLOY_TIER: main
-  SSH_HOST: ${{ secrets.SSH_HOST_MAIN }}
-  SSH_USER: ${{ secrets.SSH_USER_MAIN }}
-  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY_MAIN }}
-  SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS_MAIN }}
-  APP_DIR: /home/${{ secrets.SSH_USER_MAIN }}/identyclaw-agents-app
-  # Health-check host — set repository variable HEALTH_CHECK_HOST to AGENT_NAME_NOT_SET_PUBLIC_HOST
-  DOMAIN: ${{ vars.HEALTH_CHECK_HOST || 'agent-domain-not-set.example.com' }}
-  APP_PORT: '9443'
+  DEPLOY_TIER: ${{ github.ref == 'refs/heads/main' && 'main' || 'development' }}
+  SSH_HOST: ${{ github.ref == 'refs/heads/main' && secrets.SSH_HOST_MAIN || secrets.SSH_HOST_DEVELOPMENT }}
+  SSH_USER: ${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}
+  SSH_PRIVATE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SSH_PRIVATE_KEY_MAIN || secrets.SSH_PRIVATE_KEY_DEVELOPMENT }}
+  SSH_KNOWN_HOSTS: ${{ github.ref == 'refs/heads/main' && secrets.SSH_KNOWN_HOSTS_MAIN || secrets.SSH_KNOWN_HOSTS_DEVELOPMENT }}
+  APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/identyclaw-agents-app
+  # Primary health-check host — must match nginx server_name for agent-a.
+  # Development tier uses main config until dev-specific hosts/ports are provisioned.
+  DOMAIN: agent-a.identyclaw.com
+  APP_PORT: '7443'
+  NGINX_BUILD_ENV: main
   POD_NAME: identyclaw-agents-pod
   NGINX_CONTAINER_NAME: identyclaw-nginx
   REGISTRY: ghcr.io
-  OPENCLAW_IMAGE_NAME: ${{ github.repository }}/openclaw-himalaya
+  OPENCLAW_IMAGE_NAME: ${{ github.repository }}/openclaw-agent
   NGINX_IMAGE_NAME: ${{ github.repository }}/identyclaw-nginx
   HEALTH_CHECK_MAX_ATTEMPTS: 5
   HEALTH_CHECK_INTERVAL: 5
@@ -62,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Containerfile.himalaya
+          file: ./Containerfile.agent
           push: true
           build-args: |
             OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.11-slim
@@ -70,8 +72,10 @@ jobs:
             OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.6.11
             HIMALAYA_VERSION=v1.2.0
             HIMALAYA_ARCH=x86_64-linux
+            NEAR_CLI_RS_VERSION=v0.29.0
+            NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
           tags: |
-            ${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-main
+            ${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -81,8 +85,10 @@ jobs:
           context: .
           file: ./nginx.Dockerfile
           push: true
+          build-args: |
+            NODE_ENV=${{ env.NGINX_BUILD_ENV }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-main
+            ${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -97,7 +103,7 @@ jobs:
           missing=0
           for var in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
             if [ -z "${!var:-}" ]; then
-              echo "::error::${var} is missing or empty."
+              echo "::error::${var} is missing or empty for branch tier ${DEPLOY_TIER}."
               missing=1
             fi
           done
@@ -148,8 +154,9 @@ jobs:
           ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
             set -euo pipefail
             APP_DIR='${{ env.APP_DIR }}'
+            # Undo container-namespace ownership from prior deploys before host mkdir/chmod.
             podman unshare chown -R 0:0 \"\${APP_DIR}/logs/nginx\" 2>/dev/null || true
-            AGENT_IDS=\"agent-name-not-set\"
+            AGENT_IDS=\"agent-a agent-c agent-e\"
             if [ -f \"\${APP_DIR}/env.local\" ]; then
               line=\$(grep -E '^AGENT_IDS=' \"\${APP_DIR}/env.local\" | head -1 || true)
               if [ -n \"\${line}\" ]; then
@@ -189,9 +196,9 @@ jobs:
           ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
             set -euxo pipefail
             APP_DIR='${{ env.APP_DIR }}' \
-            OPENCLAW_IMAGE='${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-main' \
-            NGINX_IMAGE='${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-main' \
-            DEPLOY_TIER='main' \
+            OPENCLAW_IMAGE='${{ env.REGISTRY }}/${{ env.OPENCLAW_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}' \
+            NGINX_IMAGE='${{ env.REGISTRY }}/${{ env.NGINX_IMAGE_NAME }}:${{ env.DEPLOY_SHA }}-${{ env.DEPLOY_TIER }}' \
+            DEPLOY_TIER='${{ env.DEPLOY_TIER }}' \
             APP_PORT='${{ env.APP_PORT }}' \
             POD_NAME='${{ env.POD_NAME }}' \
             NGINX_CONTAINER_NAME='${{ env.NGINX_CONTAINER_NAME }}' \
@@ -209,7 +216,7 @@ jobs:
           APP_PORT: ${{ env.APP_PORT }}
         run: |
           if [ -z "${DOMAIN}" ]; then
-            echo "::error::DOMAIN is empty. Set repository variable HEALTH_CHECK_HOST."
+            echo "::error::DOMAIN is empty. Check deploy.yml DOMAIN mapping for this branch."
             exit 1
           fi
           HEALTH_URL="https://${DOMAIN}:${APP_PORT}/health"

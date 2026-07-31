@@ -4,17 +4,17 @@
 #
 # Required env:
 #   APP_DIR              Host app root (default: ../identyclaw-agents-app sibling of repo)
-#   OPENCLAW_IMAGE       Full image ref (ghcr.io/.../openclaw-himalaya:SHA)
+#   OPENCLAW_IMAGE       Full image ref (ghcr.io/.../openclaw-agent:SHA)
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #
 # Optional env (defaults match deploy.yml):
-#   DEPLOY_TIER / TARGET   main (default: image tag, else git branch)
-#   APP_PORT=9443 — defaults via deploy_tier_app_port
+#   DEPLOY_TIER / TARGET   main or development (default: image tag, else git branch)
+#   APP_PORT=7443 (all tiers) — defaults via deploy_tier_app_port
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
 #   REPO_ROOT            Git checkout path (for identyclaw.sh init/bootstrap)
-#   AGENT_IDS            Space-separated list (default: agent-name-not-set)
+#   AGENT_IDS            Space-separated list (default: agent-a agent-c agent-e)
 #   SKIP_PLUGIN_UPDATE=1 Skip GitHub plugin clone/build/install (requires git + npm when unset)
 
 set -euo pipefail
@@ -36,11 +36,11 @@ export IDENTYCLAW_DEPLOY_MODE=pod
 # shellcheck source=lib.sh
 source "$REPO_ROOT/scripts/lib.sh"
 
-DEPLOY_TIER="${DEPLOY_TIER:-main}"
+DEPLOY_TIER="$(resolve_deploy_tier "$REPO_ROOT" "$OPENCLAW_IMAGE")"
 case "$DEPLOY_TIER" in
-  main) ;;
+  development|main) ;;
   *)
-    echo "DEPLOY_TIER must be main (got: $DEPLOY_TIER)" >&2
+    echo "DEPLOY_TIER must be development or main (got: $DEPLOY_TIER)" >&2
     exit 1
     ;;
 esac
@@ -50,7 +50,7 @@ POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
 
 ensure_app_layout
 load_env
-AGENT_IDS="${AGENT_IDS:-agent-name-not-set}"
+AGENT_IDS="${AGENT_IDS:-agent-a agent-c agent-e}"
 
 require_podman() {
   command -v podman >/dev/null 2>&1 || { echo "podman not found" >&2; exit 1; }
@@ -80,8 +80,8 @@ init_agent_if_missing() {
   dir="$(agent_home "$id")"
   load_env
   is_valid_agent_id "$id" || { echo "unknown agent: $id" >&2; return 1; }
-  email="$(agent_email "$id")"
-  display_name="$(agent_display_name "$id")"
+  email="$(agent_env_value "$id" EMAIL "")"
+  display_name="$(agent_env_value "$id" DISPLAY_NAME "$id")"
   password="$(agent_env_value "$id" PASSWORD "")"
   gw_port="$(agent_env_value "$id" GATEWAY_PORT "")"
   [[ -n "$email" && -n "$gw_port" ]] || { echo "unknown agent: $id (set AGENT_*_EMAIL / GATEWAY_PORT in env.local)" >&2; return 1; }
@@ -92,12 +92,17 @@ init_agent_if_missing() {
 
   write_himalaya_config "$email" "$display_name" "$dir"
   write_himalaya_send_script "$email" "$display_name" "$dir"
+  write_himalaya_delete_script "$dir"
+  write_himalaya_inbox_script "$dir"
+  write_himalaya_read_script "$dir"
   write_agent_email_doc "$email" "$display_name" "$dir"
   write_openclaw_json "$dir" "$gw_port"
   ensure_agent_env "$dir"
+  ensure_main_ingress_config "$id" "$dir"
+  ensure_agent_security_hardening "$id" "$dir"
 
   if [[ -n "$password" ]]; then
-    write_secret_helpers "$dir" "$password"
+    write_secret_helpers "$id" "$password"
   fi
 }
 
@@ -113,6 +118,7 @@ ensure_agent_runtime() {
   load_env
 
   ensure_main_ingress_config "$id" "$dir"
+  ensure_agent_security_hardening "$id" "$dir"
   ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
@@ -120,7 +126,7 @@ ensure_agent_runtime() {
 
 start_agent_in_pod() {
   local id="$1"
-  local dir container gw_port z tls_env=() env_file tmp_env=""
+  local dir container gw_port z tls_env=()
   dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
   gw_port="$(agent_internal_gateway_port "$id")"
@@ -129,17 +135,14 @@ start_agent_in_pod() {
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
 
-  env_file="$(agent_env_file_for_podman_run "$dir" "$container")" || {
-    echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2
-    exit 1
-  }
-  [[ "$env_file" == "${dir}/.env" ]] || tmp_env="$env_file"
-  # Plugin bootstrap leaves container-namespace ownership; restore host write access
-  # for .env sync, then chown back to the pod uid before podman run.
-  restore_pod_path_for_host "$dir"
-  sync_identyclaw_env "$dir" "$container"
-  ensure_llm_env_auth "$id"
+  [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
   prepare_agent_state_for_gateway_start "$id" pod
+  sync_identyclaw_env "$dir" "$container"
+  # Bootstrap may have left state on the container uid — reclaim before host mkdir/cp.
+  restore_pod_path_for_host "$dir"
+  # himalaya mounts ~/.config read-only; near-cli-rs must write config elsewhere
+  mkdir -p "$dir/xdg-config"
+  ensure_idcp_wallet_tooling "$id" "$dir" || true
 
   podman run -d \
     --pod "$POD_NAME" \
@@ -149,15 +152,16 @@ start_agent_in_pod() {
     --shm-size=2g \
     --restart unless-stopped \
     -e HOME=/home/node \
+    -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \
     "${tls_env[@]}" \
-    --env-file "$env_file" \
+    --env-file "$dir/.env" \
     -v "$dir:/home/node/.openclaw:rw${z}" \
     -v "$dir/workspace:/home/node/.openclaw/workspace:rw${z}" \
     -v "$dir/.config:/home/node/.config:ro${z}" \
     "$OPENCLAW_IMAGE" \
     node dist/index.js gateway --bind lan --port "$gw_port"
-  if [[ -n "$tmp_env" ]]; then rm -f "$tmp_env"; fi
+  ensure_pod_agent_state_for_container "$id"
 }
 
 require_podman
@@ -202,6 +206,9 @@ for id in $AGENT_IDS; do
     [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
   done < <(pod_agent_ingress_host_args "$id")
 done
+while IFS= read -r host_arg; do
+  [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
+done < <(pod_migadu_smtp_host_args)
 podman pod create "${pod_create_args[@]}"
 
 for id in $AGENT_IDS; do
@@ -221,23 +228,16 @@ fi
 for id in $AGENT_IDS; do
   echo "==> Start ${id} in pod"
   start_agent_in_pod "$id"
-  # Best-effort post-start steps: the freshly started gateway may still be
-  # initializing, so a transient non-zero here must not abort the deploy before
-  # the nginx sidecar starts. bootstrap re-runs these on the next deploy anyway.
-  ensure_agent_trust_doc "$id" "$(agent_home "$id")" || \
-    echo "    (${id}: ensure_agent_trust_doc deferred — will retry next deploy)" >&2
-  sync_agent_openclaw_json_when_container_running "$id" 0 || \
-    echo "    (${id}: openclaw.json sync deferred — will retry next deploy)" >&2
-  ensure_discord_plugin_compat_and_restart "$id" || \
-    echo "    (${id}: discord plugin compat deferred — will retry next deploy)" >&2
+  sync_agent_openclaw_json_when_container_running "$id"
+  ensure_discord_plugin_compat_and_restart "$id"
 done
 
 ensure_pod_logs_for_container "$APP_DIR/logs/nginx"
 ensure_tls_certs
 normalize_tls_certs
 
+ensure_pod_nginx_ingress_config || true
 NGINX_CONF="${APP_DIR}/nginx/nginx.conf"
-bash "$REPO_ROOT/scripts/render-nginx-conf.sh" "$NGINX_CONF"
 
 z="$(selinux_mount_suffix)"
 echo "==> Start nginx sidecar"
@@ -248,6 +248,7 @@ podman run -d \
   --restart unless-stopped \
   -v "$APP_DIR/certs:/app/certs:ro${z}" \
   -v "$APP_DIR/logs/nginx:/var/log/nginx${z}" \
+  -v "$REPO_ROOT/nginx/inc:/etc/nginx/inc:ro${z}" \
   -v "$NGINX_CONF:/etc/nginx/nginx.conf:ro${z}" \
   "$NGINX_IMAGE"
 
@@ -262,6 +263,12 @@ if [[ "${IDENTYCLAW_ENABLE_MAIL_RESPONDER:-1}" != 0 ]]; then
   echo "==> Enable inbound HOLA mail responder (systemd user timer)"
   bash "$REPO_ROOT/identyclaw.sh" enable-mail-responder "${IDENTYCLAW_MAIL_RESPONDER_INTERVAL:-2min}" || \
     echo "    (mail responder timer not installed — run ./identyclaw.sh enable-mail-responder manually)" >&2
+fi
+
+if [[ "${IDENTYCLAW_ENABLE_A2A_HOLA_SMOKE_RESPONDER:-1}" != 0 ]]; then
+  echo "==> Enable inbound A2A HOLA smoke responder (systemd user timer)"
+  bash "$REPO_ROOT/identyclaw.sh" enable-a2a-hola-smoke-responder "${IDENTYCLAW_A2A_HOLA_SMOKE_POLL_INTERVAL:-1min}" || \
+    echo "    (A2A HOLA smoke responder timer not installed — run ./identyclaw.sh enable-a2a-hola-smoke-responder manually)" >&2
 fi
 
 echo "Restart gateway(s): ${REPO_ROOT}/identyclaw.sh restart all"

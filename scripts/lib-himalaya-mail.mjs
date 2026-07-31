@@ -3,8 +3,19 @@
  */
 import { execFileSync } from "node:child_process";
 
+export function envelopeFromAddress(envelope) {
+  if (!envelope || typeof envelope !== "object") return "";
+  const from = envelope.from;
+  if (!from || typeof from !== "object") return "";
+  return String(from.addr || from.address || "").trim();
+}
+
 export function sendMail({ fromName, fromEmail, to, subject, body }) {
-  const mail = `From: ${fromName} <${fromEmail}>\nTo: ${to}\nSubject: ${subject}\n\n${body}\n`;
+  const recipient = String(to || "").trim();
+  if (!recipient) {
+    throw new Error("cannot send message without a recipient");
+  }
+  const mail = `From: ${fromName} <${fromEmail}>\nTo: ${recipient}\nSubject: ${subject}\n\n${body}\n`;
   execFileSync("himalaya", ["message", "send"], {
     input: mail,
     encoding: "utf8",
@@ -27,6 +38,19 @@ export function listInboxEnvelopes() {
 
 export function readMessagePlain(id) {
   return execFileSync("himalaya", ["message", "read", String(id), "--output", "plain"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+export function deleteMessages(ids, { folder = "INBOX" } = {}) {
+  const normalized = (Array.isArray(ids) ? ids : [ids])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  if (normalized.length === 0) {
+    throw new Error("cannot delete messages without envelope id(s)");
+  }
+  execFileSync("himalaya", ["message", "delete", "--folder", folder, ...normalized], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });

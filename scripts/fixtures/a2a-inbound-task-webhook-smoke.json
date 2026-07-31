@@ -1,0 +1,16 @@
+{
+  "id": "task-smoke-fixture-001",
+  "history": [
+    {
+      "role": "user",
+      "messageId": "msg-smoke-001",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "IDENTYCLAW_SMOKE inbound webhook test. Call tool send_rodit_webhook exactly once with: peerId=\"abc123def456\", text=\"marker-fixture-001\", delaySeconds=0, hookPath=\"hooks/custom-smoke\""
+        }
+      ]
+    }
+  ],
+  "artifacts": []
+}
