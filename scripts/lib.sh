@@ -9164,10 +9164,42 @@ if backend == "qmd":
         qmd["searchMode"] = "search"
         changed = True
 
-# Drop legacy memory.search (invalid on OpenClaw 2026.6.x — crashes gateway).
-if isinstance(memory.get("search"), dict):
-    del memory["search"]
+# OpenClaw 2026.7.2+: memory.search (agents.defaults.memorySearch is rejected).
+# Drop the pre-7.2 location if present so bootstrap cannot reintroduce invalid config.
+agents = data.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+if "memorySearch" in defaults:
+    legacy = defaults.pop("memorySearch")
+    if isinstance(legacy, dict):
+        memory_search = memory.setdefault("search", {})
+        for k, v in legacy.items():
+            memory_search.setdefault(k, v)
     changed = True
+
+memory_search = memory.setdefault("search", {})
+# Builtin fallback must not require OpenAI embeddings — without this, a missing
+# qmd binary marks memory_search unavailable (provider openai + no API key).
+if memory_search.get("provider") != "none":
+    memory_search["provider"] = "none"
+    changed = True
+
+# Strip keys rejected by OpenClaw 2026.7.2+ config schema.
+meta = data.get("meta")
+if isinstance(meta, dict) and "lastTouchedAt" in meta:
+    del meta["lastTouchedAt"]
+    changed = True
+diagnostics = data.get("diagnostics")
+if isinstance(diagnostics, dict):
+    for k in ("stuckSessionWarnMs", "stuckSessionAbortMs"):
+        if k in diagnostics:
+            del diagnostics[k]
+            changed = True
+    cache_trace = diagnostics.get("cacheTrace")
+    if isinstance(cache_trace, dict):
+        for k in ("includeMessages", "includePrompt", "includeSystem"):
+            if k in cache_trace:
+                del cache_trace[k]
+                changed = True
 
 hooks = data.setdefault("hooks", {}).setdefault("internal", {})
 entries = hooks.setdefault("entries", {})
@@ -9177,15 +9209,6 @@ if hooks.get("enabled") is not True:
     changed = True
 if entry.get("enabled") is not True:
     entry["enabled"] = True
-    changed = True
-
-agents = data.setdefault("agents", {})
-defaults = agents.setdefault("defaults", {})
-memory_search = defaults.setdefault("memorySearch", {})
-# Builtin fallback must not require OpenAI embeddings — without this, a missing
-# qmd binary marks memory_search unavailable (provider openai + no API key).
-if memory_search.get("provider") != "none":
-    memory_search["provider"] = "none"
     changed = True
 
 if session_recall:
@@ -9334,17 +9357,8 @@ write_openclaw_json() {
           "${OPENCLAW_MODEL_FALLBACK_1}",
           "${OPENCLAW_MODEL_FALLBACK_2}"
         ]
-      },
-      "memorySearch": {
-        "provider": "none",
-        "experimental": { "sessionMemory": true },
-        "sources": ["memory", "sessions"]
       }
     }
-  },
-  "diagnostics": {
-    "stuckSessionWarnMs": ${OPENCLAW_STUCK_SESSION_WARN_MS:-300000},
-    "stuckSessionAbortMs": ${OPENCLAW_STUCK_SESSION_ABORT_MS:-900000}
   },
   "models": {
     "providers": {
@@ -9355,6 +9369,11 @@ write_openclaw_json() {
   },
   "memory": {
     "backend": "${IDENTYCLAW_MEMORY_BACKEND:-qmd}",
+    "search": {
+      "provider": "none",
+      "experimental": { "sessionMemory": true },
+      "sources": ["memory", "sessions"]
+    },
     "qmd": {
       "command": "/usr/local/bin/qmd",
       "searchMode": "search",
