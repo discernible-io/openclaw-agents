@@ -64,10 +64,10 @@ export function applyOpenclawCacheConfig(data, opts = {}) {
   const diagnostics = asObject(data.diagnostics) || (data.diagnostics = {});
   const ct = asObject(diagnostics.cacheTrace) || (diagnostics.cacheTrace = {});
   ct.enabled = cacheTrace;
-  // Keep traces small: usage/shape only, not full prompts.
-  ct.includeMessages = false;
-  ct.includePrompt = false;
-  ct.includeSystem = false;
+  // OpenClaw 2026.7.2+ rejects these keys — strip leftovers from older syncs.
+  delete ct.includeMessages;
+  delete ct.includePrompt;
+  delete ct.includeSystem;
 
   return data;
 }

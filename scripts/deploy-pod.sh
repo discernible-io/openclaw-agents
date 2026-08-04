@@ -178,13 +178,34 @@ else
   podman pull "$NGINX_IMAGE"
 fi
 
-echo "==> Recreate pod ${POD_NAME}"
+# Host-side bootstrap/plugin work must finish BEFORE recreating the pod.
+# Old order (rm pod → long plugin upgrade → start) left an empty pod for minutes;
+# any interrupt/PermissionError then permanently orphaned agents with no nginx.
+echo "==> Stop pod containers for host-owned bootstrap"
 for c in $AGENT_IDS "$NGINX_CONTAINER_NAME"; do
   podman container exists "$c" 2>/dev/null && podman rm -f "$c" || true
 done
-podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || true
 
 prepare_pod_deploy_host_paths
+
+for id in $AGENT_IDS; do
+  echo "==> Bootstrap ${id} (host)"
+  ensure_agent_host_config_access "$(agent_home "$id")" || exit 1
+  ensure_agent_runtime "$id"
+done
+
+# Plugin build/install while host still owns agent state (before chown to container uid).
+if [[ "${SKIP_PLUGIN_UPDATE:-0}" != 1 ]]; then
+  for id in $AGENT_IDS; do
+    upgrade_agent_plugins "$id"
+    ensure_agent_packages "$id"
+  done
+else
+  echo "==> Skip plugin update (SKIP_PLUGIN_UPDATE=1)"
+fi
+
+echo "==> Recreate pod ${POD_NAME}"
+podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || true
 
 pod_publish_ports=("$POD_LISTEN_PORT")
 for id in $AGENT_IDS; do
@@ -210,20 +231,6 @@ while IFS= read -r host_arg; do
   [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
 done < <(pod_migadu_smtp_host_args)
 podman pod create "${pod_create_args[@]}"
-
-for id in $AGENT_IDS; do
-  ensure_agent_runtime "$id"
-done
-
-# Plugin build/install while host still owns agent state (before chown to container uid).
-if [[ "${SKIP_PLUGIN_UPDATE:-0}" != 1 ]]; then
-  for id in $AGENT_IDS; do
-    upgrade_agent_plugins "$id"
-    ensure_agent_packages "$id"
-  done
-else
-  echo "==> Skip plugin update (SKIP_PLUGIN_UPDATE=1)"
-fi
 
 for id in $AGENT_IDS; do
   echo "==> Start ${id} in pod"

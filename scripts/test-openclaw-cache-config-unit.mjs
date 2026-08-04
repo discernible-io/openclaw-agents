@@ -66,7 +66,9 @@ runCase("applyOpenclawCacheConfig injects sticky session_id + headers", () => {
     "identyclaw",
   );
   assert.equal(data.diagnostics.cacheTrace.enabled, true);
-  assert.equal(data.diagnostics.cacheTrace.includeMessages, false);
+  assert.equal(data.diagnostics.cacheTrace.includeMessages, undefined);
+  assert.equal(data.diagnostics.cacheTrace.includePrompt, undefined);
+  assert.equal(data.diagnostics.cacheTrace.includeSystem, undefined);
   assert.equal(readConfiguredSessionId(data), "identyclaw");
 });
 

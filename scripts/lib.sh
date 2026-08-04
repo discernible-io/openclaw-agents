@@ -687,6 +687,22 @@ _agent_env_python() {
   fi
 }
 
+# Ensure openclaw.json is host-readable/writable for bootstrap (pod userns often leaves uid 1000).
+ensure_agent_host_config_access() {
+  local config_dir="$1"
+  local json="${config_dir}/openclaw.json"
+  [[ -e "$json" ]] || return 0
+  if [[ -r "$json" && -w "$json" ]]; then
+    return 0
+  fi
+  restore_pod_path_for_host "$config_dir"
+  if [[ -r "$json" && -w "$json" ]]; then
+    return 0
+  fi
+  echo "    (openclaw.json not host-writable after restore: ${json})" >&2
+  return 1
+}
+
 # Run python against the bind-mounted openclaw.json (host path or in-container path).
 _agent_openclaw_json_python() {
   local config_dir="$1"
@@ -694,12 +710,20 @@ _agent_openclaw_json_python() {
   shift 2
   if [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
     python3 - "$config_dir/openclaw.json" "$@"
-  elif agent_config_use_container "$config_dir" "$container"; then
-    podman exec -i "$container" python3 - /home/node/.openclaw/openclaw.json "$@"
-  else
-    echo "    (cannot update openclaw.json — not writable and container ${container:-<none>} unavailable)" >&2
-    return 1
+    return $?
   fi
+  # Pod deploy races (concurrent restart / ephemeral CLI) can flip ownership mid-run.
+  if ensure_agent_host_config_access "$config_dir" 2>/dev/null \
+    && [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
+    python3 - "$config_dir/openclaw.json" "$@"
+    return $?
+  fi
+  if agent_config_use_container "$config_dir" "$container"; then
+    podman exec -i "$container" python3 - /home/node/.openclaw/openclaw.json "$@"
+    return $?
+  fi
+  echo "    (cannot update openclaw.json — not writable and container ${container:-<none>} unavailable)" >&2
+  return 1
 }
 
 # Apply sticky OpenRouter session_id + diagnostics.cacheTrace (host or in-container).
@@ -716,6 +740,14 @@ _agent_openclaw_cache_config_patch() {
     return 1
   }
   if [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
+    node "$patch_js" "$config_dir/openclaw.json" \
+      --session-id "$session_id" \
+      --cache-trace "$cache_trace" \
+      --openrouter "$openrouter_enabled" || return 1
+    return 0
+  fi
+  if ensure_agent_host_config_access "$config_dir" 2>/dev/null \
+    && [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
     node "$patch_js" "$config_dir/openclaw.json" \
       --session-id "$session_id" \
       --cache-trace "$cache_trace" \
@@ -3713,13 +3745,24 @@ restore_pod_agent_state_for_host() {
 # Before host-side deploy writes (config bootstrap, mkdir, chmod), undo container-namespace
 # ownership left by the previous pod run. Call after stopping/removing pod containers.
 prepare_pod_deploy_host_paths() {
-  local app
+  local app id dir json
   load_env
   [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
   app="${IDENTYCLAW_APP_DIR:-${APP_DIR:-}}"
   [[ -n "$app" ]] || return 0
   echo "==> Restore host ownership for pod deploy paths"
-  restore_pod_agent_state_for_host
+  # Force restore even if a ghost/exited container name still exists in local storage.
+  for id in $(configured_agent_ids); do
+    dir="$(agent_home "$id")"
+    [[ -d "$dir" ]] || continue
+    podman rm -f "$(agent_container "$id")" 2>/dev/null || true
+    restore_pod_path_for_host "$dir"
+    json="${dir}/openclaw.json"
+    if [[ -e "$json" ]] && ! { [[ -r "$json" && -w "$json" ]]; }; then
+      echo "FATAL: ${json} not host-writable after ownership restore — refuse to continue deploy" >&2
+      return 1
+    fi
+  done
   restore_pod_path_for_host "${app}/logs/nginx"
 }
 
@@ -5756,6 +5799,9 @@ install_identyclaw_skill() {
 
   echo "    (IdentyClaw skill: ClawHub ${skill_spec}${skill_ver:+ @}${skill_ver})" >&2
   [[ -n "$skill_ver" ]] && install_args+=(--version "$skill_ver")
+  # ClawHub marks this skill "suspicious" (large tool blast radius); non-interactive
+  # deploy cannot prompt — acknowledge the known trust warning explicitly.
+  install_args+=(--acknowledge-clawhub-risk)
   openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" "$skill_spec" >&2 \
     || openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" identyclaw >&2
 }
@@ -9079,10 +9125,15 @@ for pid in known_llm_plugins:
     elif pid in plugins:
         plugins[pid]["enabled"] = False
 
-# Raise above OpenClaw defaults (~2m warn / ~6m abort) so long exec turns are not force-aborted.
-diagnostics = data.setdefault("diagnostics", {})
-diagnostics["stuckSessionWarnMs"] = stuck_warn_ms
-diagnostics["stuckSessionAbortMs"] = max(stuck_abort_ms, stuck_warn_ms)
+# OpenClaw 2026.7.2+ rejects stuckSessionWarnMs/AbortMs — strip if present from older syncs.
+diagnostics = data.get("diagnostics")
+if isinstance(diagnostics, dict):
+    for k in ("stuckSessionWarnMs", "stuckSessionAbortMs"):
+        diagnostics.pop(k, None)
+    cache_trace = diagnostics.get("cacheTrace")
+    if isinstance(cache_trace, dict):
+        for k in ("includeMessages", "includePrompt", "includeSystem"):
+            cache_trace.pop(k, None)
 
 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
