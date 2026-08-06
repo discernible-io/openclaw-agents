@@ -216,6 +216,11 @@ load_env() {
   IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
   IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
+  # Session store maintenance (keep-forever defaults; synced to openclaw.json on bootstrap).
+  IDENTYCLAW_SESSION_MAINTENANCE_MODE="${IDENTYCLAW_SESSION_MAINTENANCE_MODE:-warn}"
+  IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER="${IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER:-36500d}"
+  IDENTYCLAW_SESSION_MAINTENANCE_MAX_ENTRIES="${IDENTYCLAW_SESSION_MAINTENANCE_MAX_ENTRIES:-100000}"
+  IDENTYCLAW_SESSION_MAINTENANCE_MAX_DISK_BYTES="${IDENTYCLAW_SESSION_MAINTENANCE_MAX_DISK_BYTES:-false}"
   A2A_PEER_AGENTS="${A2A_PEER_AGENTS:-}"
   A2A_TEST_EXCLUDE_PEERS="${A2A_TEST_EXCLUDE_PEERS:-}"
   A2A_TEST_ONLY_PEERS="${A2A_TEST_ONLY_PEERS:-}"
@@ -3939,6 +3944,7 @@ start_pod_agent() {
     # Post-recreate: container owns state — sync plugins/A2A/models now.
     ensure_openclaw_model_defaults "$dir" "$container" || true
     ensure_memory_config "$dir" "$container" || true
+    ensure_session_maintenance_config "$dir" "$container" || true
     sync_quiet_plugin_env "$dir" "$container" || true
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id" || true
@@ -3956,6 +3962,7 @@ start_pod_agent() {
     ensure_agent_mail_tooling_refresh "$id" "$dir"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
+    ensure_session_maintenance_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"
@@ -3981,6 +3988,7 @@ start_pod_agent() {
     ensure_agent_mail_tooling_refresh "$id" "$dir"
     ensure_openclaw_model_defaults "$dir" "$container"
     ensure_memory_config "$dir" "$container"
+    ensure_session_maintenance_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"
@@ -8650,6 +8658,7 @@ ensure_agent_bootstrap() {
   ensure_identyclaw_config "$config_dir" "$container"
   ensure_openclaw_model_defaults "$config_dir" "$container"
   ensure_memory_config "$config_dir" "$container"
+  ensure_session_maintenance_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
   fi
@@ -9215,26 +9224,20 @@ if backend == "qmd":
         qmd["searchMode"] = "search"
         changed = True
 
-# OpenClaw 2026.7.2+: memory.search (agents.defaults.memorySearch is rejected).
-# Drop the pre-7.2 location if present so bootstrap cannot reintroduce invalid config.
+# OpenClaw 2026.6.x rejects memory.search entirely (gateway: "memory: Invalid input").
+# OpenClaw 2026.7.2+ accepts memory.search and rejects agents.defaults.memorySearch.
+# Keep config valid for the image we ship (2026.6.x): never write memory.search;
+# drop legacy memorySearch / memory.search so restart cannot brick the gateway.
 agents = data.setdefault("agents", {})
 defaults = agents.setdefault("defaults", {})
 if "memorySearch" in defaults:
-    legacy = defaults.pop("memorySearch")
-    if isinstance(legacy, dict):
-        memory_search = memory.setdefault("search", {})
-        for k, v in legacy.items():
-            memory_search.setdefault(k, v)
+    del defaults["memorySearch"]
+    changed = True
+if "search" in memory:
+    del memory["search"]
     changed = True
 
-memory_search = memory.setdefault("search", {})
-# Builtin fallback must not require OpenAI embeddings — without this, a missing
-# qmd binary marks memory_search unavailable (provider openai + no API key).
-if memory_search.get("provider") != "none":
-    memory_search["provider"] = "none"
-    changed = True
-
-# Strip keys rejected by OpenClaw 2026.7.2+ config schema.
+# Strip keys rejected by OpenClaw 2026.7.2+ config schema (harmless on 2026.6.x).
 meta = data.get("meta")
 if isinstance(meta, dict) and "lastTouchedAt" in meta:
     del meta["lastTouchedAt"]
@@ -9262,18 +9265,10 @@ if entry.get("enabled") is not True:
     entry["enabled"] = True
     changed = True
 
+# Session recall is expressed via memory.qmd.sessions on 2026.6.x (not memory.search).
+qmd = memory.setdefault("qmd", {})
+sessions_cfg = qmd.setdefault("sessions", {})
 if session_recall:
-    experimental = memory_search.setdefault("experimental", {})
-    if experimental.get("sessionMemory") is not True:
-        experimental["sessionMemory"] = True
-        changed = True
-    desired_sources = ["memory", "sessions"]
-    if memory_search.get("sources") != desired_sources:
-        memory_search["sources"] = desired_sources
-        changed = True
-
-    qmd = memory.setdefault("qmd", {})
-    sessions_cfg = qmd.setdefault("sessions", {})
     if sessions_cfg.get("enabled") is not True:
         sessions_cfg["enabled"] = True
         changed = True
@@ -9287,19 +9282,77 @@ if session_recall:
         sessions_tool["visibility"] = "agent"
         changed = True
 else:
-    experimental = memory_search.get("experimental", {})
-    if isinstance(experimental, dict) and experimental.get("sessionMemory") is True:
-        experimental["sessionMemory"] = False
-        changed = True
-    sources = memory_search.get("sources")
-    if isinstance(sources, list) and "sessions" in sources:
-        memory_search["sources"] = [s for s in sources if s != "sessions"] or ["memory"]
-        changed = True
-    qmd = memory.get("qmd", {})
-    sessions_cfg = qmd.get("sessions", {}) if isinstance(qmd, dict) else {}
-    if isinstance(sessions_cfg, dict) and sessions_cfg.get("enabled") is True:
+    if sessions_cfg.get("enabled") is True:
         sessions_cfg["enabled"] = False
         changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+ensure_session_maintenance_config() {
+  local config_dir="$1"
+  local container="${2:-}"
+  load_env
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "${IDENTYCLAW_SESSION_MAINTENANCE_MODE:-warn}" \
+    "${IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER:-36500d}" \
+    "${IDENTYCLAW_SESSION_MAINTENANCE_MAX_ENTRIES:-100000}" \
+    "${IDENTYCLAW_SESSION_MAINTENANCE_MAX_DISK_BYTES:-false}" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+mode = (sys.argv[2] or "warn").strip().lower()
+prune_after = (sys.argv[3] or "36500d").strip()
+max_entries_raw = (sys.argv[4] or "100000").strip()
+max_disk_raw = (sys.argv[5] or "false").strip()
+
+if mode not in ("warn", "enforce"):
+    mode = "warn"
+
+try:
+    max_entries = int(max_entries_raw)
+except ValueError:
+    max_entries = 100000
+if max_entries < 1:
+    max_entries = 100000
+
+if max_disk_raw.lower() in ("", "false", "0", "off", "none", "disable", "disabled"):
+    max_disk = False
+elif max_disk_raw.isdigit():
+    max_disk = int(max_disk_raw)
+else:
+    max_disk = max_disk_raw
+
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+session = data.setdefault("session", {})
+maintenance = session.setdefault("maintenance", {})
+desired = {
+    "mode": mode,
+    "pruneAfter": prune_after,
+    "maxEntries": max_entries,
+}
+# OpenClaw schema: maxDiskBytes is string|number|omit — boolean false is invalid.
+# Omit the key to disable per-agent session disk eviction.
+if max_disk is not False:
+    desired["maxDiskBytes"] = max_disk
+for key, val in desired.items():
+    if maintenance.get(key) != val:
+        maintenance[key] = val
+        changed = True
+
+# highWaterBytes only applies when a disk budget is set.
+if max_disk is False:
+    for key in ("maxDiskBytes", "highWaterBytes"):
+        if key in maintenance:
+            del maintenance[key]
+            changed = True
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -9320,6 +9373,7 @@ sync_agent_openclaw_json_when_container_running() {
   ensure_main_ingress_config "$id" "$dir" "$container"
   ensure_openclaw_model_defaults "$dir" "$container"
   ensure_memory_config "$dir" "$container"
+  ensure_session_maintenance_config "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
   if [[ "$restart" == "1" ]]; then
     podman restart "$container" >/dev/null
@@ -9350,7 +9404,12 @@ write_openclaw_json() {
     }
   },
   "session": {
-    "dmScope": "per-channel-peer"
+    "dmScope": "per-channel-peer",
+    "maintenance": {
+      "mode": "${IDENTYCLAW_SESSION_MAINTENANCE_MODE:-warn}",
+      "pruneAfter": "${IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER:-36500d}",
+      "maxEntries": ${IDENTYCLAW_SESSION_MAINTENANCE_MAX_ENTRIES:-100000}
+    }
   },
   "skills": {
     "entries": {
@@ -9420,16 +9479,11 @@ write_openclaw_json() {
   },
   "memory": {
     "backend": "${IDENTYCLAW_MEMORY_BACKEND:-qmd}",
-    "search": {
-      "provider": "none",
-      "experimental": { "sessionMemory": true },
-      "sources": ["memory", "sessions"]
-    },
     "qmd": {
       "command": "/usr/local/bin/qmd",
       "searchMode": "search",
       "sessions": {
-        "enabled": true,
+        "enabled": false,
         "retentionDays": ${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}
       }
     }
@@ -9447,6 +9501,7 @@ EOF
   chmod 600 "$config_dir/openclaw.json"
   ensure_openclaw_model_defaults "$config_dir" ""
   ensure_memory_config "$config_dir" ""
+  ensure_session_maintenance_config "$config_dir" ""
 }
 
 ensure_agent_env() {
