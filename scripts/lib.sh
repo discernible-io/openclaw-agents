@@ -216,6 +216,9 @@ load_env() {
   IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
   IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
   IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
+  # memory-core dreaming (nightly short-term → MEMORY.md). Active Memory stays off by default.
+  IDENTYCLAW_DREAMING_ENABLED="${IDENTYCLAW_DREAMING_ENABLED:-1}"
+  IDENTYCLAW_DREAMING_FREQUENCY="${IDENTYCLAW_DREAMING_FREQUENCY:-0 3 * * *}"
   # Session store maintenance (keep-forever defaults; synced to openclaw.json on bootstrap).
   IDENTYCLAW_SESSION_MAINTENANCE_MODE="${IDENTYCLAW_SESSION_MAINTENANCE_MODE:-warn}"
   IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER="${IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER:-36500d}"
@@ -9196,7 +9199,9 @@ ensure_memory_config() {
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
     "$IDENTYCLAW_MEMORY_BACKEND" "$IDENTYCLAW_QMD_SESSION_RECALL" \
-    "$IDENTYCLAW_QMD_SESSION_RETENTION_DAYS" <<'PY'
+    "$IDENTYCLAW_QMD_SESSION_RETENTION_DAYS" \
+    "${IDENTYCLAW_DREAMING_ENABLED:-1}" \
+    "${IDENTYCLAW_DREAMING_FREQUENCY:-0 3 * * *}" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -9204,6 +9209,8 @@ path = Path(sys.argv[1])
 backend = sys.argv[2]
 session_recall = sys.argv[3] == "1"
 retention_days = int(sys.argv[4])
+dreaming_enabled = sys.argv[5] == "1"
+dreaming_frequency = (sys.argv[6] or "0 3 * * *").strip() or "0 3 * * *"
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -9285,6 +9292,25 @@ else:
     if sessions_cfg.get("enabled") is True:
         sessions_cfg["enabled"] = False
         changed = True
+
+# memory-core dreaming: overnight consolidation into MEMORY.md (not per-turn LLM).
+# Leave plugins.entries.active-memory unset/off — escalate/always costs latency + tokens.
+plugins = data.setdefault("plugins", {})
+plugin_entries = plugins.setdefault("entries", {})
+memory_core = plugin_entries.setdefault("memory-core", {})
+mc_config = memory_core.setdefault("config", {})
+dreaming = mc_config.setdefault("dreaming", {})
+if dreaming.get("enabled") is not dreaming_enabled:
+    dreaming["enabled"] = dreaming_enabled
+    changed = True
+if dreaming_enabled and dreaming.get("frequency") != dreaming_frequency:
+    dreaming["frequency"] = dreaming_frequency
+    changed = True
+elif not dreaming_enabled and "frequency" in dreaming:
+    # Keep frequency when disabling so re-enable restores the same cadence.
+    pass
+
+# Do not enable Active Memory here. If present and explicitly enabled, leave operator choice.
 
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
