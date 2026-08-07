@@ -3953,6 +3953,7 @@ start_pod_agent() {
     ensure_llm_sqlite_auth "$id" || true
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
+    ensure_openclaw_tool_result_image_patch "$id" || true
     echo "Recreated ${container}"
     return 0
   fi
@@ -3970,6 +3971,7 @@ start_pod_agent() {
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
+    ensure_openclaw_tool_result_image_patch "$id" || true
     echo "Started ${container} (pod container)"
     return 0
   fi
@@ -3996,6 +3998,7 @@ start_pod_agent() {
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
+    ensure_openclaw_tool_result_image_patch "$id" || true
     echo "Started ${container} (pod container)"
     return 0
   fi
@@ -8555,13 +8558,58 @@ for j in jobs:
   done
 }
 
-# Hotfix OpenClaw "(see attached image)" tool-result bug on a running agent and
-# compact oversized TUI/main sessions that trigger aggregate truncation.
-fix_openclaw_session_images() {
+# Apply OpenClaw tool-result image hotpatch into a running container's /app.
+# Returns 0 if already patched / nothing to do, 2 if files changed (caller should
+# podman-restart so Node reloads modules), 1 on hard failure.
+apply_openclaw_tool_result_image_patch() {
   local id="$1"
-  local container patch_src max_lines token_floor
+  local container patch_src marker before after
   container="$(agent_container "$id")"
   patch_src="${IDENTYCLAW_ROOT}/scripts/patch-openclaw-tool-result-images.mjs"
+  marker="identyclaw-tool-result-images-patch-v1"
+  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || return 0
+  [[ -f "$patch_src" ]] || return 0
+
+  before="$(podman exec "$container" python3 -c \
+    "import pathlib; p=pathlib.Path('/app/node_modules/@openclaw/ai/dist/tool-result-text-CTpIRbYd.mjs'); print(1 if p.exists() and '$marker' in p.read_text(encoding='utf-8',errors='replace') else 0)" \
+    2>/dev/null || echo 0)"
+
+  podman cp "$patch_src" "$container:/tmp/patch-openclaw-tool-result-images.mjs" >/dev/null 2>&1 || return 1
+  if ! podman exec --user root "$container" node /tmp/patch-openclaw-tool-result-images.mjs --root /app >/dev/null 2>&1; then
+    echo "==> ${id}: tool-result image patch failed" >&2
+    return 1
+  fi
+
+  after="$(podman exec "$container" python3 -c \
+    "import pathlib; p=pathlib.Path('/app/node_modules/@openclaw/ai/dist/tool-result-text-CTpIRbYd.mjs'); print(1 if p.exists() and '$marker' in p.read_text(encoding='utf-8',errors='replace') else 0)" \
+    2>/dev/null || echo 0)"
+  if [[ "$before" != "1" && "$after" == "1" ]]; then
+    return 2
+  fi
+  return 0
+}
+
+ensure_openclaw_tool_result_image_patch() {
+  local id="$1"
+  local container rc=0
+  container="$(agent_container "$id")"
+  apply_openclaw_tool_result_image_patch "$id" || rc=$?
+  if [[ "$rc" -eq 2 ]]; then
+    echo "==> ${id}: applied tool-result image patch — restarting to load modules"
+    podman restart "$container" >/dev/null
+    wait_for_running_agent_container "$container" || return 1
+    # Writable layer persists across podman restart; re-check only.
+    apply_openclaw_tool_result_image_patch "$id" || true
+  elif [[ "$rc" -ne 0 ]]; then
+    return "$rc"
+  fi
+  return 0
+}
+
+fix_openclaw_session_images() {
+  local id="$1"
+  local container max_lines token_floor
+  container="$(agent_container "$id")"
   max_lines="${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-120}"
   token_floor="${IDENTYCLAW_SESSION_COMPACT_TOKEN_FLOOR:-80000}"
 
@@ -8569,18 +8617,10 @@ fix_openclaw_session_images() {
     echo "==> ${id}: container not running — skip" >&2
     return 1
   }
-  [[ -f "$patch_src" ]] || {
-    echo "Missing ${patch_src}" >&2
-    return 1
-  }
 
   echo "==> ${id}: patching OpenClaw tool-result image placeholder"
-  podman cp "$patch_src" "$container:/tmp/patch-openclaw-tool-result-images.mjs" >/dev/null
-  # Writable /app requires root inside the image (node user owns home only).
-  if ! podman exec --user root "$container" node /tmp/patch-openclaw-tool-result-images.mjs --root /app; then
-    echo "==> ${id}: patch failed" >&2
-    return 1
-  fi
+  ensure_openclaw_tool_result_image_patch "$id" || return 1
+  podman exec --user root "$container" node /tmp/patch-openclaw-tool-result-images.mjs --root /app 2>&1 | tail -5 || true
 
   echo "==> ${id}: compacting long sessions (>= ${token_floor} tokens → last ${max_lines} lines)"
   podman exec "$container" node dist/index.js sessions list --json --limit all 2>/dev/null | python3 -c '
@@ -8603,13 +8643,10 @@ for s in sessions:
     key = s.get("key") or s.get("sessionKey") or ""
     if not key:
         continue
-    # Compact main + operator TUI sessions only (leave cron/direct noise alone).
     if ":cron:" in key:
         continue
-    if not (key.endswith(":main") or ":tui-" in key or key.endswith(":main:heartbeat")):
-        # Still allow exact agent:main:main
-        if ":main" not in key.split(":")[-1] and "tui-" not in key:
-            continue
+    if not (key.endswith(":main") or ":tui-" in key or ":main:heartbeat" in key):
+        continue
     toks = s.get("totalTokens") or s.get("inputTokens") or 0
     usage = s.get("usage") or {}
     if not toks:
@@ -8635,12 +8672,6 @@ for s in sessions:
     fi
   done
 
-  echo "==> ${id}: restarting gateway so patched modules load"
-  podman restart "$container" >/dev/null
-  wait_for_running_agent_container "$container" || {
-    echo "==> ${id}: restart wait failed" >&2
-    return 1
-  }
   echo "==> ${id}: done"
 }
 
