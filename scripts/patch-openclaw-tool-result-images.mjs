@@ -100,10 +100,48 @@ const patches = [
 
 function patchSeeAttachedFallback(text, tag) {
   if (text.includes(tag)) return null;
-  const from = 'text: mediaPlaceholder ?? "(see attached image)"';
-  const to = `text: mediaPlaceholder ?? "(no output)" /* ${tag} */`;
-  if (!text.includes(from)) return null;
-  return text.replaceAll(from, to);
+  let next = text;
+  let changed = false;
+  // 2026.7+ mediaPlaceholder form
+  const modernFrom = 'text: mediaPlaceholder ?? "(see attached image)"';
+  const modernTo = `text: mediaPlaceholder ?? "(no output)" /* ${tag} */`;
+  if (next.includes(modernFrom)) {
+    next = next.replaceAll(modernFrom, modernTo);
+    changed = true;
+  }
+  // 2026.6.x openai-completions: empty tool text always becomes image placeholder
+  // (hasImages is computed but unused — the long-session bug path).
+  const ocFrom =
+    'sanitizeSurrogates(textResult.length > 0 ? textResult : "(see attached image)")';
+  const ocTo = `sanitizeSurrogates(textResult.length > 0 ? textResult : (hasImages ? "(see attached image)" : "(no output)")) /* ${tag}-oc */`;
+  if (next.includes(ocFrom) && !next.includes(`${tag}-oc`)) {
+    next = next.replaceAll(ocFrom, ocTo);
+    changed = true;
+  }
+  // 2026.6.x openai-responses / shared: empty text → placeholder with no image check
+  const orFrom =
+    'sanitizeSurrogates(hasText ? textResult : "(see attached image)")';
+  const orTo = `sanitizeSurrogates(hasText ? textResult : "(no output)") /* ${tag}-or */`;
+  if (next.includes(orFrom) && !next.includes(`${tag}-or`)) {
+    next = next.replaceAll(orFrom, orTo);
+    changed = true;
+  }
+  // 2026.6.x openai-transport-stream: textResult || placeholder (images already branched)
+  const otFrom =
+    'sanitizeTransportPayloadText(textResult || "(see attached image)")';
+  const otTo = `sanitizeTransportPayloadText(textResult || "(no output)") /* ${tag}-ot */`;
+  if (next.includes(otFrom) && !next.includes(`${tag}-ot`)) {
+    next = next.replaceAll(otFrom, otTo);
+    changed = true;
+  }
+  // 2026.6.x anthropic / provider-stream: hard-coded placeholder when no text block
+  const hardFrom = 'text: "(see attached image)"';
+  const hardTo = `text: "(no output)" /* ${tag}-hard */`;
+  if (next.includes(hardFrom) && !next.includes(`${tag}-hard`)) {
+    next = next.replaceAll(hardFrom, hardTo);
+    changed = true;
+  }
+  return changed ? next : null;
 }
 
 function patchRecoveryMinKeep(text) {
@@ -155,7 +193,13 @@ for (const full of walkJs(path.join(root, "dist")).concat(
   const rel = path.relative(root, full);
   let text = fs.readFileSync(full, "utf8");
   let next = text;
-  if (text.includes('mediaPlaceholder ?? "(see attached image)"')) {
+  if (
+    text.includes('"(see attached image)"') &&
+    (text.includes("mediaPlaceholder") ||
+      text.includes("textResult") ||
+      text.includes("hasText") ||
+      text.includes('type: "text"'))
+  ) {
     const patched = patchSeeAttachedFallback(text, `${MARK}-fallback`);
     if (patched) next = patched;
   }
