@@ -3802,7 +3802,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|fix-session-images|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -8510,6 +8510,140 @@ os.chmod(path, 0o600)
 PY
 }
 
+# Drop agent-created SLC isolated crons that overlap fleet HEARTBEAT.md slc-game.
+# Keeps heartbeat:main / memory-core / non-SLC jobs. Best-effort (gateway must be up).
+prune_stale_slc_agent_crons() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || return 0
+  podman exec "$container" node dist/index.js cron list --json 2>/dev/null | python3 -c '
+import json, re, sys
+raw = sys.stdin.read()
+m = re.search(r"\{[\s\S]*\}\s*$", raw) or re.search(r"\[[\s\S]*\]\s*$", raw)
+if not m:
+    raise SystemExit(0)
+data = json.loads(m.group(0))
+jobs = data if isinstance(data, list) else (
+    data.get("jobs") or data.get("automations") or data.get("items") or []
+)
+if isinstance(data, dict) and not jobs:
+    for v in data.values():
+        if isinstance(v, list):
+            jobs = v
+            break
+pat = re.compile(
+    r"(?:^|[\s_\-])slc(?:$|[\s_\-])|synthetics.?last.?cradle|unattended.*game|autonomous.*(?:play|game)",
+    re.I,
+)
+keep = re.compile(r"^(?:heartbeat(?:-main|:main)?|memory-core)", re.I)
+for j in jobs:
+    jid = j.get("id") or j.get("jobId") or ""
+    name = str(j.get("name") or "")
+    decl = str(j.get("declaration") or "")
+    if not jid:
+        continue
+    if keep.search(name) or keep.search(decl):
+        continue
+    blob = f"{name} {decl}"
+    if pat.search(blob):
+        print(jid)
+' 2>/dev/null | while read -r job_id; do
+    [[ -n "$job_id" ]] || continue
+    echo "==> ${id}: removing overlapping SLC cron ${job_id}"
+    podman exec "$container" node dist/index.js cron rm "$job_id" --json >/dev/null 2>&1 || true
+  done
+}
+
+# Hotfix OpenClaw "(see attached image)" tool-result bug on a running agent and
+# compact oversized TUI/main sessions that trigger aggregate truncation.
+fix_openclaw_session_images() {
+  local id="$1"
+  local container patch_src max_lines token_floor
+  container="$(agent_container "$id")"
+  patch_src="${IDENTYCLAW_ROOT}/scripts/patch-openclaw-tool-result-images.mjs"
+  max_lines="${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-120}"
+  token_floor="${IDENTYCLAW_SESSION_COMPACT_TOKEN_FLOOR:-80000}"
+
+  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || {
+    echo "==> ${id}: container not running — skip" >&2
+    return 1
+  }
+  [[ -f "$patch_src" ]] || {
+    echo "Missing ${patch_src}" >&2
+    return 1
+  }
+
+  echo "==> ${id}: patching OpenClaw tool-result image placeholder"
+  podman cp "$patch_src" "$container:/tmp/patch-openclaw-tool-result-images.mjs" >/dev/null
+  # Writable /app requires root inside the image (node user owns home only).
+  if ! podman exec --user root "$container" node /tmp/patch-openclaw-tool-result-images.mjs --root /app; then
+    echo "==> ${id}: patch failed" >&2
+    return 1
+  fi
+
+  echo "==> ${id}: compacting long sessions (>= ${token_floor} tokens → last ${max_lines} lines)"
+  podman exec "$container" node dist/index.js sessions list --json --limit all 2>/dev/null | python3 -c '
+import json, re, sys
+raw = sys.stdin.read()
+m = re.search(r"\{[\s\S]*\}\s*$", raw) or re.search(r"\[[\s\S]*\]\s*$", raw)
+if not m:
+    raise SystemExit(0)
+data = json.loads(m.group(0))
+sessions = data if isinstance(data, list) else (
+    data.get("sessions") or data.get("items") or []
+)
+if isinstance(data, dict) and not sessions:
+    for v in data.values():
+        if isinstance(v, list):
+            sessions = v
+            break
+floor = int(sys.argv[1])
+for s in sessions:
+    key = s.get("key") or s.get("sessionKey") or ""
+    if not key:
+        continue
+    # Compact main + operator TUI sessions only (leave cron/direct noise alone).
+    if ":cron:" in key:
+        continue
+    if not (key.endswith(":main") or ":tui-" in key or key.endswith(":main:heartbeat")):
+        # Still allow exact agent:main:main
+        if ":main" not in key.split(":")[-1] and "tui-" not in key:
+            continue
+    toks = s.get("totalTokens") or s.get("inputTokens") or 0
+    usage = s.get("usage") or {}
+    if not toks:
+        toks = usage.get("totalTokens") or usage.get("input") or 0
+    try:
+        toks = int(toks or 0)
+    except (TypeError, ValueError):
+        toks = 0
+    if toks >= floor:
+        print(f"{toks}\t{key}")
+' "$token_floor" | while IFS=$'\t' read -r toks key; do
+    [[ -n "$key" ]] || continue
+    echo "    compact ${key} (${toks} tokens)"
+    if ! out="$(podman exec "$container" node dist/index.js sessions compact "$key" \
+      --max-lines "$max_lines" --json 2>&1)"; then
+      echo "    (${id}: compact failed for ${key}: ${out})" >&2
+      continue
+    fi
+    if echo "$out" | grep -q '"ok": false'; then
+      echo "    (${id}: compact refused for ${key}: ${out})" >&2
+    else
+      echo "    ok"
+    fi
+  done
+
+  echo "==> ${id}: restarting gateway so patched modules load"
+  podman restart "$container" >/dev/null
+  wait_for_running_agent_container "$container" || {
+    echo "==> ${id}: restart wait failed" >&2
+    return 1
+  }
+  echo "==> ${id}: done"
+}
+
 _apply_slc_heartbeat() {
   local id="$1"
   local config_dir="$2"
@@ -8520,6 +8654,7 @@ _apply_slc_heartbeat() {
     _write_slc_workspace_docs_in_container "$container"
     _write_slc_heartbeat_doc_in_container "$container" "$interval"
     _ensure_slc_heartbeat_config_in_container "$container" "$interval"
+    prune_stale_slc_agent_crons "$id" || true
   fi
   if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
     write_slc_workspace_docs "$config_dir"

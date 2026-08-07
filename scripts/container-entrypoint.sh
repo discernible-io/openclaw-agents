@@ -40,4 +40,11 @@ if ! command -v qmd >/dev/null 2>&1; then
   sudo npm install -g "@tobilu/qmd@2.5.3" >/dev/null
 fi
 
+# Hotfix OpenClaw long-session "(see attached image)" tool-result placeholder
+# (aggregate truncation / husk media blocks). Idempotent; no-op when already applied.
+if [ -f /opt/identyclaw/patch-openclaw-tool-result-images.mjs ]; then
+  node /opt/identyclaw/patch-openclaw-tool-result-images.mjs --root /app \
+    || echo "[identyclaw] tool-result image patch skipped" >&2
+fi
+
 exec tini -s -- "$@"
