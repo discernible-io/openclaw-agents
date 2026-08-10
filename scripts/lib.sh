@@ -231,8 +231,8 @@ load_env() {
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
-  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.8}"
-  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.8}"
+  IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.10}"
+  IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.9}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"
@@ -5813,9 +5813,12 @@ install_identyclaw_skill() {
 
   echo "    (IdentyClaw skill: ClawHub ${skill_spec}${skill_ver:+ @}${skill_ver})" >&2
   [[ -n "$skill_ver" ]] && install_args+=(--version "$skill_ver")
-  # ClawHub marks this skill "suspicious" (large tool blast radius); non-interactive
-  # deploy cannot prompt — acknowledge the known trust warning explicitly.
-  install_args+=(--acknowledge-clawhub-risk)
+  # Older OpenClaw CLIs required --acknowledge-clawhub-risk for this skill; 2026.6.11+
+  # dropped that flag. Only pass it when the installed CLI still advertises it.
+  if openclaw_agent_exec "$config_dir" "$container" skills install --help 2>/dev/null \
+    | grep -q -- '--acknowledge-clawhub-risk'; then
+    install_args+=(--acknowledge-clawhub-risk)
+  fi
   openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" "$skill_spec" >&2 \
     || openclaw_agent_exec "$config_dir" "$container" skills install "${install_args[@]}" identyclaw >&2
 }
