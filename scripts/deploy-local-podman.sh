@@ -10,7 +10,7 @@
 #   ./scripts/deploy-local-podman.sh --skip-build
 #
 # Env:
-#   APP_DIR                  Default: ../identyclaw-agents-app (sibling of repo)
+#   APP_DIR                  Default: ../openclaw-agents-app (sibling of repo)
 #   APP_PORT                 Default: 7443 (all tiers) via deploy_tier_app_port
 #   TARGET                   Override tier (default: from current git branch)
 #   GITHUB_SHA               Image tag (default: git HEAD)

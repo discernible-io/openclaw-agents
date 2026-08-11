@@ -4,8 +4,8 @@
  *
  * Usage:
  *   node scripts/test-a2a-rodit-auth.mjs \
- *     --ext-dir ../identyclaw-agents-app/agents/agent-c/extensions/identyclaw-a2a \
- *     --creds ../identyclaw-agents-app/agents/agent-c/secrets/near-credentials/*.json \
+ *     --ext-dir ../openclaw-agents-app/agents/agent-c/extensions/identyclaw-a2a \
+ *     --creds ../openclaw-agents-app/agents/agent-c/secrets/near-credentials/*.json \
  *     --target https://agent-c.dev.identyclaw.com:7443
  */
 import { createRequire } from "node:module";

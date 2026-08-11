@@ -89,7 +89,7 @@ This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/d
 | --- | --- |
 | **Podman** (rootless recommended) | AlmaLinux / RHEL / Fedora: `sudo dnf install -y podman` |
 | **Node.js 22+** (host) | Used by test/probe scripts; CI runs `node scripts/test-unit-all.mjs` |
-| **Sibling app directory** | Default `../identyclaw-agents-app` — created by `./identyclaw.sh init` |
+| **Sibling app directory** | Default `../openclaw-agents-app` — created by `./identyclaw.sh init` |
 | **Migadu mailboxes** | One per agent you enable in `AGENT_IDS`; set `AGENT_*_EMAIL` in `env.local` |
 | **OpenRouter or OpenCode key** | Before onboard/chat: `./identyclaw.sh set-api-key` or `set-opencode-key` |
 | **NEAR Passport credentials** | `secrets/near-credentials/*.json` per agent for A2A, webhooks, and HOLA signing; active owner in `.active`. Wallet helpers: `workspace/scripts/idcp-*.sh` (create/fund/transfer/rotate) |
@@ -97,26 +97,26 @@ This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/d
 
 Mailbox passwords are **not** required for `init`, `build-image`, or `start` — add them later (see [Set email passwords later](#set-email-passwords-later)).
 
-For main-tier **pod** deploy, also prepare TLS material under `~/identyclaw-agents-app/certs/` (`./identyclaw.sh generate-certs`) and set `IDENTYCLAW_DEPLOY_MODE=pod` with per-agent `AGENT_*_PUBLIC_HOST`.
+For main-tier **pod** deploy, also prepare TLS material under `~/openclaw-agents-app/certs/` (`./identyclaw.sh generate-certs`) and set `IDENTYCLAW_DEPLOY_MODE=pod` with per-agent `AGENT_*_PUBLIC_HOST`.
 
 ## Repository vs app directory
 
 This repository is **code-only** — safe to clone publicly. Runtime secrets, TLS material, and per-agent state never belong in the git checkout.
 
-The **git checkout** holds scripts and image definitions only. **Config, TLS, and agent state** live in a sibling app directory (default `../identyclaw-agents-app`):
+The **git checkout** holds scripts and image definitions only. **Config, TLS, and agent state** live in a sibling app directory (default `../openclaw-agents-app`):
 
 | Path | Purpose |
 |------|---------|
 | `identyclaw-agents/` | Clone of this repo — run `./identyclaw.sh` from here |
-| `../identyclaw-agents-app/env.local` | Runtime settings (chmod 600; created by `./identyclaw.sh init`) |
-| `../identyclaw-agents-app/agents/<agent-id>/` | Per-agent state (`openclaw.json`, `secrets/near-credentials/`, workspace) |
-| `../identyclaw-agents-app/certs/` | TLS for main-tier pod (not used in standalone dev) |
+| `../openclaw-agents-app/env.local` | Runtime settings (chmod 600; created by `./identyclaw.sh init`) |
+| `../openclaw-agents-app/agents/<agent-id>/` | Per-agent state (`openclaw.json`, `secrets/near-credentials/`, workspace) |
+| `../openclaw-agents-app/certs/` | TLS for main-tier pod (not used in standalone dev) |
 
-Override the app root: `export IDENTYCLAW_APP_DIR=/custom/path` (default: `../identyclaw-agents-app` next to the clone).
+Override the app root: `export IDENTYCLAW_APP_DIR=/custom/path` (default: `../openclaw-agents-app` next to the clone).
 
 ## Choosing agents on this host
 
-How many gateways run on a machine is controlled in `~/identyclaw-agents-app/env.local`:
+How many gateways run on a machine is controlled in `~/openclaw-agents-app/env.local`:
 
 | Variable | Purpose |
 |----------|---------|
@@ -164,8 +164,8 @@ Run as your normal user (not `root`):
 ```bash
 cd ~/identyclaw-agents
 chmod +x identyclaw.sh
-./identyclaw.sh init          # creates ../identyclaw-agents-app/ and env.local from env.example
-# Edit ../identyclaw-agents-app/env.local — set AGENT_IDS, emails, ports; passwords optional
+./identyclaw.sh init          # creates ../openclaw-agents-app/ and env.local from env.example
+# Edit ../openclaw-agents-app/env.local — set AGENT_IDS, emails, ports; passwords optional
 ./identyclaw.sh build-image
 ./identyclaw.sh start all     # starts every id in AGENT_IDS
 ./identyclaw.sh status
@@ -287,7 +287,7 @@ Only if you intentionally want the Control UI on the internet. Prefer HTTPS via 
 PUBLISH_HOST=0.0.0.0
 ```
 
-**2. Allow your origin** — in `~/identyclaw-agents-app/agents/agent-a/openclaw.json` (and agent C on 18793):
+**2. Allow your origin** — in `~/openclaw-agents-app/agents/agent-a/openclaw.json` (and agent C on 18793):
 
 ```json
 "controlUi": {
@@ -389,7 +389,7 @@ Only if you intentionally run Podman as root:
 ```bash
 sudo IDENTITYCLAW_ROOTLESS=0 ./identyclaw.sh build-image
 sudo IDENTITYCLAW_ROOTLESS=0 ./identyclaw.sh init
-# Set passwords and start as root; state under /root/identyclaw-agents-app/agents/
+# Set passwords and start as root; state under /root/openclaw-agents-app/agents/
 sudo IDENTITYCLAW_ROOTLESS=0 ./identyclaw.sh start all
 ```
 
@@ -481,7 +481,7 @@ podman rm -f openclaw-agent-a-onboard openclaw-agent-c-onboard 2>/dev/null || tr
 
 ## Configuration
 
-Each agent has isolated state under `~/identyclaw-agents-app/agents/<agent-id>/`. Host ports and `AGENT_IDS` come from `~/identyclaw-agents-app/env.local`; OpenClaw settings live in each agent’s `openclaw.json`.
+Each agent has isolated state under `~/openclaw-agents-app/agents/<agent-id>/`. Host ports and `AGENT_IDS` come from `~/openclaw-agents-app/env.local`; OpenClaw settings live in each agent’s `openclaw.json`.
 
 **Never commit or paste gateway tokens or API keys.** Use `./identyclaw.sh token agent-a` when you need the Control UI token.
 
@@ -542,7 +542,7 @@ Unlike the IdentyClaw API (authoritative OpenAPI in `api-docs/swagger.json` / [`
 | Implementation | `identyclaw-a2a` plugin (`openclaw.plugin.json`, `a2afork.md`) | RODiT JWT auth, P2P `/api/login`, outbound peer map, plugin tools |
 | Webhooks | `identyclaw-webhooks` plugin | Signed `POST /hooks/*`, outbound `send_rodit_webhook` |
 | Deployment | [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md) | Expected behavior on this host (401 without auth, signed webhook rejection, receipts, etc.) |
-| Runtime | `~/identyclaw-agents-app/agents/<id>/openclaw.json` | Per-agent inbound/outbound auth modes, peer URLs, audiences |
+| Runtime | `~/openclaw-agents-app/agents/<id>/openclaw.json` | Per-agent inbound/outbound auth modes, peer URLs, audiences |
 
 Deployed Agent Cards advertise **`protocolVersion: "0.3.0"`** (OpenClaw A2A plugin binding). Validate deployments with `./identyclaw.sh test` — not against IdentyClaw API swagger.
 
@@ -674,7 +674,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 
 | Setting | Value |
 |---------|--------|
-| State dir | `~/identyclaw-agents-app/agents/agent-a` |
+| State dir | `~/openclaw-agents-app/agents/agent-a` |
 | Container | `openclaw-agent-a` (in `identyclaw-agents-pod` with `identyclaw-nginx`) |
 | Display name | Identyclaw Agent A (override via `AGENT_A_DISPLAY_NAME`) |
 | Mailbox | `agent-a@identyclaw.com` (Migadu) |
@@ -792,7 +792,7 @@ Mirrors agent A’s setup (OpenRouter, DuckDuckGo `es-es`, himalaya, session-mem
 
 | Setting | Value |
 |---------|--------|
-| State dir | `~/identyclaw-agents-app/agents/agent-c` |
+| State dir | `~/openclaw-agents-app/agents/agent-c` |
 | Container | `openclaw-agent-c` |
 | Mailbox | `agent-c@identyclaw.com` (Migadu) |
 | Gateway ports (host) | **18793** (UI/API), **18794** (bridge) |
@@ -817,7 +817,7 @@ Mirrors agent A’s setup on ports **18797/18798**.
 
 | Setting | Value |
 |---------|--------|
-| State dir | `~/identyclaw-agents-app/agents/agent-e` |
+| State dir | `~/openclaw-agents-app/agents/agent-e` |
 | Container | `openclaw-agent-e` |
 | Mailbox | `agent-e@identyclaw.com` (Migadu — edit `env.local`) |
 | Gateway ports (host) | **18797** (UI/API), **18798** (bridge) |
@@ -902,7 +902,7 @@ podman images localhost/openclaw-agent
 
 ### `test-mail`: Authentication failed
 
-- Wrong or placeholder password in `~/identyclaw-agents-app/agents/agent-*/secrets/imap.pass`
+- Wrong or placeholder password in `~/openclaw-agents-app/agents/agent-*/secrets/imap.pass`
 - Mailbox not created in Migadu yet
 - IMAP login must match `AGENT_*_EMAIL` in `env.local`
 
@@ -915,7 +915,7 @@ Migadu’s web UI lists **SMTP port 465 + TLS**. Himalaya in the OpenClaw image 
 Also ensure:
 
 - `message.send.backend.login` and `From:` match the mailbox (e.g. `agent-a@identyclaw.com`)
-- Password is in `~/identyclaw-agents-app/agents/agent-a/secrets/` via `./identyclaw.sh set-password agent-a` (do not paste passwords into `config.toml`)
+- Password is in `~/openclaw-agents-app/agents/agent-a/secrets/` via `./identyclaw.sh set-password agent-a` (do not paste passwords into `config.toml`)
 
 **Pod deploy — IPv6 SMTP reset:** If IMAP works but SMTP fails with `Connection reset by peer`, glibc may be preferring broken IPv6 records for `smtp.migadu.com`. Pod deploy pins the hostname to Migadu mta1 IPv4 via `--add-host` (override with `MIGADU_SMTP_IPV4` in `env.local`). Recreate the pod after changing: `./scripts/deploy-local-podman.sh --skip-build`.
 
@@ -969,7 +969,7 @@ Rebuild the image to bake in the symlink (`Containerfile.agent`):
 ./identyclaw.sh restart all
 ```
 
-If auth still fails after a real key is saved, check `~/identyclaw-agents-app/agents/agent-a/agents/main/agent/auth-profiles.json` — the `key` field must start with `sk-or-`, not a command like `cd ~/...`.
+If auth still fails after a real key is saved, check `~/openclaw-agents-app/agents/agent-a/agents/main/agent/auth-profiles.json` — the `key` field must start with `sk-or-`, not a command like `cd ~/...`.
 
 ### Onboarding: systemd / gateway not detected
 
@@ -994,7 +994,7 @@ Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at ori
 
 ### Run as your normal user, not `root`
 
-`init` / `start` / `onboard` expect rootless mode as your normal user. State lives under `~/identyclaw-agents-app/agents/<agent-id>/` for each provisioned agent. Use root only for `dnf install podman` or optional rootful mode above.
+`init` / `start` / `onboard` expect rootless mode as your normal user. State lives under `~/openclaw-agents-app/agents/<agent-id>/` for each provisioned agent. Use root only for `dnf install podman` or optional rootful mode above.
 
 ## Commands
 
@@ -1090,22 +1090,22 @@ Webhook auth matches [`clienttest-idc`](../clienttest-idc): **Ed25519 signed at 
 On the deployment host as the SSH deploy user:
 
 ```bash
-mkdir -p ../identyclaw-agents-app/{certs,logs,agents}
-chmod 711 ../identyclaw-agents-app/certs
+mkdir -p ../openclaw-agents-app/{certs,logs,agents}
+chmod 711 ../openclaw-agents-app/certs
 
 # Or: ./identyclaw.sh init  (creates app layout + env.local from env.example)
-cp ~/identyclaw-agents/env.example ~/identyclaw-agents-app/env.local
-chmod 600 ~/identyclaw-agents-app/env.local
+cp ~/identyclaw-agents/env.example ~/openclaw-agents-app/env.local
+chmod 600 ~/openclaw-agents-app/env.local
 # Set IDENTYCLAW_DEPLOY_MODE=pod, IDENTYCLAW_INGRESS_PORT, and AGENT_*_PUBLIC_HOST for your branch
 
 # TLS — self-signed bootstrap (same pattern as clienttest-idc):
 ./identyclaw.sh generate-certs
-# Writes ~/identyclaw-agents-app/certs/{fullchain.pem,privkey.pem} with SANs for
+# Writes ~/openclaw-agents-app/certs/{fullchain.pem,privkey.pem} with SANs for
 # AGENT_A/C/E_PUBLIC_HOST. RODiT JWT handles A2A/webhook mutual auth — CA-issued
 # certs are optional. Replace with real PEMs when ready (infra/CERTIFICATE-MANAGEMENT.md).
 ```
 
-Per-agent runtime state lives under `~/identyclaw-agents-app/agents/<agent-id>/`. Scripts resolve this automatically (`IDENTYCLAW_AGENT_STATE_ROOT` defaults to `${IDENTYCLAW_APP_DIR}/agents`). Set `AGENT_IDS` to the agents this host should run, then initialize passwords and API keys:
+Per-agent runtime state lives under `~/openclaw-agents-app/agents/<agent-id>/`. Scripts resolve this automatically (`IDENTYCLAW_AGENT_STATE_ROOT` defaults to `${IDENTYCLAW_APP_DIR}/agents`). Set `AGENT_IDS` to the agents this host should run, then initialize passwords and API keys:
 
 ```bash
 ./identyclaw.sh set-password agent-a
@@ -1139,7 +1139,7 @@ Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tu
 ## State layout
 
 ```
-~/identyclaw-agents-app/agents/agent-a/
+~/openclaw-agents-app/agents/agent-a/
   openclaw.json
   .env                    # OPENCLAW_GATEWAY_TOKEN, IDENTYCLAW_*, NEAR_*
   workspace/
@@ -1153,15 +1153,15 @@ Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tu
   secrets/near-credentials/.active  # active Passport owner account id
   secrets/imap.sh         # auth helper for Himalaya
 
-~/identyclaw-agents-app/agents/agent-c/      # same structure
+~/openclaw-agents-app/agents/agent-c/      # same structure
 
-~/identyclaw-agents-app/agents/agent-e/      # same structure
+~/openclaw-agents-app/agents/agent-e/      # same structure
 ```
 
 ## Host CLI (optional)
 
 ```bash
 export OPENCLAW_CONTAINER=openclaw-agent-a
-export OPENCLAW_CONFIG_DIR=$HOME/identyclaw-agents-app/agents/agent-a
+export OPENCLAW_CONFIG_DIR=$HOME/openclaw-agents-app/agents/agent-a
 openclaw doctor
 ```

@@ -4,13 +4,13 @@ set -euo pipefail
 IDENTYCLAW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Runtime config and agent state live under IDENTYCLAW_APP_DIR (never in the git checkout).
-# Default: sibling ../identyclaw-agents-app next to the repo clone (peer-coordinated layout).
+# Default: sibling ../openclaw-agents-app next to the repo clone (peer-coordinated layout).
 identyclaw_app_dir() {
   if [[ -n "${IDENTYCLAW_APP_DIR:-}" ]]; then
     printf '%s' "$IDENTYCLAW_APP_DIR"
     return 0
   fi
-  printf '%s' "$(cd "${IDENTYCLAW_ROOT}/.." && pwd)/identyclaw-agents-app"
+  printf '%s' "$(cd "${IDENTYCLAW_ROOT}/.." && pwd)/openclaw-agents-app"
 }
 
 identyclaw_env_file() {
@@ -10160,7 +10160,7 @@ manifest = {
     "stateDirBasename": Path(config_dir).name,
     "importSteps": [
         "Copy identyclaw-agents repo to target host",
-        "ensure_app_layout && merge env.local.fragment into identyclaw-agents-app/env.local",
+        "ensure_app_layout && merge env.local.fragment into openclaw-agents-app/env.local",
         "./identyclaw.sh build-image",
         f"./identyclaw.sh import-agent {agent_id} <this-archive>",
         f"./identyclaw.sh start {agent_id}",
