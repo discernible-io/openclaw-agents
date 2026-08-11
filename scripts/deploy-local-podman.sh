@@ -77,7 +77,7 @@ github_repository_from_origin() {
   esac
   printf '%s' "$url"
 }
-GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$(github_repository_from_origin || echo discernible-io/identyclaw-agents)}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$(github_repository_from_origin || echo discernible-io/openclaw-agents)}"
 OPENCLAW_IMAGE_NAME="${OPENCLAW_IMAGE_NAME:-${GITHUB_REPOSITORY}/openclaw-agent}"
 NGINX_IMAGE_NAME="${NGINX_IMAGE_NAME:-${GITHUB_REPOSITORY}/identyclaw-nginx}"
 IMAGE_TAG="${DEPLOY_SHA}-${DEPLOY_TIER}"
