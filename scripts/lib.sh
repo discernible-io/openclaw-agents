@@ -4797,7 +4797,7 @@ tools_block = f"""
 - **Send:** `sh scripts/himalaya-send.sh RECIPIENT SUBJECT BODY` — arg1 is **To only** (never `{email}`)
 - **Do not** pass `elevated: true` on exec — fails in webchat/TUI.
 - In-scope inbound mail must get a **direct reply to the sender** — see **Inbound email (concierge)**.
-- **Exec / interpreters:** `strictInlineEval` is on — do not use large `node -e` / `python -c`. Write `/tmp/foo.js` (or `.py`), then `node /tmp/foo.js` / `python3 /tmp/foo.py`.
+- **Exec / interpreters:** Prefer scripts over large `node -e` / `python -c`. Write `/tmp/foo.js` (or `.py`), then `node /tmp/foo.js` / `python3 /tmp/foo.py`. Stream filters (`head`/`tail`/`wc`/…) and allowlisted `sed` do not need approval.
 """
 agents_block = f"""
 ## Email
@@ -4808,7 +4808,7 @@ agents_block = f"""
 - `elevated: true` on exec **fails** in webchat/TUI; sandbox is off so it is unnecessary.
 - The himalaya skill's generic "run account configure" setup does **not** apply here — this deployment is pre-provisioned.
 - **Concierge duty:** reply to in-scope inbound mail — see **Inbound email (concierge)** below.
-- For Node/Python: write a script file, then `node path.js` / `python3 path.py` — inline `node -e` is blocked by strictInlineEval.
+- For Node/Python: prefer a script file, then `node path.js` / `python3 path.py` over large inline `-e`.
 """
 
 def upsert_block(text, heading_re, block):
@@ -9122,9 +9122,13 @@ if session.get("dmScope") != "per-channel-peer":
 
 tools = data.setdefault("tools", {})
 exec_cfg = tools.setdefault("exec", {})
+# ask on-miss + stream-filter safeBins; sed cannot be a safeBin (OpenClaw denies it)
+# so it is allowlisted via exec-approvals. strictInlineEval must stay off for sed -n/-e
+# programs or every sed still prompts (TUI can hang with no visible approval card).
+# Prefer writing node/python scripts over -e; interpreters are not auto-allowlisted.
 exec_defaults = {
     "ask": "on-miss",
-    "strictInlineEval": True,
+    "strictInlineEval": False,
 }
 for key, val in exec_defaults.items():
     if exec_cfg.get(key) != val:
@@ -9134,11 +9138,24 @@ for legacy_key in ("mode", "security"):
     if legacy_key in exec_cfg:
         del exec_cfg[legacy_key]
         changed = True
+# Default OpenClaw stream filters + keep himalaya path allowlisted separately.
+# Do NOT put sh/node in safeBins — unprofiled interpreters are ignored and unsafe.
 safe_bins = exec_cfg.setdefault("safeBins", [])
-for name in ("himalaya", "sh", "node"):
+desired_safe = ["cut", "uniq", "head", "tail", "tr", "wc", "himalaya"]
+for name in desired_safe:
     if name not in safe_bins:
         safe_bins.append(name)
         changed = True
+for legacy_bin in ("sh", "node"):
+    if legacy_bin in safe_bins:
+        safe_bins.remove(legacy_bin)
+        changed = True
+profiles = exec_cfg.setdefault("safeBinProfiles", {})
+# himalaya is not stdin-only; empty profile opts into doctor scaffolding without
+# pretending it is a stream filter. Prefer allowlist path when available.
+if "himalaya" not in profiles:
+    profiles["himalaya"] = {}
+    changed = True
 
 PUBLIC_CHANNEL_TOOLS = [
     "read",
@@ -9217,6 +9234,81 @@ if discord_approvers and channels.get("discord", {}).get("enabled"):
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
+PY
+  ensure_exec_allowlist_harmless_bins "$config_dir" "$container"
+}
+
+# sed cannot be a safeBin (OpenClaw always denies it); allowlist resolved paths instead.
+ensure_exec_allowlist_harmless_bins() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local approvals="${config_dir}/exec-approvals.json"
+  if [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1; then
+    podman exec "$container" python3 - <<'PY' || true
+import json
+from pathlib import Path
+path = Path("/home/node/.openclaw/exec-approvals.json")
+patterns = ["/usr/bin/sed", "/bin/sed", "/usr/bin/head", "/bin/head"]
+data = {"version": 1, "socket": {}, "defaults": {}, "agents": {}}
+if path.is_file():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+data.setdefault("version", 1)
+data.setdefault("defaults", {})
+agents = data.setdefault("agents", {})
+for agent_id in ("main", "*"):
+    entry = agents.setdefault(agent_id, {})
+    allow = entry.setdefault("allowlist", [])
+    existing = {e.get("pattern") for e in allow if isinstance(e, dict)}
+    for pattern in patterns:
+        if pattern not in existing:
+            allow.append({"pattern": pattern, "source": "identyclaw-bootstrap"})
+            existing.add(pattern)
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+    # Prefer CLI merge when gateway is up (SQLite-backed approvals on newer OpenClaw).
+    if podman exec "$container" true >/dev/null 2>&1; then
+      local token=""
+      token="$(podman exec "$container" python3 -c 'import json;print(json.load(open("/home/node/.openclaw/openclaw.json")).get("gateway",{}).get("auth",{}).get("token") or "")' 2>/dev/null || true)"
+      if [[ -n "$token" ]]; then
+        for pattern in /usr/bin/sed /bin/sed /usr/bin/head /bin/head; do
+          podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
+            node dist/index.js approvals allowlist add --agent main "$pattern" \
+            --url ws://127.0.0.1:18789 --token "$token" >/dev/null 2>&1 || true
+        done
+      fi
+    fi
+    return 0
+  fi
+  [[ -d "$config_dir" ]] || return 0
+  python3 - "$approvals" <<'PY' || true
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+patterns = ["/usr/bin/sed", "/bin/sed", "/usr/bin/head", "/bin/head"]
+data = {"version": 1, "socket": {}, "defaults": {}, "agents": {}}
+if path.is_file():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+data.setdefault("version", 1)
+data.setdefault("defaults", {})
+agents = data.setdefault("agents", {})
+for agent_id in ("main", "*"):
+    entry = agents.setdefault(agent_id, {})
+    allow = entry.setdefault("allowlist", [])
+    existing = {e.get("pattern") for e in allow if isinstance(e, dict)}
+    for pattern in patterns:
+        if pattern not in existing:
+            allow.append({"pattern": pattern, "source": "identyclaw-bootstrap"})
+            existing.add(pattern)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
 PY
 }
 
@@ -9615,8 +9707,11 @@ write_openclaw_json() {
   "tools": {
     "exec": {
       "ask": "on-miss",
-      "strictInlineEval": true,
-      "safeBins": ["himalaya", "sh", "node"]
+      "strictInlineEval": false,
+      "safeBins": ["cut", "uniq", "head", "tail", "tr", "wc", "himalaya"],
+      "safeBinProfiles": {
+        "himalaya": {}
+      }
     },
     "allow": [
       "exec",
