@@ -9425,17 +9425,59 @@ for entry in sessions.values():
         if key in entry:
             entry.pop(key, None)
             changed = True
+    # Drop sticky model pins that are outside the configured chain (e.g. former
+    # openrouter/auto primary that 400s on tool schemas), plus paid-fallback pins.
+    allow_ids = set(allowlist.keys())
+    allow_tails = {model_tail(m) for m in allow_ids}
     model = entry.get("model")
-    if not model:
-        continue
-    model_s = str(model)
-    stale = (
-        model_s == paid_fallback
-        or model_s == fb2
-        or model_tail(model_s) == paid_fallback
-    )
+    model_s = str(model) if model else ""
+    override = entry.get("modelOverride")
+    override_s = str(override) if override else ""
+    origin = entry.get("modelOverrideFallbackOriginModel")
+    origin_s = str(origin) if origin else ""
+    stale = False
+    if model_s:
+        stale = (
+            model_s == paid_fallback
+            or model_s == fb2
+            or model_tail(model_s) == paid_fallback
+            or (
+                model_s not in allow_ids
+                and model_tail(model_s) not in allow_tails
+            )
+            or model_s.endswith("/auto")
+            or model_tail(model_s) == "auto"
+        )
     if "openrouter" not in provider_ids and model_s.startswith("openrouter/"):
         stale = True
+    if origin_s and (
+        origin_s not in allow_ids
+        or origin_s.endswith("/auto")
+        or model_tail(origin_s) == "auto"
+    ):
+        for key in (
+            "modelOverride",
+            "modelOverrideSource",
+            "modelOverrideFallbackOriginProvider",
+            "modelOverrideFallbackOriginModel",
+            "fallbackNoticeSelectedModel",
+            "fallbackNoticeActiveModel",
+        ):
+            if key in entry:
+                entry.pop(key, None)
+                changed = True
+    if override_s and override_s not in allow_ids and model_tail(override_s) not in allow_tails:
+        for key in (
+            "modelOverride",
+            "modelOverrideSource",
+            "modelOverrideFallbackOriginProvider",
+            "modelOverrideFallbackOriginModel",
+            "fallbackNoticeSelectedModel",
+            "fallbackNoticeActiveModel",
+        ):
+            if key in entry:
+                entry.pop(key, None)
+                changed = True
     if stale:
         entry.pop("model", None)
         entry.pop("modelProvider", None)
