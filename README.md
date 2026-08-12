@@ -609,7 +609,7 @@ IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1   # dynamic outbound + inbound JWT learn
 Pin and install plugins (defaults in `env.example`):
 
 ```bash
-IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.10
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.11
 IDENTYCLAW_CLAWHUB_PLUGIN=git:github.com/discernible-io/openclaw-identyclaw-plugin@main
 IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.9
 ```
