@@ -19,6 +19,8 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 
 | Guide | Use when |
 | --- | --- |
+| [IdentyClaw overview (discernible.io)](https://www.discernible.io/#get-started) | Official Get Started: NEAR account → Passport mint |
+| [Developers / deploy template](https://www.discernible.io/developers.html) | Clone this repo, plugins, SDKs |
 | [Agent hive (A2A + email)](https://dev.to/discernible-io/build-an-openclaw-agent-hive-with-identyclaw-a2a-email-out-of-the-box-125b) | Narrative walkthrough of this repo |
 | [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k) | Mint, plugins, collaboration envelopes |
 | [Verify before execute](https://dev.to/discernible-io/verify-before-execute-hola-recipes-for-agent-verifiers-4a0d) | HOLA / task trust on inbound work |
@@ -92,12 +94,106 @@ This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/d
 | **Sibling app directory** | Default `../openclaw-agents-app` — created by `./identyclaw.sh init` |
 | **Migadu mailboxes** | One per agent you enable in `AGENT_IDS`; set `AGENT_*_EMAIL` in `env.local` |
 | **OpenRouter or OpenCode key** | Before onboard/chat: `./identyclaw.sh set-api-key` or `set-opencode-key` |
-| **NEAR Passport credentials** | `secrets/near-credentials/*.json` per agent for A2A, webhooks, and HOLA signing; active owner in `.active`. Wallet helpers: `workspace/scripts/idcp-*.sh` (create/fund/transfer/rotate) |
+| **NEAR Passport credentials** | Required for A2A, webhooks, and HOLA — see [IdentyClaw Passport enrollment](#identyclaw-passport-enrollment) (`secrets/near-credentials/*.json`, `.active`; wallet helpers: `workspace/scripts/idcp-*.sh`) |
 | **Optional host CLI** | `openclaw` on the host for advanced management outside containers |
 
 Mailbox passwords are **not** required for `init`, `build-image`, or `start` — add them later (see [Set email passwords later](#set-email-passwords-later)).
 
 For main-tier **pod** deploy, also prepare TLS material under `~/openclaw-agents-app/certs/` (`./identyclaw.sh generate-certs`) and set `IDENTYCLAW_DEPLOY_MODE=pod` with per-agent `AGENT_*_PUBLIC_HOST`.
+
+## IdentyClaw Passport enrollment
+
+A2A messaging, RODiT-signed webhooks, and HOLA identity tools need a minted [IdentyClaw Passport](https://www.discernible.io/#get-started) on NEAR. You do **not** register with IdentyClaw to exist — you create a NEAR account, fund it, and mint at the purchase portal. Canonical overview: [discernible.io Get Started](https://www.discernible.io/#get-started) · [Developers](https://www.discernible.io/developers.html) · enrollment API: [`.well-known/enrollment`](https://api.identyclaw.com/.well-known/enrollment).
+
+Do this **once per agent** (or share one Passport only inside a closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0)).
+
+### 1. Install this repo and bring an agent up
+
+```bash
+git clone https://github.com/discernible-io/openclaw-agents.git ~/identyclaw-agents
+cd ~/identyclaw-agents
+chmod +x identyclaw.sh
+./identyclaw.sh init          # creates ../openclaw-agents-app/ and env.local
+# Edit ../openclaw-agents-app/env.local — set AGENT_IDS (e.g. agent-a), emails, ports
+./identyclaw.sh build-image
+./identyclaw.sh start all
+```
+
+Install Podman and Node 22+ first (see [Prerequisites](#prerequisites)). LLM keys and Migadu passwords can wait until after Passport enrollment if you only need identity/A2A smoke tests.
+
+### 2. Create a NEAR implicit account
+
+Create credentials **before** purchasing a Passport. Keys stay on disk under the agent’s app state — **never paste private keys into chat**.
+
+**Option A — inside the running agent** (near-cli-rs is in the image; preferred once `start` has run):
+
+```bash
+podman exec -u node openclaw-agent-a \
+  bash -lc 'cd /home/node/.openclaw/workspace && bash scripts/idcp-wallet.sh genaccount'
+```
+
+Copy the printed 64-character hex `implicit_account_id`. Activate it on the host:
+
+```bash
+./identyclaw.sh near-activate agent-a <implicit_account_id>
+```
+
+**Option B — host [gennearaccount](https://github.com/discernible-io/gennearaccount)** (same JSON layout; no container required):
+
+```bash
+mkdir -p ~/openclaw-agents-app/agents/agent-a/secrets/near-credentials
+chmod 700 ~/openclaw-agents-app/agents/agent-a/secrets/near-credentials
+gennearaccount ~/openclaw-agents-app/agents/agent-a/secrets/near-credentials
+./identyclaw.sh near-activate agent-a <implicit_account_id>
+```
+
+Result: `~/openclaw-agents-app/agents/agent-a/secrets/near-credentials/<implicit_account_id>.json` (mode `0600`) plus `.active`.
+
+### 3. Get NEAR (buy or swap with HOT Wallet)
+
+Minting needs mainnet NEAR for the Passport fee and gas (personal tier starts around **0.066 NEAR** for 30 days; check live pricing on the portal). Two common paths:
+
+**Buy NEAR on an exchange** (Binance, Coinbase, Kraken, OKX, …) and withdraw to a wallet you control. Confirm the exchange supports NEAR mainnet withdrawals.
+
+**Or use [HOT Wallet](https://hot-labs.org/wallet/)** (browser extension / mobile — the wallet the [purchase portal](https://purchase.identyclaw.com) integrates for mint signing):
+
+1. Install HOT Wallet from [hot-labs.org/wallet](https://hot-labs.org/wallet/).
+2. Create or import a funded NEAR account in HOT.
+3. If you hold other assets, use HOT’s **Swap / bridge** to convert them to **NEAR** on mainnet.
+4. Keep enough NEAR in HOT to cover the Passport tier you will mint (plus a small buffer for gas).
+
+The agent’s **implicit** account holds the Passport keys on the server. HOT Wallet is the human-side wallet that **pays and signs** the mint on [purchase.identyclaw.com](https://purchase.identyclaw.com). You will paste the agent’s 64-char hex id as the **NEAR account that receives the Passport** on the form.
+
+Optional: send a little NEAR to the implicit account itself (e.g. via HOT transfer to the hex address, or `idcp-wallet.sh <funding> <implicit> init`) if you later need on-chain ops from that account; mint checkout can also cover first-time funding depending on portal flow.
+
+### 4. Craft the Passport at purchase.identyclaw.com
+
+Human checkout step ([Get Started](https://www.discernible.io/#get-started)):
+
+1. Open **[https://purchase.identyclaw.com](https://purchase.identyclaw.com)**.
+2. Click **Connect NEAR Wallet** and choose **HOT Wallet** (approve in the HOT popup / extension).
+3. Fill the mint form:
+   - **NEAR account that will receive the Passport** — the agent’s 64-char hex `implicit_account_id` from step 2 (implicit, not a named `*.near` account).
+   - **Creature** — profession/role for discovery (e.g. `Customer Support Agent`).
+   - **Name**, optional **Contact URI** (`email:example.com:you@example.com`), and facial traits as prompted.
+   - Recommended: **Webhook URL** = this agent’s public HTTPS base with no path (e.g. `https://agent-a.identyclaw.com:9443` from `./identyclaw.sh webhook-url agent-a`).
+4. Pick a tier (Personal / Enterprise / Collectible), review the NEAR fee, and **mint**.
+5. Approve the transaction in HOT Wallet; wait for chain confirmation (~seconds).
+
+FAQ: [purchase.identyclaw.com/faq](https://purchase.identyclaw.com/faq). Support: support@identyclaw.com.
+
+### 5. Wire credentials into the gateway and verify
+
+Credentials from step 2 should already be on disk. Restart so bootstrap syncs `IDENTYCLAW_*` / plugin config:
+
+```bash
+./identyclaw.sh near-activate agent-a <implicit_account_id>   # if not already active
+./identyclaw.sh restart agent-a
+```
+
+Confirm Passport binding (via Control UI / `./identyclaw.sh chat agent-a`, or the `identyclaw_get_my_identity` tool). Then register or update Passport `metadata.webhook_url` if you skipped it at mint time.
+
+Skip minting only when peers stay inside one closed trust boundary. Deeper walkthrough: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Wallet helpers after enrollment: `workspace/scripts/idcp-*.sh` and the `idcp-wallet` skill.
 
 ## Repository vs app directory
 
@@ -497,7 +593,7 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 
 Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). The active signing account is recorded in `secrets/near-credentials/.active`.
 
-**Enrollment (Passport per agent):** generate NEAR credentials into that agent’s `secrets/near-credentials/`, mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), restart so `IDENTYCLAW_*` syncs, then confirm with `identyclaw_get_my_identity` (or `GET /api/me/identity`) and register Passport metadata `webhook_url` as the agent’s HTTPS base (`./identyclaw.sh webhook-url <id>`). Full walkthrough: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Skip minting only when peers stay inside one closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0).
+**Enrollment (Passport per agent):** follow [IdentyClaw Passport enrollment](#identyclaw-passport-enrollment) — install this repo, create a NEAR implicit account, fund/swap NEAR via [HOT Wallet](https://hot-labs.org/wallet/) (or an exchange), mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then `near-activate` / restart and confirm with `identyclaw_get_my_identity`. Official steps: [discernible.io Get Started](https://www.discernible.io/#get-started). Longer narrative: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Skip minting only when peers stay inside one closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0).
 
 **NEAR wallet / Passport rotation:** after `build-image` (near-cli-rs) and bootstrap, agents get `workspace/scripts/idcp-wallet.sh`, `idcp-rotate-passport.sh`, and `idcp-activate-account.sh` plus the `idcp-wallet` skill. Rotate transfers the Passport on-chain and re-points `.active` / `.env` / plugin config; the agent then asks for `./identyclaw.sh restart <id>` (or operators run `./identyclaw.sh near-activate <id>`). Prefer new implicit accounts; do not reuse retired wallets.
 
@@ -513,7 +609,7 @@ IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1   # dynamic outbound + inbound JWT learn
 Pin and install plugins (defaults in `env.example`):
 
 ```bash
-IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.10
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.11
 IDENTYCLAW_CLAWHUB_PLUGIN=git:github.com/discernible-io/openclaw-identyclaw-plugin@main
 IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.9
 ```
