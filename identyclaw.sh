@@ -348,6 +348,9 @@ cmd_start() {
       ;;
     *) echo "Usage: $0 start [agent-id|all]" >&2; exit 1 ;;
   esac
+  if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    ensure_pod_nginx_sidecar || true
+  fi
 }
 
 stop_one() {
@@ -398,7 +401,7 @@ cmd_restart() {
         ;;
       *) echo "Usage: $0 restart [agent-id|all]" >&2; exit 1 ;;
     esac
-    ensure_pod_nginx_ingress_config || true
+    ensure_pod_nginx_sidecar || true
     return 0
   fi
   cmd_stop "$target"

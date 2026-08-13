@@ -4013,6 +4013,12 @@ sync_deploy_scripts_to_app_dir() {
   mkdir -p "${app_dir}/repo/scripts"
   cp -a "${repo_root}/scripts/." "${app_dir}/repo/scripts/"
   cp -a "${repo_root}/identyclaw.sh" "${repo_root}/env.example" "${app_dir}/repo/"
+  # Sidecar includes live under APP_DIR (not the git clone path) so nginx survives
+  # checkout rename/move. deploy-pod.sh copies the same tree on recreate.
+  if [[ -d "${repo_root}/nginx" ]]; then
+    mkdir -p "${app_dir}/repo/nginx"
+    cp -a "${repo_root}/nginx/." "${app_dir}/repo/nginx/"
+  fi
 }
 
 agent_smtp_settings() {
@@ -9312,30 +9318,114 @@ path.chmod(0o600)
 PY
 }
 
-# Render pod nginx.conf from repo templates and reload the sidecar (public API paths only).
-ensure_pod_nginx_ingress_config() {
+# Copy nginx/inc from the current git checkout into APP_DIR and render nginx.conf.
+# Sidecar bind mounts must use APP_DIR only — never the clone path — so a repo
+# rename/move or CI rebuild cannot leave nginx pointing at a missing directory.
+prepare_pod_nginx_host_files() {
   load_env
-  [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] || return 0
-  local app tier nginx_conf repo nginx_container
+  local app repo tier nginx_conf render
   app="$(identyclaw_app_dir)"
   repo="${REPO_ROOT:-${IDENTYCLAW_ROOT}}"
   tier="$(resolve_deploy_tier "$repo" "${OPENCLAW_IMAGE:-}")"
   nginx_conf="${app}/nginx/nginx.conf"
-  nginx_container="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
   mkdir -p "${app}/nginx"
-  bash "${repo}/scripts/render-nginx-conf.sh" "$tier" "$nginx_conf"
-  if ! podman ps --format '{{.Names}}' | grep -qx "$nginx_container"; then
-    echo "    (nginx: ${nginx_container} not running — config rendered to ${nginx_conf})" >&2
+  if [[ -d "${repo}/nginx/inc" ]]; then
+    mkdir -p "${app}/nginx/inc"
+    cp -a "${repo}/nginx/inc/." "${app}/nginx/inc/"
+  fi
+  render="${repo}/scripts/render-nginx-conf.sh"
+  [[ -f "$render" ]] || {
+    echo "missing ${render} — sync deploy scripts (include scripts/ + nginx/)" >&2
+    return 1
+  }
+  bash "$render" "$tier" "$nginx_conf"
+}
+
+# Host bind sources for the nginx sidecar. All paths are under APP_DIR.
+# Prints "host_src:container_dst" (no SELinux suffix). Used by tests + recreate.
+pod_nginx_bind_specs() {
+  local app="${1:-$(identyclaw_app_dir)}"
+  printf '%s\n' \
+    "${app}/certs:/app/certs" \
+    "${app}/logs/nginx:/var/log/nginx"
+  if [[ -d "${app}/nginx/inc" ]]; then
+    printf '%s\n' "${app}/nginx/inc:/etc/nginx/inc"
+  fi
+  printf '%s\n' "${app}/nginx/nginx.conf:/etc/nginx/nginx.conf"
+}
+
+resolve_nginx_image() {
+  local container image
+  container="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
+  if [[ -n "${NGINX_IMAGE:-}" ]]; then
+    printf '%s\n' "$NGINX_IMAGE"
     return 0
   fi
-  if podman exec "$nginx_container" nginx -t >/dev/null 2>&1; then
-    podman exec "$nginx_container" nginx -s reload >/dev/null 2>&1 \
-      && echo "    (nginx: reloaded ${nginx_conf})" >&2 \
-      || echo "    (nginx: reload failed — recreate pod or run deploy-local-podman.sh)" >&2
-  else
-    echo "    (nginx: config test failed — check ${nginx_conf})" >&2
+  if command -v podman >/dev/null 2>&1 && podman container exists "$container" 2>/dev/null; then
+    image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
+    if [[ -n "$image" ]]; then
+      printf '%s\n' "$image"
+      return 0
+    fi
+  fi
+  echo "Set NGINX_IMAGE or run ./scripts/deploy-local-podman.sh to create the nginx sidecar" >&2
+  return 1
+}
+
+# Recreate identyclaw-nginx with APP_DIR binds (certs, logs, rendered conf, copied inc).
+# Safe while agent containers keep running. Replaces stale clone-path mounts.
+recreate_pod_nginx_sidecar() {
+  load_env
+  [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] || return 0
+  local app container image z pod_name nginx_conf vol_args=()
+  app="$(identyclaw_app_dir)"
+  container="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
+  pod_name="${POD_NAME:-identyclaw-agents-pod}"
+  prepare_pod_nginx_host_files || return 1
+  ensure_pod_logs_for_container "${app}/logs/nginx"
+  image="$(resolve_nginx_image)" || return 1
+  z="$(selinux_mount_suffix)"
+  nginx_conf="${app}/nginx/nginx.conf"
+  [[ -f "$nginx_conf" ]] || {
+    echo "missing ${nginx_conf}" >&2
+    return 1
+  }
+  [[ -d "${app}/certs" ]] || {
+    echo "missing ${app}/certs — run ./identyclaw.sh generate-certs" >&2
+    return 1
+  }
+  if ! podman pod exists "$pod_name" 2>/dev/null; then
+    echo "pod ${pod_name} does not exist — run ./scripts/deploy-local-podman.sh" >&2
     return 1
   fi
+  vol_args=(
+    -v "${app}/certs:/app/certs:ro${z}"
+    -v "${app}/logs/nginx:/var/log/nginx${z}"
+    -v "${nginx_conf}:/etc/nginx/nginx.conf:ro${z}"
+  )
+  if [[ -d "${app}/nginx/inc" ]]; then
+    vol_args+=(-v "${app}/nginx/inc:/etc/nginx/inc:ro${z}")
+  fi
+  echo "==> Recreate nginx sidecar ${container} (mounts under ${app})"
+  podman run -d \
+    --pod "$pod_name" \
+    --name "$container" \
+    --replace \
+    --restart unless-stopped \
+    "${vol_args[@]}" \
+    "$image"
+}
+
+# Render + recreate sidecar so start/restart/deploy never keep clone-path binds.
+ensure_pod_nginx_sidecar() {
+  load_env
+  [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] || return 0
+  recreate_pod_nginx_sidecar
+}
+
+# Back-compat name: render files, then recreate (or reload) the sidecar.
+ensure_pod_nginx_ingress_config() {
+  ensure_pod_nginx_sidecar
 }
 
 ensure_openclaw_model_defaults() {

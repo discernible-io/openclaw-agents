@@ -243,21 +243,9 @@ ensure_pod_logs_for_container "$APP_DIR/logs/nginx"
 ensure_tls_certs
 normalize_tls_certs
 
-ensure_pod_nginx_ingress_config || true
-NGINX_CONF="${APP_DIR}/nginx/nginx.conf"
-
-z="$(selinux_mount_suffix)"
+# Recreate nginx with APP_DIR binds only (inc is copied off the clone path).
 echo "==> Start nginx sidecar"
-podman run -d \
-  --pod "$POD_NAME" \
-  --name "$NGINX_CONTAINER_NAME" \
-  --replace \
-  --restart unless-stopped \
-  -v "$APP_DIR/certs:/app/certs:ro${z}" \
-  -v "$APP_DIR/logs/nginx:/var/log/nginx${z}" \
-  -v "$REPO_ROOT/nginx/inc:/etc/nginx/inc:ro${z}" \
-  -v "$NGINX_CONF:/etc/nginx/nginx.conf:ro${z}" \
-  "$NGINX_IMAGE"
+recreate_pod_nginx_sidecar
 
 podman ps -a --filter "pod=${POD_NAME}"
 if [[ "$POD_HOST_PORT" == "$POD_LISTEN_PORT" ]]; then

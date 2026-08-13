@@ -114,11 +114,10 @@ jobs:
         with:
           ref: ${{ env.DEPLOY_SHA }}
           sparse-checkout: |
-            scripts/deploy-pod.sh
-            scripts/ensure-podman-linger.sh
-            scripts/lib.sh
+            scripts
             identyclaw.sh
             env.example
+            nginx
 
       - name: Install SSH key
         uses: shimataro/ssh-key-action@v2
@@ -184,7 +183,7 @@ jobs:
 
       - name: Sync deploy scripts to host
         run: |
-          tar -czf - scripts identyclaw.sh env.example | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
+          tar -czf - scripts identyclaw.sh env.example nginx | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
             set -euo pipefail
             mkdir -p ${{ env.APP_DIR }}/repo
             tar -xzf - -C ${{ env.APP_DIR }}/repo
