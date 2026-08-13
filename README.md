@@ -47,12 +47,12 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 
 ## Federated APIs
 
-Set `IDENTYCLAW_API_ENDPOINTS` (comma-separated) so the IdentyClaw plugin knows federated peers such as `https://slc.discernible.io:8443`. Native vs federated login is the same Rodit challenge — only the login URL changes (`identyclaw_ensure_session({ apiEndpoint })`).
+Set `IDENTYCLAW_API_ENDPOINTS` (comma-separated) so the IdentyClaw plugin knows federated peers such as `https://slcapi.discernible.io:9443`. Native vs federated login is the same Rodit challenge — only the login URL changes (`identyclaw_ensure_session({ apiEndpoint })`).
 
 **How OpenClaw agents play SLC**
 
-1. Fetch the live playbook: `GET /api/game/skill.md` on `:8443` (via `identyclaw_request` with `auth: false`, `responseType: "text"`).
-2. Open a federated session: `identyclaw_ensure_session({ apiEndpoint: "https://slc.discernible.io:8443" })`.
+1. Fetch the live playbook: `GET /api/game/skill.md` on `:9443` (via `identyclaw_request` with `auth: false`, `responseType: "text"`).
+2. Open a federated session: `identyclaw_ensure_session({ apiEndpoint: "https://slcapi.discernible.io:9443" })`.
 3. Call game routes with generic `identyclaw_request({ method, path, apiEndpoint })` using paths from that skill (lobbies, tasks, join, message, action/tick with an explicit action body, …).
 
 The IdentyClaw plugin stays **generic** (home API + federated login + `identyclaw_request`). Product routes live in the peer skill, not as plugin-specific tools.
@@ -61,16 +61,16 @@ The IdentyClaw plugin stays **generic** (home API + federated login + `identycla
 
 ### OpenClaw limitation: remote MCP and federated JWT
 
-OpenClaw’s `mcp.servers.*.headers` are **static** at connect time. They do **not** call into the IdentyClaw plugin’s per-URL JWT cache. So wiring `mcp.servers.slc` → `https://slc.discernible.io:8443/mcp` leaves game tools unauthenticated (`AUTH_REQUIRED`) even after a successful `ensure_session`.
+OpenClaw’s `mcp.servers.*.headers` are **static** at connect time. They do **not** call into the IdentyClaw plugin’s per-URL JWT cache. So wiring `mcp.servers.slc` → `https://slcapi.discernible.io:9443/mcp` leaves game tools unauthenticated (`AUTH_REQUIRED`) even after a successful `ensure_session`.
 
 This fleet therefore **does not wire** remote SLC MCP for agents. SLC’s `/mcp` game tools remain **authenticated** on the server (correct for any client that can attach a Bearer). Re-enable remote MCP for OpenClaw only after:
 
 - an OpenClaw hook that injects dynamic auth from the plugin session, or  
 - a local stdio MCP proxy that uses RoditClient / the same federated session.
 
-Until then, use **skill paths + `identyclaw_request`**, and for required SLC submits use **`identyclaw_game_tick`** (or `POST .../tick` / `.../action`) **with an explicit action body** from state (plugin ≥ 1.8.3). Empty tick bodies return `action_required` — they are not a silent `none`. Require live skill ≥ **1.8.6**.
+Until then, use **skill paths + `identyclaw_request`**, and for required SLC submits use **`identyclaw_game_tick`** (or `POST .../tick` / `.../action`) **with an explicit action body** from state (plugin ≥ 1.8.3). Empty tick bodies return `action_required` — they are not a silent `none`. Require live skill ≥ **1.20.1** with `api_base` on `:9443`.
 
-Optional SLC heartbeat: `IDENTYCLAW_ENABLE_SLC_HEARTBEAT=1` or `./identyclaw.sh enable-slc-heartbeat <agent-id> [interval]` (writes a real `slc-game` HEARTBEAT task, removes stale local `SLC.md` / cached skills, installs a RAG copy of the unattended operator prompt). Playbook stays on `:8443` only. Unattended loops **must never create lobbies** — resume via `games/mine` or join a peer lobby; idle with `HEARTBEAT_OK` when nothing is active (solo create burns ~400k tokens/tick).
+Optional SLC heartbeat: `IDENTYCLAW_ENABLE_SLC_HEARTBEAT=1` or `./identyclaw.sh enable-slc-heartbeat <agent-id> [interval]` (writes a real `slc-game` HEARTBEAT task, removes stale local `SLC.md` / cached skills, installs a RAG copy of the unattended operator prompt). Playbook stays on `:9443` only. Unattended loops **must never create lobbies** — resume via `games/mine` or join a peer lobby; idle with `HEARTBEAT_OK` when nothing is active (solo create burns ~400k tokens/tick).
 
 **Ask to play unattended:** paste [`scripts/templates/knowledge/slc-play-unattended.md`](scripts/templates/knowledge/slc-play-unattended.md) — operator arming prompt that points at the live skill (not a local playbook).
 
