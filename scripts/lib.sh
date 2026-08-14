@@ -9277,15 +9277,31 @@ PY
 }
 
 # sed cannot be a safeBin (OpenClaw always denies it); allowlist resolved paths instead.
+# Newer OpenClaw stores approvals in state/openclaw.sqlite. Writing exec-approvals.json
+# while SQLite already has a row triggers ExecApprovalsMigrationRequiredError (doctor
+# preserves canonical SQLite and refuses to delete conflicting legacy JSON).
 ensure_exec_allowlist_harmless_bins() {
   local config_dir="$1"
   local container="${2:-}"
   local approvals="${config_dir}/exec-approvals.json"
+  local sqlite_state="${config_dir}/state/openclaw.sqlite"
+  local gw_port=""
+  local agent_id=""
+  agent_id="$(agent_id_from_dir "$config_dir" 2>/dev/null || true)"
+  if [[ -n "$agent_id" ]]; then
+    gw_port="$(agent_internal_gateway_port "$agent_id" 2>/dev/null || true)"
+  fi
+  gw_port="${gw_port:-18789}"
   if [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1; then
+    # Only touch legacy JSON when SQLite-backed approvals are not in use.
     podman exec "$container" python3 - <<'PY' || true
 import json
 from pathlib import Path
 path = Path("/home/node/.openclaw/exec-approvals.json")
+sqlite = Path("/home/node/.openclaw/state/openclaw.sqlite")
+if sqlite.is_file():
+    # SQLite is canonical — never recreate legacy JSON (blocks exec approvals).
+    raise SystemExit(0)
 patterns = ["/usr/bin/sed", "/bin/sed", "/usr/bin/head", "/bin/head"]
 data = {"version": 1, "socket": {}, "defaults": {}, "agents": {}}
 if path.is_file():
@@ -9315,13 +9331,17 @@ PY
         for pattern in /usr/bin/sed /bin/sed /usr/bin/head /bin/head; do
           podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
             node dist/index.js approvals allowlist add --agent main "$pattern" \
-            --url ws://127.0.0.1:18789 --token "$token" >/dev/null 2>&1 || true
+            --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
         done
       fi
     fi
     return 0
   fi
   [[ -d "$config_dir" ]] || return 0
+  # Host path: skip JSON writes once shared SQLite state exists.
+  if [[ -f "$sqlite_state" ]]; then
+    return 0
+  fi
   python3 - "$approvals" <<'PY' || true
 import json, sys
 from pathlib import Path
