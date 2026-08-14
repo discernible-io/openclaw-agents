@@ -9,9 +9,6 @@ ARG HIMALAYA_VERSION=v1.2.0
 ARG HIMALAYA_ARCH=x86_64-linux
 ARG NEAR_CLI_RS_VERSION=v0.29.0
 ARG NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
-# QMD memory sidecar (memory.backend=qmd). Without this, OpenClaw falls back to
-# builtin embeddings and fails when no OpenAI key is configured.
-ARG QMD_NPM_SPEC="@tobilu/qmd@2.5.3"
 # Space-separated npm specs installed into the image (seeded into agent homes at start).
 # Pin @openclaw/discord to OPENCLAW_GATEWAY_VERSION — mismatches crash the channel provider.
 ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.7.1"
@@ -25,7 +22,6 @@ ARG NEAR_CLI_RS_VERSION
 ARG NEAR_CLI_RS_TARGET
 ARG OPENCLAW_GATEWAY_VERSION
 ARG OPENCLAW_BUNDLED_PLUGINS
-ARG QMD_NPM_SPEC
 
 USER root
 RUN apt-get update \
@@ -41,8 +37,6 @@ RUN apt-get update \
  && tar -xzf /tmp/near-cli-rs.tgz -C /tmp \
  && install -m 755 "/tmp/near-cli-rs-${NEAR_CLI_RS_TARGET}/near" /usr/local/bin/near \
  && near --version \
- && npm install -g "${QMD_NPM_SPEC}" \
- && qmd --version \
  && chromium --version \
  && jq --version \
  && rm -rf /tmp/himalaya.tgz /tmp/near-cli-rs.tgz "/tmp/near-cli-rs-${NEAR_CLI_RS_TARGET}" \

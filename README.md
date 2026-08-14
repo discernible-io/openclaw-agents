@@ -40,7 +40,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); optional `GET /api/agents` seeding (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` or `./identyclaw.sh discover-a2a-peers`) |
 | **Channels** | Discord (bundled); optional Telegram, Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
 | **LLM** | **OpenRouter** (default) or **OpenCode** Zen/Go; model chain + failover timeouts synced from `env.local`; OpenRouter sticky `session_id` + prompt-cache stats (`cache-stats`) |
-| **Memory** | QMD BM25 + session-memory hook; memory-core dreaming (nightly → `MEMORY.md`); Active Memory left off by default |
+| **Memory** | OpenClaw builtin SQLite engine + session-memory hook; memory-core dreaming (nightly → `MEMORY.md`); Active Memory left off by default |
 | **Security** | Gateway token auth, rate limiting, tool/knowledge scope in workspace docs, RODiT JWT boundaries for A2A vs webhooks vs Control UI |
 | **Testing** | Repo-local unit tests (CI); constitution gateway suites with per-agent **preflight**; multi-agent and multi-peer sweeps |
 | **Ops** | Boot persistence (`enable-boot`), GitHub Actions deploy, self-signed TLS generation, agent export/import, `restore-host-access` for credential edits |
@@ -786,7 +786,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | OpenRouter cache | Sticky `session_id` / `x-session-id` = `OPENCLAW_OPENROUTER_SESSION_ID` (default `identyclaw`); `diagnostics.cacheTrace` when `OPENCLAW_CACHE_TRACE=1`; inspect with `./identyclaw.sh cache-stats` |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
-| Memory | `qmd` (`@tobilu/qmd` in agent image; BM25 `searchMode`); dreaming on (`IDENTYCLAW_DREAMING_ENABLED`) |
+| Memory | builtin SQLite engine; dreaming on (`IDENTYCLAW_DREAMING_ENABLED`) |
 | Session scope | `per-channel-peer` |
 | Hooks | **session-memory** enabled |
 | Chat channels | none (email-first; channels skipped at onboard) |

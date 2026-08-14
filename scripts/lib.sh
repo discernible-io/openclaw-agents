@@ -212,10 +212,8 @@ load_env() {
   OPENCLAW_OPENROUTER_SESSION_ID="${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}"
   # Prompt-cache diagnostics (diagnostics.cacheTrace) + ./identyclaw.sh cache-stats.
   OPENCLAW_CACHE_TRACE="${OPENCLAW_CACHE_TRACE:-1}"
-  # Memory: QMD backend + optional session transcript recall (synced to openclaw.json on bootstrap).
-  IDENTYCLAW_MEMORY_BACKEND="${IDENTYCLAW_MEMORY_BACKEND:-qmd}"
-  IDENTYCLAW_QMD_SESSION_RECALL="${IDENTYCLAW_QMD_SESSION_RECALL:-1}"
-  IDENTYCLAW_QMD_SESSION_RETENTION_DAYS="${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}"
+  # Memory: OpenClaw builtin SQLite engine (synced to openclaw.json on bootstrap).
+  # QMD is removed; leftover memory.backend=qmd / memory.qmd are stripped on sync.
   # memory-core dreaming (nightly short-term → MEMORY.md). Active Memory stays off by default.
   IDENTYCLAW_DREAMING_ENABLED="${IDENTYCLAW_DREAMING_ENABLED:-1}"
   IDENTYCLAW_DREAMING_FREQUENCY="${IDENTYCLAW_DREAMING_FREQUENCY:-0 3 * * *}"
@@ -9591,42 +9589,31 @@ ensure_memory_config() {
   load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "$IDENTYCLAW_MEMORY_BACKEND" "$IDENTYCLAW_QMD_SESSION_RECALL" \
-    "$IDENTYCLAW_QMD_SESSION_RETENTION_DAYS" \
     "${IDENTYCLAW_DREAMING_ENABLED:-1}" \
     "${IDENTYCLAW_DREAMING_FREQUENCY:-0 3 * * *}" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-backend = sys.argv[2]
-session_recall = sys.argv[3] == "1"
-retention_days = int(sys.argv[4])
-dreaming_enabled = sys.argv[5] == "1"
-dreaming_frequency = (sys.argv[6] or "0 3 * * *").strip() or "0 3 * * *"
+dreaming_enabled = sys.argv[2] == "1"
+dreaming_frequency = (sys.argv[3] or "0 3 * * *").strip() or "0 3 * * *"
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
 memory = data.setdefault("memory", {})
-if memory.get("backend") != backend:
-    memory["backend"] = backend
+# Builtin SQLite engine only. QMD is a breaking removal: drop retired keys so
+# leftover memory.backend=qmd cannot spawn a missing binary after image rebuild.
+if memory.get("backend") != "builtin":
+    memory["backend"] = "builtin"
+    changed = True
+if "qmd" in memory:
+    del memory["qmd"]
     changed = True
 
-# QMD BM25-only by default (no GGUF download). Pin command so gateway PATH
-# quirks cannot resurrect spawn ENOENT after image upgrades.
-if backend == "qmd":
-    qmd = memory.setdefault("qmd", {})
-    if qmd.get("command") != "/usr/local/bin/qmd":
-        qmd["command"] = "/usr/local/bin/qmd"
-        changed = True
-    if qmd.get("searchMode") != "search":
-        qmd["searchMode"] = "search"
-        changed = True
-
-# OpenClaw 2026.6.x rejects memory.search entirely (gateway: "memory: Invalid input").
+# OpenClaw 2026.7.1 rejects memory.search (gateway: "memory: Invalid input").
 # OpenClaw 2026.7.2+ accepts memory.search and rejects agents.defaults.memorySearch.
-# Keep config valid for the image we ship (2026.6.x): never write memory.search;
+# Keep config valid for the image we ship (2026.7.1): never write memory.search;
 # drop legacy memorySearch / memory.search so restart cannot brick the gateway.
 agents = data.setdefault("agents", {})
 defaults = agents.setdefault("defaults", {})
@@ -9637,7 +9624,7 @@ if "search" in memory:
     del memory["search"]
     changed = True
 
-# Strip keys rejected by OpenClaw 2026.7.2+ config schema (harmless on 2026.6.x).
+# Strip keys rejected by OpenClaw 2026.7.2+ config schema (harmless on 2026.7.1).
 meta = data.get("meta")
 if isinstance(meta, dict) and "lastTouchedAt" in meta:
     del meta["lastTouchedAt"]
@@ -9665,26 +9652,11 @@ if entry.get("enabled") is not True:
     entry["enabled"] = True
     changed = True
 
-# Session recall is expressed via memory.qmd.sessions on 2026.6.x (not memory.search).
-qmd = memory.setdefault("qmd", {})
-sessions_cfg = qmd.setdefault("sessions", {})
-if session_recall:
-    if sessions_cfg.get("enabled") is not True:
-        sessions_cfg["enabled"] = True
-        changed = True
-    if sessions_cfg.get("retentionDays") != retention_days:
-        sessions_cfg["retentionDays"] = retention_days
-        changed = True
-
-    tools = data.setdefault("tools", {})
-    sessions_tool = tools.setdefault("sessions", {})
-    if sessions_tool.get("visibility") != "agent":
-        sessions_tool["visibility"] = "agent"
-        changed = True
-else:
-    if sessions_cfg.get("enabled") is True:
-        sessions_cfg["enabled"] = False
-        changed = True
+tools = data.setdefault("tools", {})
+sessions_tool = tools.setdefault("sessions", {})
+if sessions_tool.get("visibility") != "agent":
+    sessions_tool["visibility"] = "agent"
+    changed = True
 
 # memory-core dreaming: overnight consolidation into MEMORY.md (not per-turn LLM).
 # Leave plugins.entries.active-memory unset/off — escalate/always costs latency + tokens.
@@ -9900,15 +9872,7 @@ write_openclaw_json() {
     }
   },
   "memory": {
-    "backend": "${IDENTYCLAW_MEMORY_BACKEND:-qmd}",
-    "qmd": {
-      "command": "/usr/local/bin/qmd",
-      "searchMode": "search",
-      "sessions": {
-        "enabled": false,
-        "retentionDays": ${IDENTYCLAW_QMD_SESSION_RETENTION_DAYS:-14}
-      }
-    }
+    "backend": "builtin"
   },
   "hooks": {
     "internal": {
