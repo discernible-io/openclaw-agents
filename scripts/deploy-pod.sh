@@ -212,8 +212,13 @@ echo "==> Recreate pod ${POD_NAME}"
 podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || true
 
 pod_publish_ports=("$POD_LISTEN_PORT")
+if [[ "$POD_HOST_PORT" != "$POD_LISTEN_PORT" ]]; then
+  pod_publish_ports+=("$POD_HOST_PORT")
+fi
 for id in $AGENT_IDS; do
-  agent_port="$(agent_ingress_port "$id")"
+  # Explicit AGENT_*_INGRESS_PORT only — do not publish a stale Passport webhook port
+  # (e.g. :7443) beside Telegram :88; that steals clienttest's 7443 on this host.
+  agent_port="$(agent_env_value "$id" INGRESS_PORT "")"
   [[ -n "$agent_port" ]] || continue
   found=0
   for p in "${pod_publish_ports[@]}"; do
@@ -224,6 +229,9 @@ done
 
 pod_create_args=(--name "$POD_NAME" --sysctl net.ipv4.ip_unprivileged_port_start=88)
 for p in "${pod_publish_ports[@]}"; do
+  if [[ "$p" =~ ^[0-9]+$ ]] && (( p < 1024 )); then
+    pod_create_args+=(--sysctl "net.ipv4.ip_unprivileged_port_start=${p}")
+  fi
   pod_create_args+=(-p "${p}:${p}")
 done
 for id in $AGENT_IDS; do
