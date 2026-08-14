@@ -9418,11 +9418,14 @@ recreate_pod_nginx_sidecar() {
     vol_args+=(-v "${app}/nginx/inc:/etc/nginx/inc:ro${z}")
   fi
   echo "==> Recreate nginx sidecar ${container} (mounts under ${app})"
+  # USER nginx cannot bind :88 without NET_BIND_SERVICE (host sysctl only
+  # covers the Podman user mapping the host port).
   podman run -d \
     --pod "$pod_name" \
     --name "$container" \
     --replace \
     --restart unless-stopped \
+    --cap-add NET_BIND_SERVICE \
     "${vol_args[@]}" \
     "$image"
 }

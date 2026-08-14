@@ -222,7 +222,7 @@ for id in $AGENT_IDS; do
   [[ "$found" -eq 0 ]] && pod_publish_ports+=("$agent_port")
 done
 
-pod_create_args=(--name "$POD_NAME")
+pod_create_args=(--name "$POD_NAME" --sysctl net.ipv4.ip_unprivileged_port_start=88)
 for p in "${pod_publish_ports[@]}"; do
   pod_create_args+=(-p "${p}:${p}")
 done
