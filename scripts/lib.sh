@@ -181,7 +181,7 @@ load_env() {
       esac
     done <"$f"
   fi
-  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.7.1-slim}"
+  OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.7.1-2-slim}"
   OPENCLAW_GATEWAY_VERSION="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
   OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@${OPENCLAW_GATEWAY_VERSION}}"
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-agent:local}"
@@ -802,7 +802,9 @@ sync_agent_plugin_configs() {
 openclaw_gateway_version_from_image() {
   local image_ref="${1:-}"
   local tag="${image_ref##*:}"
-  tag="${tag%%-*}"
+  # Keep correction suffixes (2026.7.1-2); strip image variants only.
+  tag="${tag%-slim}"
+  tag="${tag%-browser}"
   echo "${tag:-2026.5.27}"
 }
 
@@ -9629,7 +9631,7 @@ if "qmd" in memory:
 
 # OpenClaw 2026.7.1 rejects memory.search (gateway: "memory: Invalid input").
 # OpenClaw 2026.7.2+ accepts memory.search and rejects agents.defaults.memorySearch.
-# Keep config valid for the image we ship (2026.7.1): never write memory.search;
+# Keep config valid for the image we ship (2026.7.1-2): never write memory.search;
 # drop legacy memorySearch / memory.search so restart cannot brick the gateway.
 agents = data.setdefault("agents", {})
 defaults = agents.setdefault("defaults", {})
