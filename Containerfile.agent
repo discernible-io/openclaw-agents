@@ -10,8 +10,8 @@ ARG HIMALAYA_ARCH=x86_64-linux
 ARG NEAR_CLI_RS_VERSION=v0.29.0
 ARG NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
 # Space-separated npm specs installed into the image (seeded into agent homes at start).
-# Pin @openclaw/discord to OPENCLAW_GATEWAY_VERSION — mismatches crash the channel provider.
-ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.7.1-2"
+# Discord npm often has no correction tag (2026.7.1-2); pin the published plugin on the same line.
+ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.7.1"
 
 FROM ${OPENCLAW_BASE_IMAGE}
 

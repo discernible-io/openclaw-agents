@@ -69,7 +69,7 @@ jobs:
           build-args: |
             OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.7.1-2-slim
             OPENCLAW_GATEWAY_VERSION=2026.7.1-2
-            OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.7.1-2
+            OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.7.1
             HIMALAYA_VERSION=v1.2.0
             HIMALAYA_ARCH=x86_64-linux
             NEAR_CLI_RS_VERSION=v0.29.0

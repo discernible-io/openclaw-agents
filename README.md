@@ -287,7 +287,7 @@ When Migadu passwords are ready, configure **each agent in `AGENT_IDS`**:
 ./identyclaw.sh restart all
 ```
 
-The local image pins `ghcr.io/openclaw/openclaw:2026.7.1-2-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.7.1-2` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
+The local image pins `ghcr.io/openclaw/openclaw:2026.7.1-2-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.7.1` at build time (no Discord npm tag for the `2026.7.1-2` correction release). On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
 - **Pod mode** (per agent): `https://<AGENT_*_PUBLIC_HOST>:<ingress-port>/` — token: `./identyclaw.sh token <agent-id>`
 - **Standalone dev** (default ports from `env.local`): agent-a → `http://127.0.0.1:18789/`, agent-c → `http://127.0.0.1:18793/`, agent-e → `http://127.0.0.1:18797/`

@@ -183,7 +183,7 @@ load_env() {
   fi
   OPENCLAW_BASE_IMAGE="${OPENCLAW_BASE_IMAGE:-ghcr.io/openclaw/openclaw:2026.7.1-2-slim}"
   OPENCLAW_GATEWAY_VERSION="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
-  OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@${OPENCLAW_GATEWAY_VERSION}}"
+  OPENCLAW_BUNDLED_PLUGINS="${OPENCLAW_BUNDLED_PLUGINS:-@openclaw/discord@$(openclaw_discord_plugin_version "${OPENCLAW_GATEWAY_VERSION}")}"
   OPENCLAW_LOCAL_IMAGE="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-agent:local}"
   HIMALAYA_VERSION="${HIMALAYA_VERSION:-v1.2.0}"
   NEAR_CLI_RS_VERSION="${NEAR_CLI_RS_VERSION:-v0.29.0}"
@@ -808,14 +808,24 @@ openclaw_gateway_version_from_image() {
   echo "${tag:-2026.5.27}"
 }
 
-# Pin bare @openclaw/discord to the gateway version (prevents channel provider crashes).
+# Discord npm often has no correction tag (2026.7.1-2 → 2026.7.1). Leave prereleases intact.
+openclaw_discord_plugin_version() {
+  local gw="${1:-}"
+  if [[ "$gw" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-[0-9]+$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  else
+    echo "$gw"
+  fi
+}
+
+# Pin bare @openclaw/discord to the published plugin on this gateway line.
 resolve_openclaw_bundled_plugins() {
   load_env
   local gw spec resolved=()
   gw="${OPENCLAW_GATEWAY_VERSION:-$(openclaw_gateway_version_from_image "${OPENCLAW_BASE_IMAGE}")}"
   for spec in ${OPENCLAW_BUNDLED_PLUGINS}; do
     if [[ "$spec" == @openclaw/discord ]]; then
-      resolved+=("@openclaw/discord@${gw}")
+      resolved+=("@openclaw/discord@$(openclaw_discord_plugin_version "$gw")")
     else
       resolved+=("$spec")
     fi
@@ -824,6 +834,7 @@ resolve_openclaw_bundled_plugins() {
 }
 
 # Discord channel plugin must match gateway core (e.g. parseStrictPositiveInteger export drift).
+# Correction gateways (2026.7.1-2) are compatible with Discord 2026.7.1 when no matching npm tag exists.
 ensure_discord_plugin_compat() {
   local id="$1"
   local container
@@ -835,6 +846,13 @@ ensure_discord_plugin_compat() {
 const fs = require('fs');
 const path = require('path');
 const gw = require('/app/package.json').version;
+function discordPluginVersion(gw) {
+  const m = String(gw).match(/^(\\d+\\.\\d+\\.\\d+)-\\d+$/);
+  return m ? m[1] : gw;
+}
+function discordCompatible(discord, gw) {
+  return Boolean(discord) && (discord === gw || discord === discordPluginVersion(gw));
+}
 function discordVersion() {
   const legacy = '/home/node/.openclaw/npm/node_modules/@openclaw/discord/package.json';
   if (fs.existsSync(legacy)) return require(legacy).version;
@@ -846,18 +864,19 @@ function discordVersion() {
   }
   return null;
 }
-process.exit(discordVersion() === gw ? 0 : 1);
+process.exit(discordCompatible(discordVersion(), gw) ? 0 : 1);
 " 2>/dev/null; then
     return 0
   fi
 
-  echo "    (${id}: syncing @openclaw/discord to gateway version…)" >&2
+  echo "    (${id}: syncing @openclaw/discord to published plugin for this gateway…)" >&2
   podman exec "$container" bash -ce '
     set -euo pipefail
     gw=$(node -e "process.stdout.write(require(\"/app/package.json\").version)")
+    discord=$(node -e "const g=process.argv[1]; const m=String(g).match(/^(\\d+\\.\\d+\\.\\d+)-\\d+$/); process.stdout.write(m?m[1]:g)" -- "$gw")
     rm -rf /home/node/.openclaw/npm/node_modules/@openclaw/discord
     rm -rf /home/node/.openclaw/npm/projects/openclaw-discord-*
-    OPENCLAW_STATE_DIR=/home/node/.openclaw node /app/openclaw.mjs plugins install "@openclaw/discord@${gw}" --pin
+    OPENCLAW_STATE_DIR=/home/node/.openclaw node /app/openclaw.mjs plugins install "@openclaw/discord@${discord}" --pin
   ' >&2
   return 1
 }
