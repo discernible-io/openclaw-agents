@@ -6,8 +6,8 @@
  *   NODE_TLS_REJECT_UNAUTHORIZED=0 node test-p2p-peer-suite.mjs
  *
  * Env overrides:
- *   PEER_A_BASE  default https://agent-a.dev.identyclaw.com:7443  (agent-a)
- *   PEER_C_BASE  default https://agent-c.dev.identyclaw.com:7443  (agent-c)
+ *   PEER_A_BASE  default https://agent-a.dev.identyclaw.com:88  (agent-a)
+ *   PEER_C_BASE  default https://agent-c.dev.identyclaw.com:88  (agent-c)
  */
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -16,8 +16,8 @@ import { join } from "node:path";
 import https from "node:https";
 import { createTally, runProbe } from "./lib-test-report.mjs";
 
-const PEER_A = (process.env.PEER_A_BASE || "https://agent-a.dev.identyclaw.com:7443").replace(/\/$/, "");
-const PEER_C = (process.env.PEER_C_BASE || process.env.PEER_D_BASE || "https://agent-c.dev.identyclaw.com:7443").replace(/\/$/, "");
+const PEER_A = (process.env.PEER_A_BASE || "https://agent-a.dev.identyclaw.com:88").replace(/\/$/, "");
+const PEER_C = (process.env.PEER_C_BASE || process.env.PEER_D_BASE || "https://agent-c.dev.identyclaw.com:88").replace(/\/$/, "");
 
 process.env.LOG_LEVEL = process.env.LOG_LEVEL || "error";
 process.env.SUPPRESS_NO_CONFIG_WARNING = "true";

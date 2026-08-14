@@ -56,7 +56,8 @@ resolve_deploy_tier() {
 
 deploy_tier_app_port() {
   case "$1" in
-    development|main) printf '7443' ;;
+    # Telegram Bot API webhooks only accept 80, 88, 443, or 8443.
+    development|main) printf '88' ;;
     *) return 1 ;;
   esac
 }
@@ -146,6 +147,7 @@ load_env() {
   local f
   local _peer_token_from_process=0 _peer_token_process_value=""
   local _constitution_skip_from_process=0 _constitution_skip_process_value=""
+  local _ingress_port_from_process=0 _ingress_port_process_value=""
   # Process environment overrides env.local (multi-peer test loops: export IDENTYCLAW_PEER_TOKEN_ID=…).
   if [[ -n "${IDENTYCLAW_PEER_TOKEN_ID+x}" ]]; then
     _peer_token_from_process=1
@@ -154,6 +156,10 @@ load_env() {
   if [[ -n "${CONSTITUTION_SKIP_SUITES+x}" ]]; then
     _constitution_skip_from_process=1
     _constitution_skip_process_value="$CONSTITUTION_SKIP_SUITES"
+  fi
+  if [[ -n "${IDENTYCLAW_INGRESS_PORT+x}" ]]; then
+    _ingress_port_from_process=1
+    _ingress_port_process_value="$IDENTYCLAW_INGRESS_PORT"
   fi
   IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$(identyclaw_app_dir)}"
   f="${IDENTYCLAW_APP_DIR}/env.local"
@@ -245,7 +251,7 @@ load_env() {
   IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-}"
   IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
-  IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-7443}"
+  IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-88}"
   AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
   AGENT_C_PUBLIC_HOST="${AGENT_C_PUBLIC_HOST:-agent-c.identyclaw.com}"
   AGENT_E_PUBLIC_HOST="${AGENT_E_PUBLIC_HOST:-agent-e.identyclaw.com}"
@@ -257,6 +263,13 @@ load_env() {
   fi
   if [[ "$_constitution_skip_from_process" -eq 1 ]]; then
     CONSTITUTION_SKIP_SUITES="$_constitution_skip_process_value"
+  fi
+  if [[ "$_ingress_port_from_process" -eq 1 ]]; then
+    IDENTYCLAW_INGRESS_PORT="$_ingress_port_process_value"
+  fi
+  # Deploy APP_PORT (CI / deploy-pod.sh) wins over a stale env.local 7443.
+  if [[ -n "${APP_PORT:-}" ]]; then
+    IDENTYCLAW_INGRESS_PORT="$APP_PORT"
   fi
 }
 
@@ -1412,7 +1425,7 @@ gateway_base_host_port() {
 }
 
 # True when two gateway host:port pairs hit the same pod nginx (multi-agent subdomain layout).
-# e.g. peer https://john.dihola.io:7443 vs local https://agent-a.john.dihola.io:7443.
+# e.g. peer https://john.dihola.io:88 vs local https://agent-a.john.dihola.io:88.
 gateway_host_on_same_pod_ingress() {
   local peer_hp="$1" local_hp="$2"
   local peer_host="${peer_hp%%:*}" peer_port="${peer_hp#*:}"
@@ -3432,7 +3445,7 @@ agent_ingress_base_url() {
 }
 
 # Pod agents resolve their public ingress host to loopback so self-tests hit nginx in-pod
-# (container DNS may differ from the host; e.g. agent-c.dev.identyclaw.com:7443).
+# (container DNS may differ from the host; e.g. agent-c.dev.identyclaw.com:88).
 pod_agent_ingress_host_args() {
   local id="$1" host
   load_env
@@ -3452,7 +3465,7 @@ pod_migadu_smtp_host_args() {
   printf '%s\n' "--add-host=smtp.migadu.com:${ip}"
 }
 
-# HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 7443).
+# HTTPS ingress from inside the agent container (pod nginx listens on deploy-tier app port, e.g. 88).
 agent_container_ingress_base_url() {
   local id="$1"
   load_env

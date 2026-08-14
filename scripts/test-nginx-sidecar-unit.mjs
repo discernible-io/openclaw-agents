@@ -102,8 +102,11 @@ runCase("prepare_pod_nginx_host_files copies nginx/inc into APP_DIR", () => {
       REPO_ROOT: repoRoot,
     });
     const copied = join(app, "nginx", "inc", "http-common.inc");
+    const conf = readFileSync(join(app, "nginx", "nginx.conf"), "utf8");
     assert.equal(readFileSync(copied, "utf8").includes("limit_req"), true);
-    assert.equal(readFileSync(join(app, "nginx", "nginx.conf"), "utf8").includes("server_name"), true);
+    assert.equal(conf.includes("server_name"), true);
+    assert.equal(conf.includes("listen 88 ssl"), true);
+    assert.equal(conf.includes("location = /telegram-webhook"), true);
   } finally {
     rmSync(app, { recursive: true, force: true });
   }
@@ -122,6 +125,11 @@ runCase("sync_deploy_scripts_to_app_dir copies nginx/ into APP_DIR/repo", () => 
   } finally {
     rmSync(app, { recursive: true, force: true });
   }
+});
+
+runCase("deploy_tier_app_port is Telegram-compatible port 88", () => {
+  assert.equal(bashLib('deploy_tier_app_port main'), "88");
+  assert.equal(bashLib('deploy_tier_app_port development'), "88");
 });
 
 tally.printSummary("Summary");

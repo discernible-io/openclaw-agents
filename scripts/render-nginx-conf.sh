@@ -22,7 +22,7 @@ load_env
 
 tier_default_ingress_port() {
   case "$tier" in
-    development|main) echo "7443" ;;
+    development|main) echo "88" ;;
   esac
 }
 
@@ -36,6 +36,7 @@ mkdir -p "$(dirname "$out")"
 # TLS sidecar for OpenClaw gateways — primary surfaces:
 #   A2A: POST /a2a, GET /.well-known/agent-card.json (RODiT JWT on POST)
 #   Webhooks: POST /hooks/wake, POST /hooks/agent, POST /hooks/<name> (RODiT x-signature + x-timestamp)
+#   Telegram: POST /telegram-webhook (Bot API; public port must be 80, 88, 443, or 8443)
 #   Plugin API: POST /api/login, GET /api/login/timestamp (P2P JWT for A2A)
 # nginx terminates TLS and reverse-proxies public API paths only; Control UI stays off the public hostname.
 # Gateway token auth still applies on loopback/operator paths inside the pod.
@@ -118,6 +119,13 @@ UPSTREAM
         }
 
         location ^~ /hooks/ {
+            limit_req zone=openclaw_ingress burst=240 nodelay;
+            limit_req zone=openclaw_public burst=120 nodelay;
+            include /etc/nginx/inc/openclaw-proxy.inc;
+            proxy_pass http://${upstream_name};
+        }
+
+        location = /telegram-webhook {
             limit_req zone=openclaw_ingress burst=240 nodelay;
             limit_req zone=openclaw_public burst=120 nodelay;
             include /etc/nginx/inc/openclaw-proxy.inc;

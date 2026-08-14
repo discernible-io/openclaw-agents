@@ -6,7 +6,7 @@
  *   node scripts/test-a2a-rodit-auth.mjs \
  *     --ext-dir ../openclaw-agents-app/agents/agent-c/extensions/identyclaw-a2a \
  *     --creds ../openclaw-agents-app/agents/agent-c/secrets/near-credentials/*.json \
- *     --target https://agent-c.dev.identyclaw.com:7443
+ *     --target https://agent-c.dev.identyclaw.com:88
  */
 import { createRequire } from "node:module";
 import { readdirSync } from "node:fs";

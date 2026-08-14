@@ -7,7 +7,7 @@
  *   node scripts/test-a2a-messaging-e2e.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near.json \
- *     --peer-base https://peer.example:7443 \
+ *     --peer-base https://peer.example:88 \
  *     [--marker-prefix a2a-messaging]
  */
 import { createRequire } from "node:module";

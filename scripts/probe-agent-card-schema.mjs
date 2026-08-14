@@ -4,7 +4,7 @@
  *
  * Usage:
  *   curl -sk URL | node scripts/probe-agent-card-schema.mjs --label local
- *   node scripts/probe-agent-card-schema.mjs --label local --url https://agent:7443/.well-known/agent-card.json
+ *   node scripts/probe-agent-card-schema.mjs --label local --url https://agent:88/.well-known/agent-card.json
  *   node scripts/probe-agent-card-schema.mjs --label local --file /path/to/card.json
  */
 import { readFileSync } from "node:fs";

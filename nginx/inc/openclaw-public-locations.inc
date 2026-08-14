@@ -1,4 +1,4 @@
-# Public ingress only — A2A, webhooks, and plugin API routes.
+# Public ingress only — A2A, webhooks, Telegram webhook, and plugin API routes.
 # Control UI (/, /ws, …) is intentionally not proxied on the public hostname.
 # Include inside a server { } block after defining $openclaw_upstream (upstream name).
 
@@ -17,6 +17,13 @@ location = /a2a {
 }
 
 location ^~ /hooks/ {
+    limit_req zone=openclaw_ingress burst=240 nodelay;
+    limit_req zone=openclaw_public burst=120 nodelay;
+    include /etc/nginx/inc/openclaw-proxy.inc;
+    proxy_pass http://$openclaw_upstream;
+}
+
+location = /telegram-webhook {
     limit_req zone=openclaw_ingress burst=240 nodelay;
     limit_req zone=openclaw_public burst=120 nodelay;
     include /etc/nginx/inc/openclaw-proxy.inc;
