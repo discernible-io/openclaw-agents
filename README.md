@@ -764,6 +764,21 @@ Beyond email-first defaults, agents can enable:
 
 See `env.example` for ClawHub pin variables (`IDENTYCLAW_CLAWHUB_TWITTER_SKILL`, etc.).
 
+### Memory (builtin engine)
+
+OpenClaw’s **builtin SQLite** engine is the only memory backend. Bootstrap writes `memory.backend: "builtin"` into each agent’s `openclaw.json` and strips leftover QMD keys (`memory.qmd`).
+
+| Piece | Default | Notes |
+| --- | --- | --- |
+| Builtin search | keyword/FTS | Vector search only if an embedding provider (for example OpenAI) is configured |
+| session-memory hook | on | Persists session notes into workspace memory files |
+| memory-core dreaming | on (`IDENTYCLAW_DREAMING_ENABLED=1`) | Nightly cron `IDENTYCLAW_DREAMING_FREQUENCY` (default `0 3 * * *`) consolidates short-term notes into `MEMORY.md` |
+| Active Memory | off | No per-turn recall LLM |
+
+**Breaking:** QMD (`@tobilu/qmd`) is removed from the agent image. Existing QMD indexes are not migrated. Canonical notes in `workspace/MEMORY.md` and `workspace/memory/*.md` stay and are reindexed by builtin on the next sync. After upgrading, rebuild `openclaw-agent:local` and run `./identyclaw.sh restart all`. Drop `IDENTYCLAW_MEMORY_BACKEND` and `IDENTYCLAW_QMD_*` from `env.local` if they are still set.
+
+See `env.example` for the dreaming knobs.
+
 ### Agent A (example main-tier pod setup)
 
 Reference configuration for a customer-support oriented agent with email + OpenRouter + DuckDuckGo. **Main-tier pod** uses `IDENTYCLAW_DEPLOY_MODE=pod` in `env.local`.
@@ -786,7 +801,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | OpenRouter cache | Sticky `session_id` / `x-session-id` = `OPENCLAW_OPENROUTER_SESSION_ID` (default `identyclaw`); `diagnostics.cacheTrace` when `OPENCLAW_CACHE_TRACE=1`; inspect with `./identyclaw.sh cache-stats` |
 | Web search | DuckDuckGo, region **`es-es`**, SafeSearch off |
 | Email skill | **himalaya** enabled (password via `set-password`) |
-| Memory | builtin SQLite engine; dreaming on (`IDENTYCLAW_DREAMING_ENABLED`) |
+| Memory | builtin SQLite engine; session-memory hook; dreaming on (`IDENTYCLAW_DREAMING_ENABLED`) |
 | Session scope | `per-channel-peer` |
 | Hooks | **session-memory** enabled |
 | Chat channels | none (email-first; channels skipped at onboard) |
@@ -852,8 +867,16 @@ Key `openclaw.json` excerpts (secrets redacted):
         "config": {
           "webSearch": { "region": "es-es", "safeSearch": "off" }
         }
+      },
+      "memory-core": {
+        "config": {
+          "dreaming": { "enabled": true, "frequency": "0 3 * * *" }
+        }
       }
     }
+  },
+  "memory": {
+    "backend": "builtin"
   },
   "skills": {
     "entries": { "himalaya": { "enabled": true } }
@@ -1088,6 +1111,10 @@ Each agent’s webhooks are HTTP paths on **that agent’s gateway** — they do
 
 Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at origin** with RODiT/Passport credentials (`x-signature` + `x-timestamp`) — not the Control UI gateway token. External services must call the correct subdomain. See [Main-tier ingress](#main-tier-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
 
+### Leftover QMD memory settings
+
+If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still has the old backend. Remove `IDENTYCLAW_MEMORY_BACKEND` and `IDENTYCLAW_QMD_*` from `env.local`, rebuild `openclaw-agent:local`, then `./identyclaw.sh restart all`. Bootstrap sets `memory.backend` to `builtin` and deletes `memory.qmd`. Workspace `MEMORY.md` is kept; QMD indexes are not migrated.
+
 ### Run as your normal user, not `root`
 
 `init` / `start` / `onboard` expect rootless mode as your normal user. State lives under `~/openclaw-agents-app/agents/<agent-id>/` for each provisioned agent. Use root only for `dnf install podman` or optional rootful mode above.
@@ -1239,6 +1266,7 @@ Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tu
   openclaw.json
   .env                    # OPENCLAW_GATEWAY_TOKEN, IDENTYCLAW_*, NEAR_*
   workspace/
+    MEMORY.md             # builtin memory (dreaming consolidates here)
     IDENTITYCLAW.md       # operator guidance (A2A + identity)
     EMAIL.md              # Himalaya / concierge instructions
     scripts/              # himalaya-*.sh, idcp-wallet.sh, idcp-rotate-passport.sh, idcp-activate-account.sh
