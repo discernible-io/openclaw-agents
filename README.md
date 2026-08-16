@@ -176,7 +176,7 @@ Human checkout step ([Get Started](https://www.discernible.io/#get-started)):
    - **NEAR account that will receive the Passport** — the agent’s 64-char hex `implicit_account_id` from step 2 (implicit, not a named `*.near` account).
    - **Creature** — profession/role for discovery (e.g. `Customer Support Agent`).
    - **Name**, optional **Contact URI** (`email:example.com:you@example.com`), and facial traits as prompted.
-   - Recommended: **Webhook URL** = this agent’s public HTTPS base with no path (e.g. `https://agent-a.identyclaw.com:88` from `./identyclaw.sh webhook-url agent-a`).
+   - Recommended: **Webhook URL** = this agent’s public HTTPS base with no path (e.g. `https://agent-a.identyclaw.com:8443` from `./identyclaw.sh webhook-url agent-a`).
 4. Pick a tier (Personal / Enterprise / Collectible), review the NEAR fee, and **mint**.
 5. Approve the transaction in HOT Wallet; wait for chain confirmation (~seconds).
 
@@ -626,7 +626,7 @@ Each agent's own public base can come from Passport `metadata.webhook_url` when 
 ./identyclaw.sh sync-a2a-peers all
 ```
 
-RODiT JWT details, main-tier ingress, and cross-machine A2A (Option A — public HTTPS on **88**) are documented in local operator docs (`security-compliance-improvements.md`, not in this repo).
+RODiT JWT details, main-tier ingress, and cross-machine A2A (Option A — public HTTPS on **8443**) are documented in local operator docs (`security-compliance-improvements.md`, not in this repo).
 
 #### Where the contract is defined
 
@@ -757,7 +757,7 @@ Beyond email-first defaults, agents can enable:
 | Channel | Setup | Notes |
 | --- | --- | --- |
 | **Discord** | `./identyclaw.sh set-discord-token agent-a` | Bundled in image; guild channel bootstrap on start |
-| **Telegram** | Bot token in `openclaw.json` / onboard | DM approvers synced from NEAR `owner_id` on bootstrap. Webhook mode needs public HTTPS on **88** (`POST /telegram-webhook`) |
+| **Telegram** | Bot token in `openclaw.json` / onboard | DM approvers synced from NEAR `owner_id` on bootstrap. Webhook mode needs public HTTPS on **8443** (`POST /telegram-webhook`) |
 | **X / Twitter** | `set-twitter` or `set-twitter-cookies` | bird-twitter skill (session cookies, not paid API) |
 | **Instagram** | `./identyclaw.sh set-instagram agent-a` | Browser-based; reCAPTCHA may require manual login |
 | **LinkedIn** | ClawLink plugin + linkedin-social skill | OAuth via ClawLink — no API keys in chat |
@@ -789,12 +789,12 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | Container | `openclaw-agent-a` (in `identyclaw-agents-pod` with `identyclaw-nginx`) |
 | Display name | Identyclaw Agent A (override via `AGENT_A_DISPLAY_NAME`) |
 | Mailbox | `agent-a@identyclaw.com` (Migadu) |
-| **Ingress port (public)** | **88** — `https://agent-a.identyclaw.com:88` (Telegram Bot API webhook ports: 80, 88, 443, 8443) |
+| **Ingress port (public)** | **8443** — `https://agent-a.identyclaw.com:8443` (Telegram Bot API webhook ports: 80, 88, 443, 8443) |
 | Gateway port (pod-internal) | **18789** (UI/API), **18790** (bridge) — nginx upstream only |
-| Control UI | `https://agent-a.identyclaw.com:88/` (or `curl -sk -H 'Host: agent-a.identyclaw.com' https://127.0.0.1:88/` until DNS is live) |
-| A2A | `POST https://agent-a.identyclaw.com:88/a2a` |
+| Control UI | `https://agent-a.identyclaw.com:8443/` (or `curl -sk -H 'Host: agent-a.identyclaw.com' https://127.0.0.1:8443/` until DNS is live) |
+| A2A | `POST https://agent-a.identyclaw.com:8443/a2a` |
 | Token | `./identyclaw.sh token agent-a` |
-| Deploy mode | `pod` (`IDENTYCLAW_INGRESS_PORT=88` in `env.local`) |
+| Deploy mode | `pod` (`IDENTYCLAW_INGRESS_PORT=8443` in `env.local`) |
 | Gateway bind | `lan` (reachable from nginx sidecar inside the pod) |
 | Gateway auth | token |
 | Model | **Primary:** `openrouter/deepseek/deepseek-v4-flash` → **fallback 1:** `openrouter/qwen/qwen3-coder` → **fallback 2:** `openrouter/google/gemini-2.5-flash` (override via `OPENCLAW_MODEL_*` in `env.local`) |
@@ -894,7 +894,7 @@ Key `openclaw.json` excerpts (secrets redacted):
 }
 ```
 
-Webhooks use the same ingress hostname — no extra port. In pod mode: `POST https://agent-a.identyclaw.com:88/hooks/wake` with **RODiT origin signature** (`x-signature` + `x-timestamp` via `@rodit/rodit-auth-be`) — same pattern as [`clienttest-idc`](../clienttest-idc). No `hooks.token` or HMAC. Standalone dev uses host port **18789**. See [Troubleshooting](#webhooks-and-port-conflicts-two-agents).
+Webhooks use the same ingress hostname — no extra port. In pod mode: `POST https://agent-a.identyclaw.com:8443/hooks/wake` with **RODiT origin signature** (`x-signature` + `x-timestamp` via `@rodit/rodit-auth-be`) — same pattern as [`clienttest-idc`](../clienttest-idc). No `hooks.token` or HMAC. Standalone dev uses host port **18789**. See [Troubleshooting](#webhooks-and-port-conflicts-two-agents).
 
 **Standalone dev** (other hosts or local loopback): `PUBLISH_HOST=127.0.0.1`, Control UI at `http://127.0.0.1:18789/`, `./identyclaw.sh start agent-a`.
 
@@ -1107,7 +1107,7 @@ Each agent’s webhooks are HTTP paths on **that agent’s gateway** — they do
 | Mode | agent-a webhook wake (example) |
 |------|--------------------------------|
 | Standalone dev | `http://127.0.0.1:18789/hooks/wake` |
-| Main-tier pod | `https://agent-a.identyclaw.com:88/hooks/wake` |
+| Main-tier pod | `https://agent-a.identyclaw.com:8443/hooks/wake` |
 
 Keep `AGENT_*_GATEWAY_PORT` unique in `env.local`. Webhook senders **sign at origin** with RODiT/Passport credentials (`x-signature` + `x-timestamp`) — not the Control UI gateway token. External services must call the correct subdomain. See [Main-tier ingress](#main-tier-ingress-cicd--nginx-tls-sidecar) and `./identyclaw.sh webhook-url agent-a`.
 
@@ -1179,14 +1179,14 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 
 ## Main-tier ingress (CI/CD + nginx TLS sidecar)
 
-Main-tier HTTPS ingress exists primarily for **A2A** (`POST /a2a`, agent-card discovery), **OpenClaw webhooks** (`POST /hooks/wake`, `/hooks/agent`, custom `/hooks/<name>`), and **Telegram** (`POST /telegram-webhook`). Public port **88** is a Telegram Bot API webhook port (also allowed: 80, 443, 8443). Control UI over the same hostname is optional for operators. Pattern matches [`clienttest-idc`](../clienttest-idc) (nginx TLS sidecar → HTTP upstream), with per-agent subdomains instead of one `webhook.*` host.
+Main-tier HTTPS ingress exists primarily for **A2A** (`POST /a2a`, agent-card discovery), **OpenClaw webhooks** (`POST /hooks/wake`, `/hooks/agent`, custom `/hooks/<name>`), and **Telegram** (`POST /telegram-webhook`). Public port **8443** is a Telegram Bot API webhook port (also allowed: 80, 443, 8443). Control UI over the same hostname is optional for operators. Pattern matches [`clienttest-idc`](../clienttest-idc) (nginx TLS sidecar → HTTP upstream), with per-agent subdomains instead of one `webhook.*` host.
 
 | Branch | Primary health host | Agent hosts |
 |--------|---------------------|-------------|
-| `development` | `agent-a.dev.identyclaw.com:88` | `agent-c.dev.identyclaw.com`, `agent-e.dev.identyclaw.com` |
-| `main` | `agent-a.identyclaw.com:88` | `agent-c.identyclaw.com`, `agent-e.identyclaw.com` |
+| `development` | `agent-a.dev.identyclaw.com:8443` | `agent-c.dev.identyclaw.com`, `agent-e.dev.identyclaw.com` |
+| `main` | `agent-a.identyclaw.com:8443` | `agent-c.identyclaw.com`, `agent-e.identyclaw.com` |
 
-Deploy layout: **nginx sidecar** on **88** (all tiers) — TLS, subdomain → gateway upstream — plus one OpenClaw container per id in `AGENT_IDS` (pod-local ports from `AGENT_*_GATEWAY_PORT`, default 18789 / 18793 / 18797). A single-agent host sets `AGENT_IDS=agent-a` and nginx routes only that subdomain. A2A/webhook URL tables are in local `security-compliance-improvements.md`; see [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
+Deploy layout: **nginx sidecar** on **8443** (all tiers) — TLS, subdomain → gateway upstream — plus one OpenClaw container per id in `AGENT_IDS` (pod-local ports from `AGENT_*_GATEWAY_PORT`, default 18789 / 18793 / 18797). A single-agent host sets `AGENT_IDS=agent-a` and nginx routes only that subdomain. A2A/webhook URL tables are in local `security-compliance-improvements.md`; see [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
 
 ### Webhook URLs (main tier)
 
@@ -1194,11 +1194,11 @@ Each agent has its own HTTPS base. External senders must hit the **correct subdo
 
 | Agent (main) | Webhook wake | Webhook agent |
 |--------------|--------------|---------------|
-| agent-a | `https://agent-a.identyclaw.com:88/hooks/wake` | `…/hooks/agent` |
-| agent-c | `https://agent-c.identyclaw.com:88/hooks/wake` | `…/hooks/agent` |
-| agent-e | `https://agent-e.identyclaw.com:88/hooks/wake` | `…/hooks/agent` |
+| agent-a | `https://agent-a.identyclaw.com:8443/hooks/wake` | `…/hooks/agent` |
+| agent-c | `https://agent-c.identyclaw.com:8443/hooks/wake` | `…/hooks/agent` |
+| agent-e | `https://agent-e.identyclaw.com:8443/hooks/wake` | `…/hooks/agent` |
 
-Use `agent-*.dev.identyclaw.com` on the development branch. Register the base URL in RODiT token metadata `webhook_url` (same field pattern as a single-host webhook service on `https://webhook.example.com:88`).
+Use `agent-*.dev.identyclaw.com` on the development branch. Register the base URL in RODiT token metadata `webhook_url` (same field pattern as a single-host webhook service on `https://webhook.example.com:8443`).
 
 ```bash
 ./identyclaw.sh webhook-url agent-a
@@ -1246,7 +1246,7 @@ Workflows:
 
 Required repository secrets (same names as other IdentyClaw `-idc` repos): `SSH_HOST_MAIN`, `SSH_USER_MAIN`, `SSH_PRIVATE_KEY_MAIN`, `SSH_KNOWN_HOSTS_MAIN`, and the `*_DEVELOPMENT` variants, plus `GHCR_PULL_TOKEN`.
 
-Push to `main` or `development` to build and deploy. Images are tagged `<commit-sha>-main` or `<commit-sha>-development` so development and main tiers do not overwrite each other on GHCR. Health check probes `https://<DOMAIN>:88/health` — advisory; may fail from the runner while the pod is healthy on the host).
+Push to `main` or `development` to build and deploy. Images are tagged `<commit-sha>-main` or `<commit-sha>-development` so development and main tiers do not overwrite each other on GHCR. Health check probes `https://<DOMAIN>:8443/health` — advisory; may fail from the runner while the pod is healthy on the host).
 
 ### Local deploy (same layout as CI)
 

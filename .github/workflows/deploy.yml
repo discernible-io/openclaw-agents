@@ -21,7 +21,7 @@ env:
   # Primary health-check host — must match nginx server_name for agent-a.
   # Development tier uses main config until dev-specific hosts/ports are provisioned.
   DOMAIN: agent-a.identyclaw.com
-  APP_PORT: '88'
+  APP_PORT: '8443'
   NGINX_BUILD_ENV: main
   POD_NAME: identyclaw-agents-pod
   NGINX_CONTAINER_NAME: identyclaw-nginx

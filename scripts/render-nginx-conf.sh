@@ -22,7 +22,7 @@ load_env
 
 tier_default_ingress_port() {
   case "$tier" in
-    development|main) echo "88" ;;
+    development|main) echo "8443" ;;
   esac
 }
 

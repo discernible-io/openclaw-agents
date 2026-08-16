@@ -9,7 +9,7 @@
 #
 # Optional env (defaults match deploy.yml):
 #   DEPLOY_TIER / TARGET   main or development (default: image tag, else git branch)
-#   APP_PORT=88 (all tiers) — defaults via deploy_tier_app_port (Telegram webhook ports: 80, 88, 443, 8443)
+#   APP_PORT=8443 (all tiers) — defaults via deploy_tier_app_port (Telegram webhook ports: 80, 88, 443, 8443)
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
@@ -217,7 +217,7 @@ if [[ "$POD_HOST_PORT" != "$POD_LISTEN_PORT" ]]; then
 fi
 for id in $AGENT_IDS; do
   # Explicit AGENT_*_INGRESS_PORT only — do not publish a stale Passport webhook port
-  # (e.g. :7443) beside Telegram :88; that steals clienttest's 7443 on this host.
+  # (e.g. :7443) beside Telegram :8443; that steals clienttest's 7443 on this host.
   agent_port="$(agent_env_value "$id" INGRESS_PORT "")"
   [[ -n "$agent_port" ]] || continue
   found=0
@@ -227,8 +227,9 @@ for id in $AGENT_IDS; do
   [[ "$found" -eq 0 ]] && pod_publish_ports+=("$agent_port")
 done
 
-pod_create_args=(--name "$POD_NAME" --sysctl net.ipv4.ip_unprivileged_port_start=88)
+pod_create_args=(--name "$POD_NAME")
 for p in "${pod_publish_ports[@]}"; do
+  # Only needed when publishing privileged ports (<1024); 8443 does not require it.
   if [[ "$p" =~ ^[0-9]+$ ]] && (( p < 1024 )); then
     pod_create_args+=(--sysctl "net.ipv4.ip_unprivileged_port_start=${p}")
   fi
