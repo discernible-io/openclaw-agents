@@ -36,8 +36,8 @@ if (!extDir || !credPath) {
   process.exit(2);
 }
 
-const concurrency = Math.min(Math.max(Number(arg("--concurrency", "6")) || 6, 1), 20);
-const timeoutMs = Math.min(Math.max(Number(arg("--timeout-ms", "12000")) || 12000, 2000), 60000);
+const concurrency = Math.min(Math.max(Number(arg("--concurrency", "12")) || 12, 1), 32);
+const timeoutMs = Math.min(Math.max(Number(arg("--timeout-ms", "8000")) || 8000, 2000), 60000);
 const exclude = new Set();
 for (let i = 4; i < process.argv.length; i += 1) {
   if (process.argv[i] === "--exclude" && process.argv[i + 1]) {
@@ -66,8 +66,20 @@ if (existsSync(apiClientPath)) {
     });
 }
 
+// One shared client for on-chain fallback — creating per peer doubles NEAR latency.
+let sharedRoditClientPromise = null;
+async function getSharedRoditClient() {
+  if (!sharedRoditClientPromise) {
+    sharedRoditClientPromise = RoditClient.create({ role: "client" }).catch((err) => {
+      sharedRoditClientPromise = null;
+      throw err;
+    });
+  }
+  return sharedRoditClientPromise;
+}
+
 async function fetchPeerRoditByTokenId(tokenId) {
-  const client = await RoditClient.create({ role: "client" });
+  const client = await getSharedRoditClient();
   return client.getBlockchainService().nearorg_rpc_tokenfromroditid(tokenId);
 }
 

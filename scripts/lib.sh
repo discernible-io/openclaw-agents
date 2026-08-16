@@ -1186,10 +1186,16 @@ a2a_discovered_test_candidate_token_ids() {
   a2a_merged_remote_peer_token_ids
 }
 
+# Process-lifetime cache: start all / restart all exclude every local token_id, so the
+# live peer map is identical across AGENT_IDS — avoid N× full GET /api/agents probes.
+_IDENTYCLAW_LIVE_API_PEERS_CACHE=""
+_IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY=""
+
 # Probe GET /api/agents, resolve /full + chain URLs, keep peers with live agent-card.
 discover_live_api_peers_json_for_agent() {
   local id="$1"
   local config_dir cred ext_dir container api_base probed_json tid
+  local concurrency timeout_ms cache_key
   [[ -n "$id" ]] || return 1
   a2a_discover_peers_from_api_enabled || return 0
   load_env
@@ -1205,12 +1211,24 @@ discover_live_api_peers_json_for_agent() {
     exclude_args+=(--exclude "$tid")
   done
 
+  concurrency="${IDENTYCLAW_A2A_DISCOVER_CONCURRENCY:-12}"
+  timeout_ms="${IDENTYCLAW_A2A_DISCOVER_TIMEOUT_MS:-8000}"
+  cache_key="${api_base}|${concurrency}|${timeout_ms}|${exclude_args[*]}"
+  if [[ -n "$_IDENTYCLAW_LIVE_API_PEERS_CACHE" \
+    && "$_IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY" == "$cache_key" ]]; then
+    echo "    (${id}: reusing cached API peer discovery)" >&2
+    printf '%s' "$_IDENTYCLAW_LIVE_API_PEERS_CACHE"
+    return 0
+  fi
+
   cred="$(agent_near_credentials_host_path "$id" 2>/dev/null || true)"
   ext_dir="$(agent_a2a_ext_dir "$config_dir" 2>/dev/null || true)"
   if [[ -n "$cred" && -d "$ext_dir" ]] && command -v node >/dev/null 2>&1; then
     local -a discover_args=(
       node "${IDENTYCLAW_ROOT}/scripts/discover-live-api-peers.mjs"
       "$ext_dir" "$cred"
+      --concurrency "$concurrency"
+      --timeout-ms "$timeout_ms"
     )
     [[ -n "$api_base" ]] && discover_args+=(--api-base "$api_base")
     discover_args+=("${exclude_args[@]}")
@@ -1232,7 +1250,11 @@ discover_live_api_peers_json_for_agent() {
       "$container:/tmp/lib-peer-gateway-url.mjs" >/dev/null 2>&1 || return 1
     podman cp "${IDENTYCLAW_ROOT}/scripts/discover-live-api-peers.mjs" \
       "$container:/tmp/discover-live-api-peers.mjs" >/dev/null 2>&1 || return 1
-    local -a discover_args=(node /tmp/discover-live-api-peers.mjs "$ext_dir" "$cred")
+    local -a discover_args=(
+      node /tmp/discover-live-api-peers.mjs "$ext_dir" "$cred"
+      --concurrency "$concurrency"
+      --timeout-ms "$timeout_ms"
+    )
     [[ -n "$api_base" ]] && discover_args+=(--api-base "$api_base")
     discover_args+=("${exclude_args[@]}")
     probed_json="$(
@@ -1266,6 +1288,8 @@ for line in reversed(text.splitlines()):
     echo "{}"
     return 0
   }
+  _IDENTYCLAW_LIVE_API_PEERS_CACHE="$probed_json"
+  _IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY="$cache_key"
   printf '%s' "$probed_json"
 }
 
@@ -6064,10 +6088,10 @@ build_a2a_peer_map() {
   configured_json+="}"
 
   api_json="{}"
-  # Opt-in only (IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1). Default off at deploy —
-  # use ./identyclaw.sh discover-a2a-peers or constitution suites instead.
+  # Opt-in (IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1). First caller in this process does
+  # GET /api/agents + parallel agent-card probes; later AGENT_IDS reuse the cache.
   if a2a_discover_peers_from_api_enabled; then
-    echo "    (${self_id}: proactive API peer discovery — GET /api/agents + live agent-card probe)" >&2
+    echo "    (${self_id}: API peer discovery — GET /api/agents + parallel agent-card probe)" >&2
     api_json="$(discover_live_api_peers_json_for_agent "$self_id")"
     [[ -n "$api_json" && "$api_json" == \{* ]] || api_json="{}"
     if [[ "$configured_json" != "{}" ]]; then
