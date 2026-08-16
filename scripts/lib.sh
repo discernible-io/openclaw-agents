@@ -3437,6 +3437,12 @@ agent_ingress_port() {
     echo "$explicit"
     return 0
   fi
+  # Fleet IDENTYCLAW_INGRESS_PORT (env.local / deploy) wins over Passport metadata.port
+  # so init/bootstrap cannot revive a stale on-chain :7443/:88 after this host moved to 8443.
+  if [[ -n "${IDENTYCLAW_INGRESS_PORT:-}" ]]; then
+    echo "${IDENTYCLAW_INGRESS_PORT}"
+    return 0
+  fi
   if rodit_self_configure_enabled; then
     config_dir="$(agent_home "$id")"
     if agent_has_near_credentials "$config_dir"; then
@@ -3447,7 +3453,7 @@ agent_ingress_port() {
       fi
     fi
   fi
-  echo "${IDENTYCLAW_INGRESS_PORT}"
+  echo "8443"
 }
 
 agent_public_base_url() {
@@ -3460,9 +3466,16 @@ agent_public_base_url() {
   echo "https://${host}:${port}"
 }
 
-# HTTPS ingress base for A2A + OpenClaw webhooks (pod mode). Same as agent_public_base_url.
+# HTTPS ingress base for A2A + OpenClaw webhooks (pod mode).
+# Prefer PUBLIC_HOST+INGRESS_PORT; fall back to AGENT_*_A2A_PUBLIC_BASE_URL (e.g. agent-l).
 agent_ingress_base_url() {
-  agent_public_base_url "$1"
+  local id="$1" base
+  base="$(agent_public_base_url "$id")"
+  if [[ -n "$base" ]]; then
+    echo "$base"
+    return 0
+  fi
+  agent_a2a_public_base_url "$id"
 }
 
 # Pod agents resolve their public ingress host to loopback so self-tests hit nginx in-pod
@@ -9071,7 +9084,7 @@ ensure_main_ingress_config() {
   load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   local public_url internal_port ingress_port
-  public_url="$(agent_public_base_url "$id")"
+  public_url="$(agent_ingress_base_url "$id")"
   internal_port="$(agent_internal_gateway_port "$id")"
   ingress_port="$(agent_ingress_port "$id")"
   _agent_openclaw_json_python "$config_dir" "$container" \
@@ -10423,7 +10436,7 @@ write_agent_export_env_fragment() {
   local id="$1"
   local fragment_path="$2"
   load_env
-  local gw br email display_name password="" prefix a2a_url=""
+  local gw br email display_name password="" prefix a2a_url="" public_host="" ingress_port=""
   read -r gw br < <(agent_ports "$id")
   local mailbox
   mailbox="$(agent_mailbox "$id")"
@@ -10433,9 +10446,14 @@ write_agent_export_env_fragment() {
   prefix="$(agent_env_prefix "$id")" || { echo "unknown agent: $id" >&2; return 1; }
   password="$(agent_env_value "$id" PASSWORD "")"
   a2a_url="$(agent_env_value "$id" A2A_PUBLIC_BASE_URL "")"
+  [[ -z "$a2a_url" ]] && a2a_url="$(agent_ingress_base_url "$id")"
+  public_host="$(agent_env_value "$id" PUBLIC_HOST "")"
+  ingress_port="$(agent_env_value "$id" INGRESS_PORT "")"
+  [[ -z "$ingress_port" ]] && ingress_port="${IDENTYCLAW_INGRESS_PORT:-8443}"
   cat >"$fragment_path" <<EOF
 # Merge into $(identyclaw_app_dir)/env.local on the target host (chmod 600).
 # Secrets are inside the archive under secrets/ — passwords here are optional duplicates.
+# Public webhook / A2A base must use Telegram-compatible ingress (8443 on this fleet).
 
 ${prefix}_EMAIL=${email}
 ${prefix}_DISPLAY_NAME="${display_name}"
@@ -10445,6 +10463,10 @@ EOF
   if [[ -n "$password" ]]; then
     printf '%s_PASSWORD=%s\n' "$prefix" "$password" >>"$fragment_path"
   fi
+  if [[ -n "$public_host" ]]; then
+    printf '%s_PUBLIC_HOST=%s\n' "$prefix" "$public_host" >>"$fragment_path"
+  fi
+  printf '%s_INGRESS_PORT=%s\n' "$prefix" "$ingress_port" >>"$fragment_path"
   if [[ -n "$a2a_url" ]]; then
     printf '%s_A2A_PUBLIC_BASE_URL=%s\n' "$prefix" "$a2a_url" >>"$fragment_path"
   fi
