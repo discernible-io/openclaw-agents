@@ -9,7 +9,8 @@
 #
 # Optional env (defaults match deploy.yml):
 #   DEPLOY_TIER / TARGET   main or development (default: image tag, else git branch)
-#   APP_PORT=8443 (all tiers) — defaults via deploy_tier_app_port (Telegram webhook ports: 80, 88, 443, 8443)
+#   APP_PORT — listen+publish port (Telegram-compatible: 80, 88, 443, 8443).
+#              Default: IDENTYCLAW_INGRESS_PORT from env.local after load_env, else deploy_tier_app_port (8443).
 #   POD_NAME=identyclaw-agents-pod
 #   NGINX_CONTAINER_NAME=identyclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
@@ -44,14 +45,19 @@ case "$DEPLOY_TIER" in
     exit 1
     ;;
 esac
-APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
-POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
-POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
-
+# APP_PORT may be preset by CI / deploy-local-podman.sh. If unset, prefer
+# IDENTYCLAW_INGRESS_PORT from env.local over the tier default (8443).
+_app_port_preset="${APP_PORT:-}"
 ensure_app_layout
 load_env
-# CI/local APP_PORT is the listen+publish source of truth so a stale
-# IDENTYCLAW_INGRESS_PORT in env.local cannot leave nginx on 7443.
+if [[ -n "$_app_port_preset" ]]; then
+  APP_PORT="$_app_port_preset"
+else
+  APP_PORT="${IDENTYCLAW_INGRESS_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
+fi
+POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
+POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
+# Publish/listen source of truth for this deploy (keeps nginx conf + pod -p in sync).
 IDENTYCLAW_INGRESS_PORT="$APP_PORT"
 export IDENTYCLAW_INGRESS_PORT
 AGENT_IDS="${AGENT_IDS:-agent-a agent-c agent-e}"

@@ -11,7 +11,8 @@
 #
 # Env:
 #   APP_DIR                  Default: ../openclaw-agents-app (sibling of repo)
-#   APP_PORT                 Default: 8443 (all tiers) via deploy_tier_app_port
+#   APP_PORT                 Default: IDENTYCLAW_INGRESS_PORT from env.local, else
+#                            deploy_tier_app_port (8443). Telegram-compatible: 80/88/443/8443.
 #   TARGET                   Override tier (default: from current git branch)
 #   GITHUB_SHA               Image tag (default: git HEAD)
 #   PULL_FROM_GHCR=1         Pull images instead of local build
@@ -62,7 +63,12 @@ case "$DEPLOY_TIER" in
     ;;
 esac
 
-APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
+# Prefer env.local IDENTYCLAW_INGRESS_PORT (e.g. 8443 on hosts where :88 is taken)
+# when APP_PORT is not set explicitly. load_env needs APP_DIR.
+IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$APP_DIR}"
+export IDENTYCLAW_APP_DIR
+load_env
+APP_PORT="${APP_PORT:-${IDENTYCLAW_INGRESS_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}}"
 POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
 POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
 NGINX_BUILD_ENV="$(deploy_tier_nginx_build_env "$DEPLOY_TIER")"
