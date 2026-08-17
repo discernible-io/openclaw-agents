@@ -132,5 +132,54 @@ runCase("deploy_tier_app_port is Telegram-compatible port 8443", () => {
   assert.equal(bashLib('deploy_tier_app_port development'), "8443");
 });
 
+runCase("agent_public_host falls back to A2A_PUBLIC_BASE_URL hostname", () => {
+  const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
+  try {
+    writeFileSync(
+      join(app, "env.local"),
+      [
+        "IDENTYCLAW_DEPLOY_MODE=pod",
+        "IDENTYCLAW_INGRESS_PORT=8443",
+        "AGENT_IDS=agent-l",
+        "AGENT_L_A2A_PUBLIC_BASE_URL=https://identyclaw-concierge.identyclaw.com:8443",
+        "AGENT_L_GATEWAY_PORT=18789",
+      ].join("\n") + "\n",
+    );
+    const host = bashLib("agent_public_host agent-l", {
+      IDENTYCLAW_APP_DIR: app,
+    });
+    assert.equal(host, "identyclaw-concierge.identyclaw.com");
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
+});
+
+runCase("render-nginx includes agent with only A2A_PUBLIC_BASE_URL (no PUBLIC_HOST)", () => {
+  const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
+  try {
+    writeFileSync(
+      join(app, "env.local"),
+      [
+        "IDENTYCLAW_DEPLOY_MODE=pod",
+        "IDENTYCLAW_INGRESS_PORT=8443",
+        "AGENT_IDS=agent-l",
+        "AGENT_L_A2A_PUBLIC_BASE_URL=https://identyclaw-concierge.identyclaw.com:8443",
+        "AGENT_L_GATEWAY_PORT=18789",
+      ].join("\n") + "\n",
+    );
+    bashLib("prepare_pod_nginx_host_files", {
+      IDENTYCLAW_APP_DIR: app,
+      IDENTYCLAW_DEPLOY_MODE: "pod",
+      REPO_ROOT: repoRoot,
+    });
+    const conf = readFileSync(join(app, "nginx", "nginx.conf"), "utf8");
+    assert.equal(conf.includes("server_name identyclaw-concierge.identyclaw.com"), true);
+    assert.equal(conf.includes("upstream openclaw_agent_l"), true);
+    assert.equal(conf.includes("127.0.0.1:18811"), true);
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
+});
+
 tally.printSummary("Summary");
 process.exit(tally.exitCode());

@@ -3422,9 +3422,24 @@ print(cfg.get('gateway', {}).get('auth', {}).get('token', ''))
   fi
 }
 
+# Hostname from https://host[:port][/...] (AGENT_*_A2A_PUBLIC_BASE_URL).
+public_url_hostname() {
+  local raw="${1:-}" rest
+  [[ -n "$raw" ]] || return 0
+  rest="${raw#*://}"
+  rest="${rest%%/*}"
+  rest="${rest##*@}"
+  if [[ "$rest" == \[* ]]; then
+    rest="${rest#\[}"
+    echo "${rest%%]*}"
+    return 0
+  fi
+  echo "${rest%%:*}"
+}
+
 agent_public_host() {
   local id="$1"
-  local host="" config_dir passport_host
+  local host="" config_dir passport_host a2a_host
   load_env
   is_valid_agent_id "$id" && host="$(agent_env_value "$id" PUBLIC_HOST "")"
   if ! is_valid_agent_id "$id"; then
@@ -3433,6 +3448,13 @@ agent_public_host() {
   fi
   if [[ -n "$host" ]]; then
     echo "$host"
+    return 0
+  fi
+  # env.local A2A_PUBLIC_BASE_URL (e.g. agent-l) — readable even when pod userns
+  # owns near-credentials and Passport self-configure cannot run on the host.
+  a2a_host="$(public_url_hostname "$(agent_env_value "$id" A2A_PUBLIC_BASE_URL "")")"
+  if [[ -n "$a2a_host" ]]; then
+    echo "$a2a_host"
     return 0
   fi
   if rodit_self_configure_enabled; then
