@@ -315,6 +315,7 @@ start_one() {
   ensure_identyclaw_network
   ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
+  sync_telegram_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
   ensure_main_ingress_config "$id" "$dir"
   ensure_agent_security_hardening "$id" "$dir"
