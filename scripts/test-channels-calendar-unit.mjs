@@ -262,7 +262,7 @@ runCase("rendered nginx proxies Telegram to the per-agent webhook listener", () 
     assert.equal(conf.includes("upstream openclaw_agent_l_telegram"), true);
     assert.equal(conf.includes("127.0.0.1:18813"), true);
     assert.equal(conf.includes("proxy_pass http://openclaw_agent_l_telegram;"), true);
-    const telegramBlock = conf.split("location = /telegram-webhook")[1] || "";
+    const telegramBlock = conf.split("location = /telegram-webhook")[1]?.split("location ")[0] || "";
     assert.equal(telegramBlock.includes("proxy_pass http://openclaw_agent_l;"), false);
   } finally {
     rmSync(app, { recursive: true, force: true });
