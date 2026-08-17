@@ -3383,6 +3383,13 @@ agent_internal_gateway_port() {
   fi
 }
 
+# Telegram webhook listener is a separate OpenClaw bind (default 8787). In a pod all
+# agents share the network namespace, so each agent uses gateway-port + 2.
+agent_telegram_webhook_port() {
+  local id="$1"
+  echo $(( $(agent_internal_gateway_port "$id") + 2 ))
+}
+
 # Pod agents chown state to the container uid; token may live in openclaw.json or .env.
 agent_gateway_token() {
   local id="$1"
@@ -9050,6 +9057,215 @@ os.chmod(path, 0o600)
 PY
 }
 
+write_telegram_token() {
+  local config_dir="$1"
+  local token="$2"
+  [[ -n "$token" ]] || { echo "empty Telegram bot token" >&2; return 1; }
+  mkdir -p "$config_dir/secrets"
+  printf '%s' "$token" >"$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  chmod 600 "$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  sync_telegram_env "$config_dir"
+  python3 - "$config_dir/openclaw.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+tg = data.setdefault("channels", {}).setdefault("telegram", {})
+changed = False
+if not tg.get("enabled"):
+    tg["enabled"] = True
+    changed = True
+if tg.get("tokenFile") != "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN":
+    tg["tokenFile"] = "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN"
+    changed = True
+if not tg.get("dmPolicy"):
+    tg["dmPolicy"] = "pairing"
+    changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+# Gateway reads TELEGRAM_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
+sync_telegram_env() {
+  local config_dir="$1"
+  local secret_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  local env_file="$config_dir/.env"
+  [[ -f "$secret_file" ]] || return 0
+  local token
+  token="$(<"$secret_file")"
+  [[ -n "$token" ]] || return 0
+  python3 - "$env_file" "$token" <<'PY'
+import sys, os
+path, token = sys.argv[1], sys.argv[2]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("TELEGRAM_BOT_TOKEN=")]
+lines.append(f"TELEGRAM_BOT_TOKEN={token}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+ensure_telegram_webhook_secret() {
+  local config_dir="$1"
+  local secret_file="$config_dir/secrets/TELEGRAM_WEBHOOK_SECRET"
+  if [[ -f "$secret_file" ]]; then
+    local existing
+    existing="$(tr -d '\n' <"$secret_file")"
+    [[ -n "$existing" ]] && { printf '%s' "$existing"; return 0; }
+  fi
+  mkdir -p "$config_dir/secrets"
+  local secret
+  secret="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  printf '%s' "$secret" >"$secret_file"
+  chmod 600 "$secret_file"
+  printf '%s' "$secret"
+}
+
+ensure_telegram_ready() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  local token_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" "$token_file" "$id" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, token_file = Path(sys.argv[1]), Path(sys.argv[2])
+agent_id = sys.argv[3]
+data = json.loads(path.read_text(encoding="utf-8"))
+tg = data.get("channels", {}).get("telegram")
+if not isinstance(tg, dict):
+    raise SystemExit(0)
+
+has_token = token_file.is_file() and token_file.read_text(encoding="utf-8").strip()
+enabled = tg.get("enabled", False)
+changed = False
+
+if enabled and not has_token:
+    tg["enabled"] = False
+    changed = True
+    print(
+        f"WARNING: {agent_id}: Telegram enabled but no token — disabled until "
+        f"./identyclaw.sh set-telegram-token {agent_id}",
+        file=sys.stderr,
+    )
+elif has_token:
+    if not enabled:
+        tg["enabled"] = True
+        changed = True
+    if tg.get("tokenFile") != "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN":
+        tg["tokenFile"] = "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN"
+        changed = True
+    if not tg.get("dmPolicy"):
+        tg["dmPolicy"] = "pairing"
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+# Pod mode: advertise HTTPS /telegram-webhook and bind a unique local listener.
+# Standalone: long-poll (no public Telegram-compatible port).
+ensure_telegram_webhook() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  local token_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  [[ -f "$config" ]] || return 0
+  [[ -f "$token_file" ]] || return 0
+  local token
+  token="$(tr -d '\n' <"$token_file")"
+  [[ -n "$token" ]] || return 0
+  load_env
+  local webhook_url="" webhook_port secret
+  if [[ "${IDENTYCLAW_DEPLOY_MODE:-standalone}" == "pod" ]]; then
+    local base
+    base="$(agent_ingress_base_url "$id")"
+    [[ -n "$base" ]] && webhook_url="${base%/}/telegram-webhook"
+    webhook_port="$(agent_telegram_webhook_port "$id")"
+  fi
+  secret="$(ensure_telegram_webhook_secret "$config_dir")"
+  python3 - "$config" "${IDENTYCLAW_DEPLOY_MODE:-standalone}" "$webhook_url" "$webhook_port" "$secret" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+mode, webhook_url, webhook_port, secret = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+data = json.loads(path.read_text(encoding="utf-8"))
+tg = data.setdefault("channels", {}).setdefault("telegram", {})
+changed = False
+
+def set_key(key, value):
+    global changed
+    if tg.get(key) != value:
+        tg[key] = value
+        changed = True
+
+def del_key(key):
+    global changed
+    if key in tg:
+        del tg[key]
+        changed = True
+
+if mode == "pod" and webhook_url.startswith("http"):
+    set_key("webhookUrl", webhook_url)
+    set_key("webhookSecret", secret)
+    set_key("webhookPath", "/telegram-webhook")
+    set_key("webhookHost", "127.0.0.1")
+    set_key("webhookPort", int(webhook_port))
+else:
+    for key in ("webhookUrl", "webhookSecret", "webhookPath", "webhookHost", "webhookPort"):
+        del_key(key)
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+ensure_telegram_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local token=""
+  load_env
+  if is_valid_agent_id "$id"; then
+    token="$(agent_env_value "$id" TELEGRAM_BOT_TOKEN "")"
+  fi
+  if [[ -n "$token" && ! -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    write_telegram_token "$config_dir" "$token"
+    echo "    (${id}: Telegram bot token loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    sync_telegram_env "$config_dir"
+  fi
+  ensure_telegram_ready "$id" "$config_dir"
+  ensure_telegram_webhook "$id" "$config_dir"
+}
+
+ensure_discord_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local token=""
+  load_env
+  if is_valid_agent_id "$id"; then
+    token="$(agent_env_value "$id" DISCORD_BOT_TOKEN "")"
+  fi
+  if [[ -n "$token" && ! -f "$config_dir/secrets/DISCORD_BOT_TOKEN" ]]; then
+    write_discord_token "$config_dir" "$token"
+    echo "    (${id}: Discord bot token loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/DISCORD_BOT_TOKEN" ]]; then
+    sync_discord_env "$config_dir"
+  fi
+}
+
 # Let peer agents reach the other gateway when a bot message @mentions them.
 # Keep rootless agents running after logout (linger) and across reboot (podman-restart).
 ensure_agent_persistence() {
@@ -9920,7 +10136,8 @@ write_openclaw_json() {
   "skills": {
     "entries": {
       "himalaya": { "enabled": true },
-      "identyclaw": { "enabled": true }
+      "identyclaw": { "enabled": true },
+      "calendar-reminders": { "enabled": true }
     }
   },
   "tools": {
