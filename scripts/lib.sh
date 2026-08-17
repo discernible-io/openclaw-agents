@@ -9442,7 +9442,7 @@ ensure_telegram_webhook() {
   token="$(tr -d '\n' <"$token_file")"
   [[ -n "$token" ]] || return 0
   load_env
-  local webhook_url="" webhook_port secret
+  local webhook_url="" webhook_port="" secret
   if [[ "${IDENTYCLAW_DEPLOY_MODE:-standalone}" == "pod" ]]; then
     local base
     base="$(agent_ingress_base_url "$id")"
