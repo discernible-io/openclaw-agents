@@ -1,6 +1,6 @@
 # Identyclaw OpenClaw (Podman)
 
-Deploy isolated [OpenClaw](https://docs.openclaw.ai) AI agent gateways with Podman — email (Himalaya), IdentyClaw identity tools, and agent-to-agent (A2A) messaging.
+Deploy isolated [OpenClaw](https://docs.openclaw.ai) AI agent gateways with Podman — email (Himalaya), Telegram, Discord, calendar/reminders, IdentyClaw identity tools, and agent-to-agent (A2A) messaging.
 
 ## Overview
 
@@ -38,7 +38,8 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **A2A** | **identyclaw-a2a** @0.4.10 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
 | **Webhooks** | **identyclaw-webhooks** @0.1.9 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); optional `GET /api/agents` seeding (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` or `./identyclaw.sh discover-a2a-peers`) |
-| **Channels** | Discord (bundled); optional Telegram, Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
+| **Channels** | Discord (`@openclaw/discord`, bundled); Telegram (OpenClaw core channel). Tokens via `set-discord-token` / `set-telegram-token`. Optional Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
+| **Calendar** | Local `calendar-reminders` skill + `scripts/calendar.sh` (workspace JSON). Precise alerts use OpenClaw **automations** (`cron`); heartbeat sweeps upcoming events. Optional Google Calendar via ClawLink |
 | **LLM** | **OpenRouter** (default) or **OpenCode** Zen/Go; model chain + failover timeouts synced from `env.local`; OpenRouter sticky `session_id` + prompt-cache stats (`cache-stats`) |
 | **Memory** | OpenClaw builtin SQLite engine + session-memory hook; memory-core dreaming (nightly → `MEMORY.md`); Active Memory left off by default |
 | **Security** | Gateway token auth, rate limiting, tool/knowledge scope in workspace docs, RODiT JWT boundaries for A2A vs webhooks vs Control UI |
@@ -750,17 +751,31 @@ Rotating one credential does not automatically revoke the others. See trust-boun
 
 **Verify:** `./identyclaw.sh test` — unit tests, **preflight**, then A2A smoke, RODiT auth, webhook ingress, P2P webhook receipts, mail (suites per [`../docs/docs/test-constitution.md`](../docs/docs/test-constitution.md)).
 
-### Optional chat channels
+### Chat channels (Telegram + Discord)
 
-Beyond email-first defaults, agents can enable:
+[Telegram](https://docs.openclaw.ai/channels/telegram) is bundled in OpenClaw core (bot token only). [Discord](https://docs.openclaw.ai/channels/discord) is the official `@openclaw/discord` plugin, pinned to the gateway and baked into `openclaw-agent:local`.
 
 | Channel | Setup | Notes |
 | --- | --- | --- |
-| **Discord** | `./identyclaw.sh set-discord-token agent-a` | Bundled in image; guild channel bootstrap on start |
-| **Telegram** | Bot token in `openclaw.json` / onboard | DM approvers synced from NEAR `owner_id` on bootstrap. Webhook mode needs public HTTPS on **8443** (`POST /telegram-webhook`) |
+| **Telegram** | `./identyclaw.sh set-telegram-token agent-a` | Token in `secrets/TELEGRAM_BOT_TOKEN` (env `TELEGRAM_BOT_TOKEN`; not stored in `openclaw.json`). **Standalone:** long polling. **Pod:** webhook `POST https://<AGENT_*_PUBLIC_HOST>:8443/telegram-webhook` (Telegram only allows 80/88/443/8443). DM pairing by default; approvers sync from `commands.ownerAllowFrom` |
+| **Discord** | `./identyclaw.sh set-discord-token agent-a` | Bundled plugin; guild channel bootstrap on start. Optional `AGENT_*_DISCORD_BOT_TOKEN` in `env.local` |
 | **X / Twitter** | `set-twitter` or `set-twitter-cookies` | bird-twitter skill (session cookies, not paid API) |
 | **Instagram** | `./identyclaw.sh set-instagram agent-a` | Browser-based; reCAPTCHA may require manual login |
 | **LinkedIn** | ClawLink plugin + linkedin-social skill | OAuth via ClawLink — no API keys in chat |
+
+Create a Telegram bot with [@BotFather](https://t.me/BotFather), then `set-telegram-token` and `restart`. In pod mode nginx proxies `/telegram-webhook` to a **per-agent webhook listener** (gateway port + 2), not the Control UI port.
+
+### Calendar and reminders
+
+Default stack is first-party OpenClaw **automations** plus a workspace skill — no Google account required:
+
+| Piece | Role |
+| --- | --- |
+| `workspace/calendar/events.json` | Local event store (`sh scripts/calendar.sh`) |
+| OpenClaw automations (`cron` tool) | One-shot and recurring reminder delivery to Telegram/Discord/email |
+| Heartbeat `calendar-upcoming` | 30m sweep of the next 24h (`./identyclaw.sh enable-calendar-check agent-a 30m`) |
+
+Optional Google Calendar: pair [ClawLink](https://clawhub.ai/hith3sh/google-calendar-scheduling) (`IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN`) if you need Gmail/Google Calendar OAuth. Do not install third-party ClawHub reminder skills that bypass native automations.
 
 See `env.example` for ClawHub pin variables (`IDENTYCLAW_CLAWHUB_TWITTER_SKILL`, etc.).
 
@@ -804,7 +819,7 @@ Reference configuration for a customer-support oriented agent with email + OpenR
 | Memory | builtin SQLite engine; session-memory hook; dreaming on (`IDENTYCLAW_DREAMING_ENABLED`) |
 | Session scope | `per-channel-peer` |
 | Hooks | **session-memory** enabled |
-| Chat channels | none (email-first; channels skipped at onboard) |
+| Chat channels | Email-first; enable Telegram/Discord with `set-telegram-token` / `set-discord-token` |
 | Tools profile | `coding` |
 
 Key `openclaw.json` excerpts (secrets redacted):
@@ -879,7 +894,7 @@ Key `openclaw.json` excerpts (secrets redacted):
     "backend": "builtin"
   },
   "skills": {
-    "entries": { "himalaya": { "enabled": true } }
+    "entries": { "himalaya": { "enabled": true }, "calendar-reminders": { "enabled": true } }
   },
   "hooks": {
     "internal": {
@@ -1128,6 +1143,7 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh init` | Create agent state dirs (`agent-a`, `agent-c`, `agent-e` from `env.example`) and `env.local` |
 | `./identyclaw.sh set-password agent-a` | Store Migadu password locally |
 | `./identyclaw.sh set-discord-token agent-a` | Store Discord bot token in `secrets/` (synced to `.env` on start) |
+| `./identyclaw.sh set-telegram-token agent-a` | Store Telegram bot token in `secrets/` (polling standalone; webhook in pod mode) |
 | `./identyclaw.sh set-instagram agent-a` | Store Instagram username/password in `secrets/` |
 | `./identyclaw.sh set-twitter agent-a` | Store X/Twitter login; enables hourly DM polling via heartbeat |
 | `./identyclaw.sh set-twitter-cookies agent-a` | Store X session cookies (`AUTH_TOKEN` + `CT0`) for bird-twitter skill |
@@ -1156,6 +1172,7 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh respond-mail [id\|all]` | Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point) |
 | `./identyclaw.sh enable-mail-responder [interval]` | Install user systemd timer running `respond-mail` (default 5min) |
 | `./identyclaw.sh enable-inbox-check agent-a [interval]` | Enable LLM inbox heartbeat / concierge (default 1h) |
+| `./identyclaw.sh enable-calendar-check agent-a [interval]` | Enable calendar/reminder heartbeat (default 30m) |
 | `./identyclaw.sh respond-a2a-webhook-smoke [id\|all]` | Handle inbound A2A webhook smoke probes (constitution helper) |
 | `./identyclaw.sh enable-a2a-webhook-smoke-responder [interval]` | Timer for `respond-a2a-webhook-smoke` (default 1min) |
 | `./identyclaw.sh respond-a2a-hola-smoke [id\|all]` | Send deterministic inbound A2A HOLA probe emails (smoke tests) |
@@ -1269,8 +1286,11 @@ Standalone dev (`./identyclaw.sh start`) on loopback is unchanged — use SSH tu
     MEMORY.md             # builtin memory (dreaming consolidates here)
     IDENTITYCLAW.md       # operator guidance (A2A + identity)
     EMAIL.md              # Himalaya / concierge instructions
-    scripts/              # himalaya-*.sh, idcp-wallet.sh, idcp-rotate-passport.sh, idcp-activate-account.sh
+    CALENDAR.md           # local calendar + OpenClaw automations reminders
+    scripts/              # himalaya-*.sh, calendar.sh, idcp-wallet.sh, idcp-rotate-passport.sh, idcp-activate-account.sh
     skills/idcp-wallet/   # NEAR wallet / Passport rotation skill
+    skills/calendar-reminders/
+    calendar/events.json  # local calendar store
   .config/himalaya/config.toml
   secrets/imap.pass       # never commit
   secrets/near-credentials/*.json

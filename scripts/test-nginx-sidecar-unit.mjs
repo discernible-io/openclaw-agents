@@ -107,6 +107,7 @@ runCase("prepare_pod_nginx_host_files copies nginx/inc into APP_DIR", () => {
     assert.equal(conf.includes("server_name"), true);
     assert.equal(conf.includes("listen 8443 ssl"), true);
     assert.equal(conf.includes("location = /telegram-webhook"), true);
+    assert.equal(conf.includes("openclaw_agent_a_telegram"), true);
   } finally {
     rmSync(app, { recursive: true, force: true });
   }
