@@ -363,18 +363,23 @@ cmd_start() {
   load_env
   ensure_agent_persistence
   local target="${1:-all}"
+  local failed=()
   case "$target" in
-    agent-[a-z]) start_one "$target" ;;
+    agent-[a-z]) start_one "$target" || failed+=("$target") ;;
     all)
       local id
       for id in $AGENT_IDS; do
-        start_one "$id"
+        start_one "$id" || failed+=("$id")
       done
       ;;
     *) echo "Usage: $0 start [agent-id|all]" >&2; exit 1 ;;
   esac
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
     ensure_pod_nginx_sidecar || true
+  fi
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "Start failed for: ${failed[*]}" >&2
+    return 1
   fi
 }
 
@@ -416,17 +421,22 @@ cmd_restart() {
   load_env
   local target="${1:-all}"
   if [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]]; then
+    local failed=()
     case "$target" in
-      agent-[a-z]) start_pod_agent "$target" restart ;;
+      agent-[a-z]) start_pod_agent "$target" restart || failed+=("$target") ;;
       all)
         local id
         for id in $AGENT_IDS; do
-          start_pod_agent "$id" restart
+          start_pod_agent "$id" restart || failed+=("$id")
         done
         ;;
       *) echo "Usage: $0 restart [agent-id|all]" >&2; exit 1 ;;
     esac
     ensure_pod_nginx_sidecar || true
+    if [[ ${#failed[@]} -gt 0 ]]; then
+      echo "Restart failed for: ${failed[*]}" >&2
+      return 1
+    fi
     return 0
   fi
   cmd_stop "$target"

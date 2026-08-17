@@ -20,6 +20,7 @@ const suites = [
   "test-mail-responder-format-unit.mjs",
   "test-openclaw-cache-config-unit.mjs",
   "test-nginx-sidecar-unit.mjs",
+  "test-pod-restart-image-unit.mjs",
   "test-channels-calendar-unit.mjs",
 ];
 

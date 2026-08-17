@@ -3970,12 +3970,10 @@ recreate_pod_agent_container() {
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
 
-  image="$(openclaw_agent_image)"
-  if [[ -z "$image" ]] || ! podman image exists "$image" 2>/dev/null; then
-    image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
-  fi
-  [[ -n "$image" ]] || {
-    echo "No OpenClaw image configured — set OPENCLAW_LOCAL_IMAGE or OPENCLAW_IMAGE" >&2
+  image="$(resolve_openclaw_run_image "$container")" || {
+    echo "No OpenClaw agent image available to recreate ${container}." >&2
+    echo "Configured $(openclaw_agent_image) is not present locally; no sibling container or openclaw-agent image to reuse." >&2
+    echo "Set OPENCLAW_IMAGE, run ./identyclaw.sh build-image, or redeploy." >&2
     return 1
   }
 
@@ -6818,6 +6816,45 @@ openclaw_agent_image() {
   echo "${OPENCLAW_IMAGE:-${OPENCLAW_LOCAL_IMAGE:-${OPENCLAW_BASE_IMAGE}}}"
 }
 
+# Image used to (re)create an agent container. Prefer a locally present configured
+# ref; otherwise reuse this container, a sibling AGENT_IDS container, or any
+# openclaw-agent image still in local storage (CI hosts often have GHCR tags
+# while env.local still lists localhost/openclaw-agent:local).
+resolve_openclaw_run_image() {
+  local container="${1:-}"
+  local image inspect_image id sibling listed
+  load_env
+  image="$(openclaw_agent_image)"
+  if [[ -n "$image" ]] && podman image exists "$image" 2>/dev/null; then
+    printf '%s\n' "$image"
+    return 0
+  fi
+  if [[ -n "$container" ]]; then
+    inspect_image="$(podman inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true)"
+    if [[ -n "$inspect_image" ]]; then
+      printf '%s\n' "$inspect_image"
+      return 0
+    fi
+  fi
+  for id in ${AGENT_IDS:-}; do
+    sibling="$(agent_container "$id")"
+    [[ -n "$sibling" && "$sibling" != "$container" ]] || continue
+    inspect_image="$(podman inspect "$sibling" --format '{{.Config.Image}}' 2>/dev/null || true)"
+    if [[ -n "$inspect_image" ]]; then
+      printf '%s\n' "$inspect_image"
+      return 0
+    fi
+  done
+  listed="$(podman images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | awk '
+    index($0, "openclaw-agent") && $0 !~ /:<none>$/ { print; exit }
+  ' || true)"
+  if [[ -n "$listed" ]]; then
+    printf '%s\n' "$listed"
+    return 0
+  fi
+  return 1
+}
+
 # Recreate a pod agent gateway so --env-file picks up .env changes (podman restart does not).
 recreate_pod_agent_gateway() {
   local id="$1"
@@ -6827,7 +6864,12 @@ recreate_pod_agent_gateway() {
   container="$(agent_container "$id")"
   gw_port="$(agent_internal_gateway_port "$id")"
   z="$(selinux_mount_suffix)"
-  image="$(openclaw_agent_image)"
+  image="$(resolve_openclaw_run_image "$container")" || {
+    echo "No OpenClaw agent image available to recreate ${container}." >&2
+    echo "Configured $(openclaw_agent_image) is not present locally; no sibling container or openclaw-agent image to reuse." >&2
+    echo "Set OPENCLAW_IMAGE, run ./identyclaw.sh build-image, or redeploy." >&2
+    return 1
+  }
   pod_name="${POD_NAME:-identyclaw-agents-pod}"
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
