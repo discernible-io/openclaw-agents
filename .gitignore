@@ -13,6 +13,8 @@ env.local.fragment*
 **/secrets/
 **/*.pass
 **/DISCORD_BOT_TOKEN
+**/TELEGRAM_BOT_TOKEN
+**/TELEGRAM_WEBHOOK_SECRET
 **/jwt.txt
 
 # --- Legacy / accidental agent state inside the checkout ---

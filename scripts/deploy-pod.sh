@@ -131,6 +131,7 @@ ensure_agent_runtime() {
   ensure_agent_security_hardening "$id" "$dir"
   ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
+  sync_telegram_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
 }
 

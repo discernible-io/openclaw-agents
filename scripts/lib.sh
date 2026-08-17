@@ -250,6 +250,9 @@ load_env() {
   # LinkedIn/ClawLink is opt-in: set IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL=linkedin-social to enable.
   IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-}"
   IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
+  IDENTYCLAW_ENABLE_CALENDAR_HEARTBEAT="${IDENTYCLAW_ENABLE_CALENDAR_HEARTBEAT:-1}"
+  IDENTYCLAW_CALENDAR_HEARTBEAT_INTERVAL="${IDENTYCLAW_CALENDAR_HEARTBEAT_INTERVAL:-30m}"
+  IDENTYCLAW_CALENDAR_TZ="${IDENTYCLAW_CALENDAR_TZ:-UTC}"
   IDENTYCLAW_DEPLOY_MODE="${IDENTYCLAW_DEPLOY_MODE:-standalone}"
   IDENTYCLAW_INGRESS_PORT="${IDENTYCLAW_INGRESS_PORT:-8443}"
   AGENT_A_PUBLIC_HOST="${AGENT_A_PUBLIC_HOST:-agent-a.identyclaw.com}"
@@ -5499,6 +5502,140 @@ ensure_idcp_wallet_tooling() {
   write_idcp_wallet_scripts "$config_dir" "$id" "$container"
 }
 
+write_calendar_tooling() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local tpl_scripts="${IDENTYCLAW_ROOT}/scripts/templates/workspace/scripts"
+  local skill_src="${IDENTYCLAW_ROOT}/scripts/templates/workspace/skills/calendar-reminders/SKILL.md"
+  local dest_scripts="$config_dir/workspace/scripts"
+  local dest_skill="$config_dir/workspace/skills/calendar-reminders"
+  local dest_doc="$config_dir/workspace/CALENDAR.md"
+
+  if [[ -n "$container" ]] && ! [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+      podman exec "$container" mkdir -p /home/node/.openclaw/workspace/scripts /home/node/.openclaw/workspace/skills/calendar-reminders /home/node/.openclaw/workspace/calendar
+      [[ -f "$tpl_scripts/calendar.sh" ]] && podman cp "$tpl_scripts/calendar.sh" "$container:/home/node/.openclaw/workspace/scripts/calendar.sh" >/dev/null
+      [[ -f "$skill_src" ]] && podman cp "$skill_src" "$container:/home/node/.openclaw/workspace/skills/calendar-reminders/SKILL.md" >/dev/null
+      podman exec "$container" chmod 755 /home/node/.openclaw/workspace/scripts/calendar.sh >/dev/null 2>&1 || true
+      podman exec "$container" chmod 644 /home/node/.openclaw/workspace/skills/calendar-reminders/SKILL.md >/dev/null 2>&1 || true
+      _write_calendar_doc_in_container "$container"
+      return 0
+    fi
+    echo "    (skip calendar workspace sync — host cannot write container-owned state)" >&2
+    return 0
+  fi
+
+  mkdir -p "$dest_scripts" "$dest_skill" "$config_dir/workspace/calendar"
+  if [[ -f "$tpl_scripts/calendar.sh" ]]; then
+    cp "$tpl_scripts/calendar.sh" "$dest_scripts/calendar.sh"
+    chmod 755 "$dest_scripts/calendar.sh"
+  fi
+  if [[ -f "$skill_src" ]]; then
+    cp "$skill_src" "$dest_skill/SKILL.md"
+    chmod 644 "$dest_skill/SKILL.md"
+  fi
+  write_calendar_doc "$config_dir"
+}
+
+write_calendar_doc() {
+  local config_dir="$1"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/CALENDAR.md" <<'EOF'
+# Calendar and reminders
+
+Events live in `workspace/calendar/events.json` (local JSON — no Google login required).
+Precise alerts use OpenClaw **automations** (`cron` tool). Heartbeat only sweeps the next day.
+
+## Operator setup
+
+```bash
+./identyclaw.sh set-telegram-token <agent-id>   # optional delivery channel
+./identyclaw.sh set-discord-token <agent-id>    # optional delivery channel
+./identyclaw.sh enable-calendar-check <agent-id> 30m
+./identyclaw.sh restart <agent-id>
+```
+
+## Agent SOP
+
+1. Read this file and `skills/calendar-reminders/SKILL.md`.
+2. Create/list/cancel with `sh scripts/calendar.sh …` (plain `exec`, no `elevated`).
+3. After `add`, create one automation per reminder offset and `calendar.sh set-jobs`.
+4. Deliver via Telegram or Discord when those channels are enabled; otherwise the current chat or email.
+5. On heartbeat task `calendar-upcoming`: `sh scripts/calendar.sh upcoming 24`. Empty → `HEARTBEAT_OK`.
+
+Do not use `sleep` or polling loops as a reminder clock.
+
+Optional Google Calendar: only if ClawLink `googlecalendar_*` tools are installed and paired.
+EOF
+  chmod 644 "$config_dir/workspace/CALENDAR.md"
+}
+
+_write_calendar_doc_in_container() {
+  local container="$1"
+  podman exec "$container" python3 - <<'PY'
+from pathlib import Path
+path = Path("/home/node/.openclaw/workspace/CALENDAR.md")
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text("""# Calendar and reminders
+
+Events live in `workspace/calendar/events.json` (local JSON — no Google login required).
+Precise alerts use OpenClaw **automations** (`cron` tool). Heartbeat only sweeps the next day.
+
+## Operator setup
+
+```bash
+./identyclaw.sh set-telegram-token <agent-id>   # optional delivery channel
+./identyclaw.sh set-discord-token <agent-id>    # optional delivery channel
+./identyclaw.sh enable-calendar-check <agent-id> 30m
+./identyclaw.sh restart <agent-id>
+```
+
+## Agent SOP
+
+1. Read this file and `skills/calendar-reminders/SKILL.md`.
+2. Create/list/cancel with `sh scripts/calendar.sh …` (plain `exec`, no `elevated`).
+3. After `add`, create one automation per reminder offset and `calendar.sh set-jobs`.
+4. Deliver via Telegram or Discord when those channels are enabled; otherwise the current chat or email.
+5. On heartbeat task `calendar-upcoming`: `sh scripts/calendar.sh upcoming 24`. Empty → `HEARTBEAT_OK`.
+
+Do not use `sleep` or polling loops as a reminder clock.
+
+Optional Google Calendar: only if ClawLink `googlecalendar_*` tools are installed and paired.
+""", encoding="utf-8")
+path.chmod(0o644)
+PY
+}
+
+ensure_calendar_skill_enabled() {
+  local config_dir="$1"
+  local container="${2:-}"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+entry = skills.setdefault("calendar-reminders", {})
+if entry.get("enabled") is True:
+    raise SystemExit(0)
+entry["enabled"] = True
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+}
+
+ensure_calendar_reminders() {
+  local id="$1"
+  local config_dir="$2"
+  local container="${3:-}"
+  [[ -n "$container" ]] || container="$(agent_container "$id")"
+  write_calendar_tooling "$config_dir" "$container"
+  ensure_calendar_skill_enabled "$config_dir" "$container"
+  ensure_calendar_heartbeat_from_env "$id" "$config_dir"
+}
+
 ensure_discord_guild_channels() {
   local config_dir="$1"
   local container="${2:-}"
@@ -8340,6 +8477,122 @@ enable_inbox_heartbeat() {
   fi
 }
 
+_heartbeat_calendar_prompt() {
+  cat <<'EOF'
+Read CALENDAR.md and skills/calendar-reminders/SKILL.md. Run sh scripts/calendar.sh upcoming 24. Summarize unacked events starting soon. If none, reply HEARTBEAT_OK.
+EOF
+}
+
+ensure_heartbeat_every_at_most() {
+  local config_dir="$1"
+  local interval="${2:-30m}"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" "$interval" <<'PY'
+import json, sys
+from pathlib import Path
+
+def to_seconds(raw):
+    raw = str(raw or "").strip().lower()
+    if raw.endswith("ms"):
+        return int(raw[:-2]) / 1000
+    if raw.endswith("s") and not raw.endswith("ms"):
+        return int(raw[:-1])
+    if raw.endswith("m"):
+        return int(raw[:-1]) * 60
+    if raw.endswith("h"):
+        return int(raw[:-1]) * 3600
+    if raw.endswith("d"):
+        return int(raw[:-1]) * 86400
+    return 3600
+
+path = Path(sys.argv[1])
+interval = sys.argv[2]
+data = json.loads(path.read_text(encoding="utf-8"))
+heartbeat = data.setdefault("agents", {}).setdefault("defaults", {}).setdefault("heartbeat", {})
+current = heartbeat.get("every")
+changed = False
+if not current or to_seconds(interval) < to_seconds(current):
+    heartbeat["every"] = interval
+    changed = True
+for key, value in {"target": "none", "lightContext": True, "isolatedSession": True}.items():
+    if heartbeat.get(key) != value:
+        heartbeat[key] = value
+        changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+write_calendar_heartbeat_marker() {
+  local config_dir="$1"
+  local interval="$2"
+  mkdir -p "$config_dir/secrets"
+  printf '%s\n' "$interval" >"$config_dir/secrets/calendar-heartbeat.interval"
+  chmod 600 "$config_dir/secrets/calendar-heartbeat.interval"
+}
+
+_apply_calendar_heartbeat() {
+  local id="$1"
+  local config_dir="$2"
+  local interval="$3"
+  local container prompt
+  prompt="$(_heartbeat_calendar_prompt)"
+  container="$(agent_container "$id")"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    _upsert_heartbeat_task_in_container "$container" "calendar-upcoming" "$interval" "$prompt"
+  fi
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    _upsert_heartbeat_task "$config_dir/workspace/HEARTBEAT.md" "calendar-upcoming" "$interval" "$prompt"
+    ensure_heartbeat_every_at_most "$config_dir" "$interval"
+  fi
+}
+
+_read_calendar_heartbeat_interval() {
+  local id="$1"
+  local config_dir="$2"
+  local interval="" enabled=""
+  load_env
+  if [[ -f "$config_dir/secrets/calendar-heartbeat.interval" ]]; then
+    interval="$(tr -d '\n' <"$config_dir/secrets/calendar-heartbeat.interval")"
+  fi
+  if is_valid_agent_id "$id"; then
+    [[ -z "$interval" ]] && interval="$(agent_env_value "$id" CALENDAR_HEARTBEAT_INTERVAL "")"
+    enabled="$(agent_env_value "$id" ENABLE_CALENDAR_HEARTBEAT "")"
+  fi
+  [[ -z "$interval" ]] && interval="${IDENTYCLAW_CALENDAR_HEARTBEAT_INTERVAL:-}"
+  [[ -z "$enabled" ]] && enabled="${IDENTYCLAW_ENABLE_CALENDAR_HEARTBEAT:-1}"
+  if [[ -n "$interval" ]]; then
+    echo "$interval"
+    return 0
+  fi
+  if [[ "$enabled" == "1" || "$enabled" == "true" ]]; then
+    echo "${IDENTYCLAW_CALENDAR_HEARTBEAT_INTERVAL:-30m}"
+  fi
+}
+
+ensure_calendar_heartbeat_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local interval
+  interval="$(_read_calendar_heartbeat_interval "$id" "$config_dir")"
+  [[ -n "$interval" ]] || return 0
+  _apply_calendar_heartbeat "$id" "$config_dir" "$interval"
+}
+
+enable_calendar_heartbeat() {
+  local id="$1"
+  local interval="${2:-30m}"
+  local config_dir
+  config_dir="$(agent_home "$id")"
+  [[ -d "$config_dir" ]] || { echo "Run ./identyclaw.sh init first" >&2; return 1; }
+  write_calendar_heartbeat_marker "$config_dir" "$interval"
+  write_calendar_tooling "$config_dir" "$(agent_container "$id")"
+  ensure_calendar_skill_enabled "$config_dir" "$(agent_container "$id")"
+  _apply_calendar_heartbeat "$id" "$config_dir" "$interval"
+}
+
 _slc_kb_template_path() {
   echo "${IDENTYCLAW_ROOT}/scripts/templates/knowledge/slc-play-unattended.md"
 }
@@ -8924,11 +9177,14 @@ ensure_agent_bootstrap() {
   ensure_agent_mail_tooling_refresh "$id" "$config_dir"
   ensure_instagram_secrets_from_env "$id" "$config_dir"
   ensure_twitter_secrets_from_env "$id" "$config_dir"
+  ensure_discord_secrets_from_env "$id" "$config_dir"
+  ensure_telegram_secrets_from_env "$id" "$config_dir"
   ensure_inbox_heartbeat_from_env "$id" "$config_dir"
   ensure_slc_heartbeat_from_env "$id" "$config_dir"
   ensure_linkedin_clawlink_skill "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
   ensure_idcp_wallet_tooling "$id" "$config_dir" "$container"
+  ensure_calendar_reminders "$id" "$config_dir" "$container"
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
@@ -10612,6 +10868,7 @@ flows
 memory
 media
 discord
+telegram
 EOF
 }
 
@@ -10639,6 +10896,7 @@ sync_agent_secrets_for_export() {
   local id="$1"
   local config_dir="$2"
   sync_discord_env "$config_dir"
+  sync_telegram_env "$config_dir"
   sync_identyclaw_env "$config_dir"
   sync_instagram_env "$config_dir"
   sync_twitter_env "$config_dir"

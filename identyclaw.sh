@@ -9,6 +9,7 @@
 #   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-c, agent-e)
 #   set-password <id|all>  Set Migadu mailbox password (agent-{a-z} or all AGENT_IDS)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
+#   set-telegram-token <id> Store Telegram bot token in secrets/ (survives rebuilds)
 #   set-instagram <id>      Store Instagram username/password in secrets/ (survives rebuilds)
 #   set-twitter <id>        Store X/Twitter login + enable hourly DM polling via heartbeat
 #   set-twitter-cookies <id>  Store X session cookies (AUTH_TOKEN + CT0) for bird-twitter skill
@@ -31,6 +32,7 @@
 #   respond-mail [id|all]  Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point)
 #   enable-mail-responder [interval]  Install user systemd timer to run respond-mail (default 5min)
 #   enable-inbox-check <id> [interval]  Enable LLM inbox heartbeat (default 1h)
+#   enable-calendar-check <id> [interval]  Enable calendar/reminder heartbeat (default 30m)
 #   enable-slc-heartbeat <id> [interval]  Enable SLC game heartbeat (default 10m; removes stale local playbooks)
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
 #   respond-a2a-hola-smoke [id|all]  Deterministic inbound A2A HOLA probe email sender (smoke tests)
@@ -68,7 +70,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,61p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -129,6 +131,7 @@ init_one_agent() {
   write_himalaya_read_script "$dir"
   write_agent_email_doc "$email" "$display_name" "$dir"
   write_idcp_wallet_scripts "$dir" "$id"
+  write_calendar_tooling "$dir"
   write_openclaw_json "$dir" "$gateway_port"
   ensure_agent_env "$dir"
   ensure_main_ingress_config "$id" "$dir"
@@ -204,6 +207,27 @@ cmd_set_discord_token() {
   echo
   write_discord_token "$dir" "$token"
   echo "Discord token stored in ${dir}/secrets/DISCORD_BOT_TOKEN (mode 600)"
+  echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_set_telegram_token() {
+  local id="${1:?Usage: $0 set-telegram-token agent-b}"
+  local dir
+  load_env
+  dir="$(agent_home "$id")"
+  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  local token
+  read -r -s -p "Telegram bot token for ${id}: " token
+  echo
+  write_telegram_token "$dir" "$token"
+  ensure_telegram_ready "$id" "$dir"
+  ensure_telegram_webhook "$id" "$dir"
+  echo "Telegram token stored in ${dir}/secrets/TELEGRAM_BOT_TOKEN (mode 600)"
+  if [[ "${IDENTYCLAW_DEPLOY_MODE:-standalone}" == "pod" ]]; then
+    echo "Pod webhook: POST $(agent_ingress_base_url "$id")/telegram-webhook"
+  else
+    echo "Standalone uses Telegram long polling (webhook needs IDENTYCLAW_DEPLOY_MODE=pod on :8443)."
+  fi
   echo "Restart to apply: $0 restart ${id}"
 }
 
@@ -755,6 +779,15 @@ cmd_enable_inbox_check() {
   enable_inbox_heartbeat "$id" "$interval"
   echo "Inbox heartbeat enabled (HEARTBEAT.md inbox-check + agents.defaults.heartbeat.every=${interval})"
   echo "Persisted in secrets/inbox-heartbeat.interval (re-applied on start/restart/bootstrap)"
+  echo "Restart to apply: $0 restart ${id}"
+}
+
+cmd_enable_calendar_check() {
+  local id="${1:?Usage: $0 enable-calendar-check agent-a [interval]}"
+  local interval="${2:-30m}"
+  enable_calendar_heartbeat "$id" "$interval"
+  echo "Calendar heartbeat enabled (HEARTBEAT.md calendar-upcoming + agents.defaults.heartbeat.every<=${interval})"
+  echo "Persisted in secrets/calendar-heartbeat.interval (re-applied on start/restart/bootstrap)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
@@ -2520,6 +2553,7 @@ main() {
     init) cmd_init "$@" ;;
     set-password) cmd_set_password "$@" ;;
     set-discord-token) cmd_set_discord_token "$@" ;;
+    set-telegram-token) cmd_set_telegram_token "$@" ;;
     set-instagram) cmd_set_instagram "$@" ;;
     set-twitter) cmd_set_twitter "$@" ;;
     set-twitter-cookies) cmd_set_twitter_cookies "$@" ;;
@@ -2550,6 +2584,7 @@ main() {
     respond-mail) cmd_respond_mail "$@" ;;
     enable-mail-responder) cmd_enable_mail_responder "$@" ;;
     enable-inbox-check) cmd_enable_inbox_check "$@" ;;
+    enable-calendar-check) cmd_enable_calendar_check "$@" ;;
     enable-slc-heartbeat) cmd_enable_slc_heartbeat "$@" ;;
     fix-session-images) cmd_fix_session_images "$@" ;;
     respond-a2a-webhook-smoke) cmd_respond_a2a_webhook_smoke "$@" ;;
