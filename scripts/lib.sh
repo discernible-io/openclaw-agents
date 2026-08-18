@@ -9874,6 +9874,18 @@ except OSError:
 PY
 }
 
+# Host often cannot stat container-owned agent dirs (EACCES). Always retire
+# inside the running container — same path the entrypoint uses on every start.
+_retire_legacy_exec_approvals_in_container() {
+  local container="$1"
+  [[ -n "$container" ]] || return 0
+  podman exec "$container" sh -c '
+    f=/home/node/.openclaw/exec-approvals.json
+    [ -f "$f" ] || exit 0
+    mv -f "$f" "${f}.identyclaw-retired" || rm -f "$f" || true
+  ' >/dev/null 2>&1 || true
+}
+
 ensure_exec_allowlist_harmless_bins() {
   local config_dir="$1"
   local container="${2:-}"
@@ -9887,22 +9899,8 @@ ensure_exec_allowlist_harmless_bins() {
   fi
   gw_port="${gw_port:-18789}"
   _retire_legacy_exec_approvals_json "$approvals"
-  if [[ -e "$approvals" ]] && [[ -n "$container" ]] \
-    && podman container exists "$container" >/dev/null 2>&1; then
-    podman exec "$container" python3 - <<'PY' || true
-from pathlib import Path
-path = Path("/home/node/.openclaw/exec-approvals.json")
-if not path.is_file():
-    raise SystemExit(0)
-retired = path.with_name(path.name + ".identyclaw-retired")
-try:
-    path.replace(retired)
-except OSError:
-    try:
-        path.unlink()
-    except OSError:
-        pass
-PY
+  if [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1; then
+    _retire_legacy_exec_approvals_in_container "$container"
   fi
   [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1 || return 0
   local token=""

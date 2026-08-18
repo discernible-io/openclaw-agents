@@ -43,4 +43,13 @@ if [ -f /opt/identyclaw/patch-openclaw-tool-result-images.mjs ]; then
     || echo "[identyclaw] tool-result image patch skipped" >&2
 fi
 
+# Leftover exec-approvals.json lives on the bind-mounted OpenClaw home, so it
+# survives image rebuilds. Newer OpenClaw stores approvals in SQLite and fails
+# closed with ExecApprovalsMigrationRequiredError while this file exists.
+if [ -f /home/node/.openclaw/exec-approvals.json ]; then
+  mv -f /home/node/.openclaw/exec-approvals.json \
+    /home/node/.openclaw/exec-approvals.json.identyclaw-retired \
+    || rm -f /home/node/.openclaw/exec-approvals.json || true
+fi
+
 exec tini -s -- "$@"

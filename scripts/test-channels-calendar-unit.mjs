@@ -270,6 +270,32 @@ runCase("rendered nginx proxies Telegram to the per-agent webhook listener", () 
   }
 });
 
+runCase("container-entrypoint retires leftover exec-approvals.json before the gateway starts", () => {
+  const src = readFileSync(join(repoRoot, "scripts/container-entrypoint.sh"), "utf8");
+  const image = readFileSync(join(repoRoot, "Containerfile.agent"), "utf8");
+  assert.equal(src.includes("/home/node/.openclaw/exec-approvals.json"), true);
+  assert.equal(src.includes("exec-approvals.json.identyclaw-retired"), true);
+  assert.ok(
+    src.indexOf("exec-approvals.json") < src.indexOf('exec tini -s -- "$@"'),
+    "entrypoint must retire leftover JSON before exec tini",
+  );
+  assert.equal(image.includes("scripts/container-entrypoint.sh"), true);
+});
+
+runCase("ensure_exec_allowlist retires leftover JSON inside the container even when the host cannot see it", () => {
+  const src = readFileSync(join(repoRoot, "scripts/lib.sh"), "utf8");
+  const start = src.indexOf("ensure_exec_allowlist_harmless_bins()");
+  const end = src.indexOf("retire_legacy_exec_approvals_one()");
+  assert.ok(start >= 0 && end > start, "ensure_exec_allowlist_harmless_bins body not found");
+  const body = src.slice(start, end);
+  assert.equal(body.includes("_retire_legacy_exec_approvals_in_container"), true);
+  assert.equal(
+    body.includes('if [[ -e "$approvals" ]] && [[ -n "$container" ]]'),
+    false,
+    "must not skip in-container retire when the host cannot stat leftover JSON",
+  );
+});
+
 runCase("ensure_exec_allowlist_harmless_bins retires leftover JSON and does not recreate it", () => {
   const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
   const dir = join(app, "agents", "agent-a");
