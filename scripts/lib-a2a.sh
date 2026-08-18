@@ -2452,9 +2452,11 @@ identyclaw_skill_version_in_container() {
   python3 -c 'import re,sys; m=re.search(r"(?m)^version:\s*([^\s#]+)", sys.argv[1]); print(m.group(1) if m else "")' "$text" 2>/dev/null || true
 }
 
-# Install workspace skill from plugin-bundled skill/ (GitHub tip) when present; else ClawHub.
+# Install workspace skill: plugin-bundled skill/ when present; else ClawHub pin;
+# host git checkout only when no IDENTYCLAW_CLAWHUB_SKILL_VERSION is set.
 
-# Install workspace skill from plugin-bundled skill/ (GitHub tip) when present; else ClawHub.
+# Install workspace skill: plugin-bundled skill/ when present; else ClawHub pin;
+# host git checkout only when no IDENTYCLAW_CLAWHUB_SKILL_VERSION is set.
 install_identyclaw_skill() {
   local config_dir="$1"
   local container="${2:-}"
@@ -2465,11 +2467,15 @@ install_identyclaw_skill() {
   skill_ver="${IDENTYCLAW_CLAWHUB_SKILL_VERSION:-}"
 
   plugin_skill="$(agent_identyclaw_tools_ext_dir_container)/skill"
-  host_skill="$(agent_identyclaw_tools_ext_dir "$config_dir")/skill"
-  if [[ ! -f "$host_skill/SKILL.md" ]]; then
-    host_skill="$(identyclaw_app_dir)/repo/openclaw-identyclaw-plugin/skill"
+  host_skill=""
+  # A ClawHub version pin is authoritative — skip the host git cache (often stale).
+  if [[ -z "$skill_ver" ]]; then
+    host_skill="$(agent_identyclaw_tools_ext_dir "$config_dir")/skill"
+    if [[ ! -f "$host_skill/SKILL.md" ]]; then
+      host_skill="$(identyclaw_app_dir)/repo/openclaw-identyclaw-plugin/skill"
+    fi
+    [[ -f "$host_skill/SKILL.md" ]] || host_skill=""
   fi
-  [[ -f "$host_skill/SKILL.md" ]] || host_skill=""
 
   if [[ "$force" == "1" ]]; then
     install_args+=(--force)
