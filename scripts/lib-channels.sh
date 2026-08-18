@@ -1,0 +1,1557 @@
+#!/usr/bin/env bash
+# Telegram, Discord, X/Twitter, Instagram, and LinkedIn/ClawLink.
+# Sourced from scripts/lib.sh — do not execute directly.
+
+# Discord channel plugin must match gateway core (e.g. parseStrictPositiveInteger export drift).
+# Correction gateways (2026.7.1-2) are compatible with Discord 2026.7.1 when no matching npm tag exists.
+ensure_discord_plugin_compat() {
+  local id="$1"
+  local container
+  load_env
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+
+  if podman exec "$container" node -e "
+const fs = require('fs');
+const path = require('path');
+const gw = require('/app/package.json').version;
+function discordPluginVersion(gw) {
+  const m = String(gw).match(/^(\\d+\\.\\d+\\.\\d+)-\\d+$/);
+  return m ? m[1] : gw;
+}
+function discordCompatible(discord, gw) {
+  return Boolean(discord) && (discord === gw || discord === discordPluginVersion(gw));
+}
+function discordVersion() {
+  const legacy = '/home/node/.openclaw/npm/node_modules/@openclaw/discord/package.json';
+  if (fs.existsSync(legacy)) return require(legacy).version;
+  const projects = '/home/node/.openclaw/npm/projects';
+  if (!fs.existsSync(projects)) return null;
+  for (const d of fs.readdirSync(projects)) {
+    const pkg = path.join(projects, d, 'node_modules/@openclaw/discord/package.json');
+    if (fs.existsSync(pkg)) return require(pkg).version;
+  }
+  return null;
+}
+process.exit(discordCompatible(discordVersion(), gw) ? 0 : 1);
+" 2>/dev/null; then
+    return 0
+  fi
+
+  echo "    (${id}: syncing @openclaw/discord to published plugin for this gateway…)" >&2
+  podman exec "$container" bash -ce '
+    set -euo pipefail
+    gw=$(node -e "process.stdout.write(require(\"/app/package.json\").version)")
+    discord=$(node -e "const g=process.argv[1]; const m=String(g).match(/^(\\d+\\.\\d+\\.\\d+)-\\d+$/); process.stdout.write(m?m[1]:g)" -- "$gw")
+    rm -rf /home/node/.openclaw/npm/node_modules/@openclaw/discord
+    rm -rf /home/node/.openclaw/npm/projects/openclaw-discord-*
+    OPENCLAW_STATE_DIR=/home/node/.openclaw node /app/openclaw.mjs plugins install "@openclaw/discord@${discord}" --pin
+  ' >&2
+  return 1
+}
+
+
+restart_agent_gateway_if_running() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  echo "    (${id}: restarting gateway to load Discord plugin…)" >&2
+  podman restart "$container" >/dev/null
+}
+
+
+ensure_discord_plugin_compat_and_restart() {
+  local id="$1"
+  ensure_discord_plugin_compat "$id" || restart_agent_gateway_if_running "$id"
+}
+
+# Telegram webhook listener is a separate OpenClaw bind (default 8787). In a pod all
+# agents share the network namespace, so each agent uses gateway-port + 2.
+agent_telegram_webhook_port() {
+  local id="$1"
+  echo $(( $(agent_internal_gateway_port "$id") + 2 ))
+}
+
+# Pod agents chown state to the container uid; token may live in openclaw.json or .env.
+
+
+ensure_discord_guild_channels() {
+  local config_dir="$1"
+  local container="${2:-}"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.get("channels", {}).get("discord")
+if not isinstance(discord, dict):
+    raise SystemExit(0)
+
+guild_id = "1509561171961708554"
+channel_id = "1509561172725334058"
+owner_id = "1438122032968634408"
+changed = False
+
+guilds = discord.setdefault("guilds", {})
+guild = guilds.setdefault(guild_id, {})
+if guild.get("requireMention") is not True:
+    guild["requireMention"] = True
+    changed = True
+if guild.get("ignoreOtherMentions") is not True:
+    guild["ignoreOtherMentions"] = True
+    changed = True
+users = guild.setdefault("users", [])
+if owner_id not in users:
+    users.append(owner_id)
+    changed = True
+channels = guild.setdefault("channels", {})
+ch = channels.setdefault(channel_id, {})
+if ch.get("enabled") is not True:
+    ch["enabled"] = True
+    changed = True
+if ch.get("requireMention") is not True:
+    ch["requireMention"] = True
+    changed = True
+if ch.get("ignoreOtherMentions") is not True:
+    ch["ignoreOtherMentions"] = True
+    changed = True
+
+allow_from = discord.setdefault("allowFrom", [])
+if owner_id not in allow_from:
+    allow_from.append(owner_id)
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+
+ensure_discord_ready() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  local token_file="$config_dir/secrets/DISCORD_BOT_TOKEN"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" "$token_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, token_file = Path(sys.argv[1]), Path(sys.argv[2])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.get("channels", {}).get("discord")
+if not isinstance(discord, dict):
+    raise SystemExit(0)
+
+has_token = token_file.is_file() and token_file.read_text(encoding="utf-8").strip()
+enabled = discord.get("enabled", False)
+changed = False
+
+if enabled and not has_token:
+    discord["enabled"] = False
+    changed = True
+    print(f"WARNING: {path.parent.name}: Discord enabled but no token — disabled until ./identyclaw.sh set-discord-token {path.parent.name.replace('.openclaw-', '')}", file=sys.stderr)
+elif not enabled and has_token:
+    discord["enabled"] = True
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+
+write_instagram_secrets() {
+  local config_dir="$1"
+  local username="$2"
+  local password="$3"
+  [[ -n "$username" && -n "$password" ]] || { echo "empty Instagram credentials" >&2; return 1; }
+  mkdir -p "$config_dir/secrets"
+  printf '%s' "$username" >"$config_dir/secrets/instagram.username"
+  printf '%s' "$password" >"$config_dir/secrets/instagram.password"
+  chmod 700 "$config_dir/secrets"
+  chmod 600 "$config_dir/secrets/instagram.username" "$config_dir/secrets/instagram.password"
+  sync_instagram_env "$config_dir"
+  write_agent_instagram_doc "$config_dir" "$username"
+}
+
+
+sync_instagram_env() {
+  local config_dir="$1"
+  local user_file="$config_dir/secrets/instagram.username"
+  local pass_file="$config_dir/secrets/instagram.password"
+  local env_file="$config_dir/.env"
+  [[ -f "$user_file" && -f "$pass_file" ]] || return 0
+  local username password
+  username="$(<"$user_file")"
+  password="$(<"$pass_file")"
+  [[ -n "$username" && -n "$password" ]] || return 0
+  python3 - "$env_file" "$username" "$password" <<'PY'
+import os, sys
+path, username, password = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [
+            ln for ln in f
+            if not ln.startswith(("INSTAGRAM_USERNAME=", "INSTAGRAM_PASSWORD="))
+        ]
+lines.append(f"INSTAGRAM_USERNAME={username}\n")
+lines.append(f"INSTAGRAM_PASSWORD={password}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+
+write_agent_instagram_doc() {
+  local config_dir="$1"
+  local username="$2"
+  mkdir -p "$config_dir/workspace"
+  cat >"$config_dir/workspace/INSTAGRAM.md" <<EOF
+# Instagram (Mundo En Blanco)
+
+**Credentials are configured.** Do not ask for manual login handoff or user-browser attach until you have tried browser login below and hit captcha / 2FA / suspicious-login.
+
+- **Profile:** https://www.instagram.com/${username}/
+- **Username:** \`${username}\` (\`INSTAGRAM_USERNAME\` in env)
+- **Password:** \`INSTAGRAM_PASSWORD\` in env (also \`secrets/instagram.*\`)
+
+## First step on any Instagram task
+
+1. Read this file.
+2. Log in via the managed \`browser\` tool (browser-automation skill) using env credentials.
+3. Open the profile and snapshot posts before suggesting alternatives.
+
+Save learned caption/reel style to \`workspace/instagram/STYLE.md\`.
+
+## Browser login
+
+1. \`action="open"\` → \`https://www.instagram.com/accounts/login/\` with \`label="instagram"\`
+2. \`action="snapshot"\` on \`targetId="instagram"\`
+3. Fill username/password from env, submit, snapshot again
+4. Reuse the \`instagram\` tab for posting, drafts, and reels
+
+Automated container login often hits reCAPTCHA — stop and point Mariia to \`workspace/instagram/Mariia-SETUP.md\` (user Chrome \`profile="user"\` or cookie import).
+
+## Session persistence
+
+Cookies live under \`browser/openclaw/user-data/\`. After a successful login, keep using the same browser profile; do not clear user data unless asked.
+EOF
+  chmod 644 "$config_dir/workspace/INSTAGRAM.md"
+}
+
+
+agent_twitter_username() {
+  local id="$1"
+  load_env
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  agent_env_value "$id" TWITTER_USERNAME ""
+}
+
+
+agent_twitter_bird_auth_token() {
+  local id="$1"
+  load_env
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  agent_env_value "$id" TWITTER_AUTH_TOKEN ""
+}
+
+
+agent_twitter_bird_ct0() {
+  local id="$1"
+  load_env
+  is_valid_agent_id "$id" || { echo ""; return 0; }
+  agent_env_value "$id" TWITTER_CT0 ""
+}
+
+
+twitter_clawhub_skill_slug() {
+  load_env
+  local spec="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
+  spec="${spec#clawhub:}"
+  spec="${spec##*/}"
+  spec="${spec%%@*}"
+  echo "$spec"
+}
+
+
+twitter_bird_bin() {
+  echo "/home/node/.openclaw/workspace/node_modules/.bin/bird"
+}
+
+
+twitter_clawhub_skill_installed_in_container() {
+  local container="$1"
+  local slug
+  slug="$(twitter_clawhub_skill_slug)"
+  podman exec "$container" sh -c "test -f /home/node/.openclaw/workspace/skills/${slug}/SKILL.md" 2>/dev/null
+}
+
+
+sync_twitter_bird_env() {
+  local id="$1"
+  local config_dir="$2"
+  local env_file="$config_dir/.env"
+  local auth_token ct0
+  auth_token="$(agent_twitter_bird_auth_token "$id")"
+  ct0="$(agent_twitter_bird_ct0 "$id")"
+  [[ -f "$config_dir/secrets/twitter.auth_token" ]] && [[ -z "$auth_token" ]] && auth_token="$(<"$config_dir/secrets/twitter.auth_token")"
+  [[ -f "$config_dir/secrets/twitter.ct0" ]] && [[ -z "$ct0" ]] && ct0="$(<"$config_dir/secrets/twitter.ct0")"
+  [[ -n "$auth_token" && -n "$ct0" ]] || return 0
+  python3 - "$env_file" "$auth_token" "$ct0" <<'PY'
+import os, sys
+path, auth_token, ct0 = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [
+            ln for ln in f
+            if not ln.startswith(("AUTH_TOKEN=", "CT0=", "AISA_API_KEY="))
+        ]
+lines.append(f"AUTH_TOKEN={auth_token}\n")
+lines.append(f"CT0={ct0}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+
+write_twitter_bird_cookies() {
+  local id="$1"
+  local config_dir="$2"
+  local auth_token="$3"
+  local ct0="$4"
+  [[ -n "$auth_token" && -n "$ct0" ]] || { echo "empty Twitter session cookies" >&2; return 1; }
+  if ! mkdir -p "$config_dir/secrets" 2>/dev/null; then
+    _write_twitter_bird_cookies_in_container "$id" "$auth_token" "$ct0"
+    return $?
+  fi
+  printf '%s' "$auth_token" >"$config_dir/secrets/twitter.auth_token"
+  printf '%s' "$ct0" >"$config_dir/secrets/twitter.ct0"
+  chmod 700 "$config_dir/secrets"
+  chmod 600 "$config_dir/secrets/twitter.auth_token" "$config_dir/secrets/twitter.ct0"
+  sync_twitter_bird_env "$id" "$config_dir"
+}
+
+
+_write_twitter_bird_cookies_in_container() {
+  local id="$1"
+  local auth_token="$2"
+  local ct0="$3"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Cannot write Twitter cookies: ${container} is not running" >&2
+    return 1
+  }
+  podman exec -i "$container" python3 - "$auth_token" "$ct0" <<'PY'
+import os, sys
+auth_token, ct0 = sys.argv[1], sys.argv[2]
+root = "/home/node/.openclaw"
+secrets = os.path.join(root, "secrets")
+os.makedirs(secrets, mode=0o700, exist_ok=True)
+for name, value in (("twitter.auth_token", auth_token), ("twitter.ct0", ct0)):
+    path = os.path.join(secrets, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(value)
+    os.chmod(path, 0o600)
+env_file = os.path.join(root, ".env")
+lines = []
+if os.path.isfile(env_file):
+    with open(env_file, encoding="utf-8") as f:
+        lines = [
+            ln for ln in f
+            if not ln.startswith(("AUTH_TOKEN=", "CT0=", "AISA_API_KEY="))
+        ]
+lines.append(f"AUTH_TOKEN={auth_token}\n")
+lines.append(f"CT0={ct0}\n")
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+}
+
+
+_ensure_twitter_clawhub_skill_openclaw_json() {
+  local config_dir="$1"
+  local slug old_slug
+  slug="$(twitter_clawhub_skill_slug)"
+  old_slug="openclaw-aisa-twitter-search"
+  python3 - "$config_dir/openclaw.json" "$slug" "$old_slug" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug, old_slug = sys.argv[2], sys.argv[3]
+if not path.is_file():
+    raise SystemExit(0)
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+if old_slug in skills:
+    del skills[old_slug]
+    changed = True
+if skills.get(slug, {}).get("enabled") is not True:
+    skills[slug] = {"enabled": True}
+    changed = True
+if changed:
+    data["skills"]["entries"] = skills
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+
+_ensure_twitter_clawhub_skill_openclaw_json_in_container() {
+  local container="$1"
+  local slug old_slug
+  slug="$(twitter_clawhub_skill_slug)"
+  old_slug="openclaw-aisa-twitter-search"
+  podman exec -i "$container" python3 - "$slug" "$old_slug" <<'PY'
+import json, sys
+from pathlib import Path
+
+slug, old_slug = sys.argv[1], sys.argv[2]
+path = Path("/home/node/.openclaw/openclaw.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+if old_slug in skills:
+    del skills[old_slug]
+    changed = True
+if skills.get(slug, {}).get("enabled") is not True:
+    skills[slug] = {"enabled": True}
+    changed = True
+if changed:
+    data["skills"]["entries"] = skills
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+
+ensure_bird_cli_in_container() {
+  local container="$1"
+  podman exec "$container" sh -c 'test -x /home/node/.openclaw/workspace/node_modules/.bin/bird' 2>/dev/null && return 0
+  echo "    (installing bird CLI in workspace…)" >&2
+  podman exec "$container" sh -c 'cd /home/node/.openclaw/workspace && npm install --no-save @steipete/bird@0.8.0' >&2 || true
+}
+
+
+ensure_twitter_bird_cookies_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local auth_token ct0
+  auth_token="$(agent_twitter_bird_auth_token "$id")"
+  ct0="$(agent_twitter_bird_ct0 "$id")"
+  if [[ -n "$auth_token" && -n "$ct0" ]] && [[ ! -f "$config_dir/secrets/twitter.auth_token" ]]; then
+    write_twitter_bird_cookies "$id" "$config_dir" "$auth_token" "$ct0"
+    echo "    (${id}: Twitter session cookies loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/twitter.auth_token" ]]; then
+    sync_twitter_bird_env "$id" "$config_dir"
+  fi
+}
+
+
+ensure_twitter_clawhub_skill() {
+  local id="$1"
+  local config_dir="$2"
+  local container skill_spec slug
+  load_env
+  skill_spec="${IDENTYCLAW_CLAWHUB_TWITTER_SKILL:-bird-twitter}"
+  slug="$(twitter_clawhub_skill_slug)"
+  container="$(agent_container "$id")"
+  ensure_twitter_bird_cookies_from_env "$id" "$config_dir"
+  if [[ -f "$config_dir/openclaw.json" ]]; then
+    _ensure_twitter_clawhub_skill_openclaw_json "$config_dir"
+  fi
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  ensure_openclaw_cli_link "$container"
+  podman exec "$container" rm -rf \
+    "/home/node/.openclaw/workspace/skills/openclaw-aisa-twitter-search" \
+    "/home/node/.openclaw/workspace/skills/twitter-post" 2>/dev/null || true
+  if ! twitter_clawhub_skill_installed_in_container "$container"; then
+    echo "    (${id}: installing ClawHub Twitter skill ${skill_spec}…)" >&2
+    podman exec "$container" node /app/openclaw.mjs skills install "$skill_spec" >&2 \
+      || podman exec "$container" node /app/openclaw.mjs skills install "$slug" >&2 || true
+  fi
+  ensure_bird_cli_in_container "$container"
+  _ensure_twitter_clawhub_skill_openclaw_json_in_container "$container"
+  sync_twitter_bird_env "$id" "$config_dir"
+  if [[ -f "$config_dir/secrets/twitter.auth_token" && -f "$config_dir/secrets/twitter.ct0" ]]; then
+    _write_twitter_bird_cookies_in_container "$id" \
+      "$(<"$config_dir/secrets/twitter.auth_token")" \
+      "$(<"$config_dir/secrets/twitter.ct0")" 2>/dev/null || true
+  fi
+  local username
+  username="$(agent_twitter_username "$id")"
+  if [[ -z "$username" ]]; then
+    username="$(podman exec "$container" sh -c 'cat /home/node/.openclaw/secrets/twitter.username 2>/dev/null' || true)"
+  fi
+  if [[ -n "$username" ]]; then
+    _write_agent_twitter_doc_in_container "$container" "$username"
+    _write_twitter_workspace_guidance_in_container "$container"
+    _write_twitter_heartbeat_doc_in_container "$container"
+    _ensure_twitter_heartbeat_config_in_container "$container"
+  fi
+}
+
+
+linkedin_skill_slug() {
+  load_env
+  local spec="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-linkedin-social}"
+  spec="${spec#clawhub:}"
+  spec="${spec##*/}"
+  spec="${spec%%@*}"
+  echo "$spec"
+}
+
+
+clawlink_plugin_id() {
+  echo "clawlink-plugin"
+}
+
+
+clawlink_tool_names() {
+  cat <<'EOF'
+clawlink_begin_pairing
+clawlink_get_pairing_status
+clawlink_start_connection
+clawlink_get_connection_status
+clawlink_list_integrations
+clawlink_list_tools
+clawlink_search_tools
+clawlink_describe_tool
+clawlink_preview_tool
+clawlink_call_tool
+EOF
+}
+
+
+linkedin_skill_installed_in_container() {
+  local container="$1"
+  local slug
+  slug="$(linkedin_skill_slug)"
+  podman exec "$container" sh -c "test -f /home/node/.openclaw/workspace/skills/${slug}/SKILL.md" 2>/dev/null
+}
+
+
+clawlink_plugin_installed_in_container() {
+  local container="$1"
+  podman exec "$container" sh -c "test -f /home/node/.openclaw/extensions/clawlink-plugin/openclaw.plugin.json" 2>/dev/null
+}
+
+
+_patch_linkedin_openclaw_json() {
+  local config_path="$1"
+  local slug plugin_id
+  slug="$(linkedin_skill_slug)"
+  plugin_id="$(clawlink_plugin_id)"
+  python3 - "$config_path" "$slug" "$plugin_id" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug, plugin_id = sys.argv[2], sys.argv[3]
+if not path.is_file():
+    raise SystemExit(0)
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+if plugins.get(plugin_id, {}).get("enabled") is not True:
+    plugins[plugin_id] = {"enabled": True}
+    changed = True
+
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+if skills.get(slug, {}).get("enabled") is not True:
+    skills[slug] = {"enabled": True}
+    changed = True
+
+tools = data.setdefault("tools", {})
+# Do not append clawlink tool names onto tools.allow (hard allowlists strip MCP tools).
+if "alsoAllow" in tools:
+    del tools["alsoAllow"]
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+
+_patch_linkedin_openclaw_json_in_container() {
+  local container="$1"
+  local slug plugin_id
+  slug="$(linkedin_skill_slug)"
+  plugin_id="$(clawlink_plugin_id)"
+  podman exec -i "$container" python3 - "$slug" "$plugin_id" <<'PY'
+import json, sys
+from pathlib import Path
+
+slug, plugin_id = sys.argv[1], sys.argv[2]
+path = Path("/home/node/.openclaw/openclaw.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+plugins = data.setdefault("plugins", {}).setdefault("entries", {})
+if plugins.get(plugin_id, {}).get("enabled") is not True:
+    plugins[plugin_id] = {"enabled": True}
+    changed = True
+
+skills = data.setdefault("skills", {}).setdefault("entries", {})
+if skills.get(slug, {}).get("enabled") is not True:
+    skills[slug] = {"enabled": True}
+    changed = True
+
+tools = data.setdefault("tools", {})
+# Do not append clawlink tool names onto tools.allow (hard allowlists strip MCP tools).
+if "alsoAllow" in tools:
+    del tools["alsoAllow"]
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+
+write_agent_linkedin_doc() {
+  local config_dir="$1"
+  local slug plugin_id
+  slug="$(linkedin_skill_slug)"
+  plugin_id="$(clawlink_plugin_id)"
+  mkdir -p "$config_dir/workspace/linkedin"
+  cat >"$config_dir/workspace/LINKEDIN.md" <<EOF
+# LinkedIn (ClawLink)
+
+Post and manage LinkedIn via the **\`${slug}\`** ClawHub skill + **ClawLink** OAuth — no LinkedIn API keys in chat.
+
+- **Skill:** [linkedin-social](https://clawhub.ai/hith3sh/linkedin-social)
+- **Plugin:** \`${plugin_id}\` (ClawLink) — [claw-link.dev](https://claw-link.dev)
+- **Full guide:** \`workspace/skills/${slug}/SKILL.md\`
+
+## First step on any LinkedIn task
+
+1. Read this file and \`workspace/skills/${slug}/SKILL.md\`.
+2. Use ClawLink tools (not \`message\`, not browser password login).
+3. Confirm writes with the user before posting.
+
+## Setup (one-time)
+
+1. \`clawlink_list_integrations\` — check LinkedIn is connected
+2. If not paired: \`clawlink_begin_pairing\` → follow pairing flow
+3. Connect LinkedIn: send operator to [claw-link.dev/dashboard?add=linkedin](https://claw-link.dev/dashboard?add=linkedin)
+4. Verify: \`clawlink_list_tools --integration linkedin\`
+
+## Post to LinkedIn
+
+\`\`\`bash
+clawlink_call_tool --tool "linkedin_create_linked_in_post" --params '{"text": "Your post text"}'
+\`\`\`
+
+For unfamiliar tools: \`clawlink_describe_tool\` → \`clawlink_preview_tool\` (writes) → \`clawlink_call_tool\`.
+
+## Read profile
+
+\`\`\`bash
+clawlink_call_tool --tool "linkedin_get_my_info" --params '{}'
+\`\`\`
+
+Track published posts in \`workspace/linkedin/posts/\`.
+EOF
+  chmod 644 "$config_dir/workspace/LINKEDIN.md"
+  write_linkedin_workspace_guidance "$config_dir"
+}
+
+
+write_linkedin_workspace_guidance() {
+  local config_dir="$1"
+  local slug agent_id
+  slug="$(linkedin_skill_slug)"
+  agent_id="$(basename "$config_dir")"
+  local tools="$config_dir/workspace/TOOLS.md"
+  local agents="$config_dir/workspace/AGENTS.md"
+  [[ -f "$tools" ]] || return 0
+  python3 - "$tools" "$slug" "$agent_id" <<'PY'
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug, agent_id = sys.argv[2], sys.argv[3]
+block = f"""
+## LinkedIn ({agent_id})
+
+- **Post on LinkedIn:** `{slug}` + ClawLink (`clawlink-plugin`) — read **`LINKEDIN.md`**
+- **Connect:** https://claw-link.dev/dashboard?add=linkedin (OAuth, no API keys in chat)
+- **Post:** `clawlink_call_tool --tool "linkedin_create_linked_in_post" --params '{{"text": "…"}}'`
+- Confirm with user before writes (see skill guardrails).
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## LinkedIn[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+  [[ -f "$agents" ]] || return 0
+  python3 - "$agents" "$slug" <<'PY'
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug = sys.argv[2]
+block = f"""
+## LinkedIn
+
+- You **can** post on LinkedIn via **`{slug}`** + ClawLink tools — read **`LINKEDIN.md`** first.
+- Use \`clawlink_list_integrations\`, \`clawlink_call_tool\`, etc. — not browser login.
+- If LinkedIn is not connected, send the operator to https://claw-link.dev/dashboard?add=linkedin
+- Confirm before write actions (posts, comments, deletes).
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## LinkedIn[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
+
+_write_agent_linkedin_doc_in_container() {
+  local container="$1"
+  local slug plugin_id
+  slug="$(linkedin_skill_slug)"
+  plugin_id="$(clawlink_plugin_id)"
+  podman exec -i "$container" python3 - "$slug" "$plugin_id" <<'PY'
+import os, sys
+slug, plugin_id = sys.argv[1], sys.argv[2]
+workspace = "/home/node/.openclaw/workspace"
+os.makedirs(os.path.join(workspace, "linkedin"), exist_ok=True)
+content = f"""# LinkedIn (ClawLink)
+
+Post and manage LinkedIn via the **`{slug}`** ClawHub skill + **ClawLink** OAuth — no LinkedIn API keys in chat.
+
+- **Skill:** [linkedin-social](https://clawhub.ai/hith3sh/linkedin-social)
+- **Plugin:** `{plugin_id}` (ClawLink) — [claw-link.dev](https://claw-link.dev)
+- **Full guide:** `workspace/skills/{slug}/SKILL.md`
+
+## First step on any LinkedIn task
+
+1. Read this file and `workspace/skills/{slug}/SKILL.md`.
+2. Use ClawLink tools (not `message`, not browser password login).
+3. Confirm writes with the user before posting.
+
+## Setup (one-time)
+
+1. `clawlink_list_integrations` — check LinkedIn is connected
+2. If not paired: `clawlink_begin_pairing` → follow pairing flow
+3. Connect LinkedIn: send operator to https://claw-link.dev/dashboard?add=linkedin
+4. Verify: `clawlink_list_tools --integration linkedin`
+
+## Post to LinkedIn
+
+```bash
+clawlink_call_tool --tool "linkedin_create_linked_in_post" --params '{{"text": "Your post text"}}'
+```
+
+For unfamiliar tools: `clawlink_describe_tool` → `clawlink_preview_tool` (writes) → `clawlink_call_tool`.
+
+## Read profile
+
+```bash
+clawlink_call_tool --tool "linkedin_get_my_info" --params '{{}}'
+```
+
+Track published posts in `workspace/linkedin/posts/`.
+"""
+path = os.path.join(workspace, "LINKEDIN.md")
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+os.chmod(path, 0o644)
+PY
+  _write_linkedin_workspace_guidance_in_container "$container"
+}
+
+
+_write_linkedin_workspace_guidance_in_container() {
+  local container="$1"
+  local slug agent_id
+  slug="$(linkedin_skill_slug)"
+  agent_id="${container#openclaw-}"
+  podman exec -i "$container" python3 - "$slug" "$agent_id" <<'PY'
+import os, re, sys
+slug, agent_id = sys.argv[1], sys.argv[2]
+workspace = "/home/node/.openclaw/workspace"
+tools_path = os.path.join(workspace, "TOOLS.md")
+agents_path = os.path.join(workspace, "AGENTS.md")
+tools_block = f"""
+## LinkedIn ({agent_id})
+
+- **Post on LinkedIn:** `{slug}` + ClawLink (`clawlink-plugin`) — read **`LINKEDIN.md`**
+- **Connect:** https://claw-link.dev/dashboard?add=linkedin (OAuth, no API keys in chat)
+- **Post:** `clawlink_call_tool --tool "linkedin_create_linked_in_post" --params '{{"text": "…"}}'`
+- Confirm with user before writes (see skill guardrails).
+"""
+agents_block = f"""
+## LinkedIn
+
+- You **can** post on LinkedIn via **`{slug}`** + ClawLink tools — read **`LINKEDIN.md`** first.
+- Use `clawlink_list_integrations`, `clawlink_call_tool`, etc. — not browser login.
+- If LinkedIn is not connected, send the operator to https://claw-link.dev/dashboard?add=linkedin
+- Confirm before write actions (posts, comments, deletes).
+"""
+for path, block in ((tools_path, tools_block), (agents_path, agents_block)):
+    if not os.path.isfile(path):
+        continue
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    text = re.sub(r"\n## LinkedIn[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.rstrip() + block + "\n")
+PY
+}
+
+
+ensure_linkedin_clawlink_skill() {
+  local id="$1"
+  local config_dir="$2"
+  local container plugin_spec skill_spec slug
+  load_env
+  skill_spec="${IDENTYCLAW_CLAWHUB_LINKEDIN_SKILL:-}"
+  [[ -n "$skill_spec" ]] || return 0
+  slug="$(linkedin_skill_slug)"
+  plugin_spec="${IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN:-clawhub:clawlink-plugin}"
+  container="$(agent_container "$id")"
+  if [[ -f "$config_dir/openclaw.json" ]]; then
+    _patch_linkedin_openclaw_json "$config_dir/openclaw.json"
+    write_agent_linkedin_doc "$config_dir"
+  fi
+  podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
+  ensure_openclaw_cli_link "$container"
+  if ! clawlink_plugin_installed_in_container "$container"; then
+    echo "    (${id}: installing ClawLink plugin ${plugin_spec}…)" >&2
+    podman exec "$container" node /app/openclaw.mjs plugins install "$plugin_spec" >&2 || true
+  fi
+  if ! linkedin_skill_installed_in_container "$container"; then
+    echo "    (${id}: installing ClawHub LinkedIn skill ${skill_spec}…)" >&2
+    podman exec "$container" node /app/openclaw.mjs skills install "$skill_spec" >&2 \
+      || podman exec "$container" node /app/openclaw.mjs skills install "$slug" >&2 || true
+  fi
+  _patch_linkedin_openclaw_json_in_container "$container"
+  _write_agent_linkedin_doc_in_container "$container"
+}
+
+
+write_twitter_secrets() {
+  local id="$1"
+  local config_dir="$2"
+  local username="$3"
+  local password="$4"
+  [[ -n "$username" && -n "$password" ]] || { echo "empty Twitter credentials" >&2; return 1; }
+  if ! mkdir -p "$config_dir/secrets" 2>/dev/null; then
+    _write_twitter_secrets_in_container "$id" "$username" "$password"
+    return $?
+  fi
+  printf '%s' "$username" >"$config_dir/secrets/twitter.username"
+  printf '%s' "$password" >"$config_dir/secrets/twitter.password"
+  chmod 700 "$config_dir/secrets"
+  chmod 600 "$config_dir/secrets/twitter.username" "$config_dir/secrets/twitter.password"
+  sync_twitter_env "$config_dir"
+  write_agent_twitter_doc "$config_dir" "$username"
+  write_twitter_heartbeat_doc "$config_dir"
+  ensure_twitter_heartbeat_config "$config_dir"
+  ensure_twitter_clawhub_skill "$id" "$config_dir"
+}
+
+
+_write_twitter_secrets_in_container() {
+  local id="$1"
+  local username="$2"
+  local password="$3"
+  local container
+  container="$(agent_container "$id")"
+  podman ps --format '{{.Names}}' | grep -qx "$container" || {
+    echo "Cannot write Twitter secrets: no access to agent dir and ${container} is not running" >&2
+    return 1
+  }
+  podman exec -i "$container" python3 - "$username" "$password" <<'PY'
+import os, sys
+username, password = sys.argv[1], sys.argv[2]
+root = "/home/node/.openclaw"
+secrets = os.path.join(root, "secrets")
+os.makedirs(secrets, mode=0o700, exist_ok=True)
+for name, value in (("twitter.username", username), ("twitter.password", password)):
+    path = os.path.join(secrets, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(value)
+    os.chmod(path, 0o600)
+PY
+  _sync_twitter_env_in_container "$container"
+  _write_agent_twitter_doc_in_container "$container" "$username"
+  _write_twitter_heartbeat_doc_in_container "$container"
+  _ensure_twitter_heartbeat_config_in_container "$container"
+  ensure_twitter_clawhub_skill "$id" "$(agent_home "$id")"
+}
+
+
+sync_twitter_env() {
+  local config_dir="$1"
+  local user_file="$config_dir/secrets/twitter.username"
+  local pass_file="$config_dir/secrets/twitter.password"
+  local env_file="$config_dir/.env"
+  [[ -f "$user_file" && -f "$pass_file" ]] || return 0
+  local username password
+  username="$(<"$user_file")"
+  password="$(<"$pass_file")"
+  [[ -n "$username" && -n "$password" ]] || return 0
+  python3 - "$env_file" "$username" "$password" <<'PY'
+import os, sys
+path, username, password = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [
+            ln for ln in f
+            if not ln.startswith(("TWITTER_USERNAME=", "TWITTER_PASSWORD="))
+        ]
+lines.append(f"TWITTER_USERNAME={username}\n")
+lines.append(f"TWITTER_PASSWORD={password}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+
+_sync_twitter_env_in_container() {
+  local container="$1"
+  podman exec -i "$container" python3 <<'PY'
+import os
+root = "/home/node/.openclaw"
+user_file = os.path.join(root, "secrets", "twitter.username")
+pass_file = os.path.join(root, "secrets", "twitter.password")
+env_file = os.path.join(root, ".env")
+if not (os.path.isfile(user_file) and os.path.isfile(pass_file)):
+    raise SystemExit(0)
+with open(user_file, encoding="utf-8") as f:
+    username = f.read()
+with open(pass_file, encoding="utf-8") as f:
+    password = f.read()
+lines = []
+if os.path.isfile(env_file):
+    with open(env_file, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith(("TWITTER_USERNAME=", "TWITTER_PASSWORD="))]
+lines.append(f"TWITTER_USERNAME={username}\n")
+lines.append(f"TWITTER_PASSWORD={password}\n")
+with open(env_file, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(env_file, 0o600)
+PY
+}
+
+
+write_agent_twitter_doc() {
+  local config_dir="$1"
+  local username="$2"
+  local slug bird_bin agent_id
+  slug="$(twitter_clawhub_skill_slug)"
+  bird_bin="workspace/node_modules/.bin/bird"
+  agent_id="$(basename "$config_dir")"
+  mkdir -p "$config_dir/workspace/twitter"/{threads,drafts,posts}
+  cat >"$config_dir/workspace/TWITTER.md" <<EOF
+# X / Twitter (Discernible)
+
+Account: \`${username}\` — post via **bird** CLI + ClawHub skill \`${slug}\` (free — no paid API).
+
+- **Skill:** [bird-twitter](https://clawhub.ai/cyzi/bird-twitter) (\`workspace/skills/${slug}/SKILL.md\`)
+- **Session:** \`AUTH_TOKEN\` + \`CT0\` in env (\`secrets/twitter.auth_token\`, \`secrets/twitter.ct0\`)
+- **CLI:** \`${bird_bin}\` (installed in workspace via npm)
+
+## Skills and tools (read this first)
+
+- **You CAN post on X** using **\`${slug}\`** + \`exec\` + \`bird\` (not \`message\`).
+- \`message\` is Discord/Slack only — never use it for X.
+- **Do not** use browser password login to post (breaks in container). Use session cookies instead.
+- If cookies missing, ask operator to run \`./identyclaw.sh set-twitter-cookies ${agent_id}\`.
+
+## Get session cookies (one-time, Firefox)
+
+1. Log in to [x.com](https://x.com) as \`${username}\` in **Firefox**
+2. Open Developer Tools: **F12** (or **Menu → More tools → Web Developer Tools**)
+3. Open the **Storage** tab
+4. Left sidebar: **Cookies** → **https://x.com**
+5. In the table, copy the **Value** for \`auth_token\` (paste as \`AUTH_TOKEN\`)
+6. Copy the **Value** for \`ct0\` (paste as \`CT0\`)
+7. Run \`./identyclaw.sh set-twitter-cookies ${agent_id}\` and paste each value when prompted
+
+**Chrome:** DevTools → **Application** → **Cookies** → **https://x.com** — same cookie names.
+
+## Post a tweet
+
+\`\`\`bash
+${bird_bin} check
+${bird_bin} whoami
+${bird_bin} tweet "HOLA MUNDO"
+\`\`\`
+
+1. \`${bird_bin} check\` — verify \`AUTH_TOKEN\` and \`CT0\`
+2. \`${bird_bin} tweet "…"\` with the user's exact text
+3. Do not claim success until \`bird tweet\` exits 0
+
+## Read / mentions / search
+
+\`\`\`bash
+${bird_bin} mentions
+${bird_bin} home
+${bird_bin} search "query"
+\`\`\`
+
+Track posts in \`workspace/twitter/posts/\`.
+EOF
+  chmod 644 "$config_dir/workspace/TWITTER.md"
+  write_twitter_workspace_guidance "$config_dir"
+}
+
+
+write_twitter_workspace_guidance() {
+  local config_dir="$1"
+  local tools="$config_dir/workspace/TOOLS.md"
+  local agents="$config_dir/workspace/AGENTS.md"
+  local slug bird_bin agent_id
+  slug="$(twitter_clawhub_skill_slug)"
+  bird_bin="workspace/node_modules/.bin/bird"
+  agent_id="$(basename "$config_dir")"
+  [[ -f "$tools" ]] || return 0
+  python3 - "$tools" "$slug" "$bird_bin" "$agent_id" <<'PY'
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug, bird_bin, agent_id = sys.argv[2], sys.argv[3], sys.argv[4]
+block = f"""
+## X / Twitter ({agent_id})
+
+- **Post on x.com:** `{slug}` + `bird` CLI — read **`TWITTER.md`**
+- **Command:** `{bird_bin} tweet "…"`
+- **Session:** `AUTH_TOKEN` + `CT0` — `./identyclaw.sh set-twitter-cookies {agent_id}`
+- **Not for X:** `message` tool (Discord only). No paid AIsa API.
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## X / Twitter[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+  [[ -f "$agents" ]] || return 0
+  python3 - "$agents" "$slug" "$bird_bin" "$agent_id" <<'PY'
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug, bird_bin, agent_id = sys.argv[2], sys.argv[3], sys.argv[4]
+block = f"""
+## X / Twitter
+
+- You **can** post on x.com via **`{slug}`** + `{bird_bin} tweet "…"` — read **`TWITTER.md`** first.
+- Requires `AUTH_TOKEN` and `CT0` session cookies (not password login in browser).
+- If cookies missing, tell operator to run `./identyclaw.sh set-twitter-cookies {agent_id}`.
+- **Do not** use `message` for X. Never paste cookies in chat.
+"""
+text = path.read_text(encoding="utf-8") if path.is_file() else ""
+text = re.sub(r"\n## X / Twitter[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+PY
+}
+
+
+_write_agent_twitter_doc_in_container() {
+  local container="$1"
+  local username="$2"
+  local slug agent_id
+  slug="$(twitter_clawhub_skill_slug)"
+  agent_id="${container#openclaw-}"
+  podman exec -i "$container" python3 - "$username" "$slug" "$agent_id" <<'PY'
+import os, sys
+username, slug, agent_id = sys.argv[1], sys.argv[2], sys.argv[3]
+workspace = "/home/node/.openclaw/workspace"
+bird_bin = "workspace/node_modules/.bin/bird"
+for sub in ("twitter/threads", "twitter/drafts", "twitter/posts"):
+    os.makedirs(os.path.join(workspace, sub), exist_ok=True)
+content = f"""# X / Twitter (Discernible)
+
+Account: `{username}` — post via **bird** CLI + ClawHub skill `{slug}` (free — no paid API).
+
+- **Skill:** [bird-twitter](https://clawhub.ai/cyzi/bird-twitter) (`workspace/skills/{slug}/SKILL.md`)
+- **Session:** `AUTH_TOKEN` + `CT0` in env (`secrets/twitter.auth_token`, `secrets/twitter.ct0`)
+- **CLI:** `{bird_bin}` (installed in workspace via npm)
+
+## Skills and tools (read this first)
+
+- **You CAN post on X** using **`{slug}`** + `exec` + `bird` (not `message`).
+- `message` is Discord/Slack only — never use it for X.
+- **Do not** use browser password login to post (breaks in container). Use session cookies instead.
+- If cookies missing, ask operator to run `./identyclaw.sh set-twitter-cookies {agent_id}`.
+
+## Get session cookies (one-time, Firefox)
+
+1. Log in to [x.com](https://x.com) as `{username}` in **Firefox**
+2. Open Developer Tools: **F12** (or **Menu → More tools → Web Developer Tools**)
+3. Open the **Storage** tab
+4. Left sidebar: **Cookies** → **https://x.com**
+5. In the table, copy the **Value** for `auth_token` (paste as `AUTH_TOKEN`)
+6. Copy the **Value** for `ct0` (paste as `CT0`)
+7. Run `./identyclaw.sh set-twitter-cookies {agent_id}` and paste each value when prompted
+
+**Chrome:** DevTools → **Application** → **Cookies** → **https://x.com** — same cookie names.
+
+## Post a tweet
+
+```bash
+{bird_bin} check
+{bird_bin} whoami
+{bird_bin} tweet "HOLA MUNDO"
+```
+
+1. `{bird_bin} check` — verify `AUTH_TOKEN` and `CT0`
+2. `{bird_bin} tweet "…"` with the user's exact text
+3. Do not claim success until `bird tweet` exits 0
+
+## Read / mentions / search
+
+```bash
+{bird_bin} mentions
+{bird_bin} home
+{bird_bin} search "query"
+```
+
+Track posts in `workspace/twitter/posts/`.
+"""
+path = os.path.join(workspace, "TWITTER.md")
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+os.chmod(path, 0o644)
+PY
+  _write_twitter_workspace_guidance_in_container "$container"
+}
+
+
+_write_twitter_workspace_guidance_in_container() {
+  local container="$1"
+  local slug agent_id
+  slug="$(twitter_clawhub_skill_slug)"
+  agent_id="${container#openclaw-}"
+  podman exec -i "$container" python3 - "$slug" "$agent_id" <<'PY'
+import os, re, sys
+slug, agent_id = sys.argv[1], sys.argv[2]
+workspace = "/home/node/.openclaw/workspace"
+bird_bin = "workspace/node_modules/.bin/bird"
+tools_path = os.path.join(workspace, "TOOLS.md")
+agents_path = os.path.join(workspace, "AGENTS.md")
+tools_block = f"""
+## X / Twitter ({agent_id})
+
+- **Post on x.com:** `{slug}` + `bird` CLI — read **`TWITTER.md`**
+- **Command:** `{bird_bin} tweet "…"`
+- **Session:** `AUTH_TOKEN` + `CT0` — `./identyclaw.sh set-twitter-cookies {agent_id}`
+- **Not for X:** `message` tool (Discord only). No paid AIsa API.
+"""
+agents_block = f"""
+## X / Twitter
+
+- You **can** post on x.com via **`{slug}`** + `{bird_bin} tweet "…"` — read **`TWITTER.md`** first.
+- Requires `AUTH_TOKEN` and `CT0` session cookies (not password login in browser).
+- If cookies missing, tell operator to run `./identyclaw.sh set-twitter-cookies {agent_id}`.
+- **Do not** use `message` for X. Never paste cookies in chat.
+"""
+for path, block in ((tools_path, tools_block), (agents_path, agents_block)):
+    if not os.path.isfile(path):
+        continue
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    text = re.sub(r"\n## X / Twitter[^\n]*\n.*?(?=\n## |\Z)", "", text, flags=re.S)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.rstrip() + block + "\n")
+PY
+}
+
+
+_heartbeat_twitter_mentions_prompt() {
+  cat <<'EOF'
+Check X/Twitter mentions and notifications. Read workspace/TWITTER.md, run workspace/node_modules/.bin/bird check then bird mentions. Summarize anything needing a response. Draft replies in workspace/twitter/drafts/ when appropriate.
+EOF
+}
+
+
+write_twitter_heartbeat_doc() {
+  local config_dir="$1"
+  local agent_id prompt
+  agent_id="$(basename "$config_dir")"
+  prompt="$(_heartbeat_twitter_mentions_prompt)"
+  _upsert_heartbeat_task \
+    "$config_dir/workspace/HEARTBEAT.md" \
+    "twitter-mentions" "1h" "$prompt" \
+    "# X/Twitter monitoring (hourly) — follow TWITTER.md; if bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK."
+}
+
+
+_write_twitter_heartbeat_doc_in_container() {
+  local container="$1"
+  local agent_id="${container#openclaw-}" prompt
+  prompt="$(_heartbeat_twitter_mentions_prompt)"
+  _upsert_heartbeat_task_in_container \
+    "$container" \
+    "twitter-mentions" "1h" "$prompt" \
+    "# X/Twitter monitoring (hourly) — follow TWITTER.md; if bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK."
+}
+
+
+ensure_twitter_heartbeat_config() {
+  ensure_heartbeat_config "$1" "1h"
+}
+
+
+_ensure_twitter_heartbeat_config_in_container() {
+  _ensure_heartbeat_config_in_container "$1" "1h"
+}
+
+
+ensure_twitter_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local username="" password=""
+  load_env
+  if is_valid_agent_id "$id"; then
+    username="$(agent_env_value "$id" TWITTER_USERNAME "")"
+    password="$(agent_env_value "$id" TWITTER_PASSWORD "")"
+  fi
+  if [[ -n "$username" && -n "$password" ]] && [[ ! -f "$config_dir/secrets/twitter.username" ]]; then
+    write_twitter_secrets "$id" "$config_dir" "$username" "$password"
+    echo "    (${id}: Twitter credentials loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/twitter.username" ]]; then
+    sync_twitter_env "$config_dir"
+    write_agent_twitter_doc "$config_dir" "$(<"$config_dir/secrets/twitter.username")"
+    write_twitter_workspace_guidance "$config_dir"
+    write_twitter_heartbeat_doc "$config_dir"
+    ensure_twitter_heartbeat_config "$config_dir"
+  fi
+  ensure_twitter_bird_cookies_from_env "$id" "$config_dir"
+  if [[ -n "$username" || -f "$config_dir/secrets/twitter.username" || -f "$config_dir/secrets/twitter.auth_token" ]]; then
+    ensure_twitter_clawhub_skill "$id" "$config_dir"
+  fi
+  ensure_linkedin_clawlink_skill "$id" "$config_dir"
+}
+
+
+ensure_instagram_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local username="" password=""
+  load_env
+  if is_valid_agent_id "$id"; then
+    username="$(agent_env_value "$id" INSTAGRAM_USERNAME "")"
+    password="$(agent_env_value "$id" INSTAGRAM_PASSWORD "")"
+  fi
+  if [[ -n "$username" && -n "$password" ]] && [[ ! -f "$config_dir/secrets/instagram.username" ]]; then
+    write_instagram_secrets "$config_dir" "$username" "$password"
+    echo "    (${id}: Instagram credentials loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/instagram.username" ]]; then
+    sync_instagram_env "$config_dir"
+    write_agent_instagram_doc "$config_dir" "$(<"$config_dir/secrets/instagram.username")"
+  fi
+}
+
+
+write_discord_token() {
+  local config_dir="$1"
+  local token="$2"
+  [[ -n "$token" ]] || { echo "empty Discord bot token" >&2; return 1; }
+  mkdir -p "$config_dir/secrets"
+  printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN"
+  chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
+  sync_discord_env "$config_dir"
+  python3 - "$config_dir/openclaw.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.setdefault("channels", {}).setdefault("discord", {})
+if not discord.get("enabled"):
+    discord["enabled"] = True
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+# Gateway reads DISCORD_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
+
+# Gateway reads DISCORD_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
+sync_discord_env() {
+  local config_dir="$1"
+  local secret_file="$config_dir/secrets/DISCORD_BOT_TOKEN"
+  local env_file="$config_dir/.env"
+  [[ -f "$secret_file" ]] || return 0
+  local token
+  token="$(<"$secret_file")"
+  [[ -n "$token" ]] || return 0
+  python3 - "$env_file" "$token" <<'PY'
+import sys, os
+path, token = sys.argv[1], sys.argv[2]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("DISCORD_BOT_TOKEN=")]
+lines.append(f"DISCORD_BOT_TOKEN={token}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+
+write_telegram_token() {
+  local config_dir="$1"
+  local token="$2"
+  [[ -n "$token" ]] || { echo "empty Telegram bot token" >&2; return 1; }
+  mkdir -p "$config_dir/secrets"
+  printf '%s' "$token" >"$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  chmod 600 "$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  sync_telegram_env "$config_dir"
+  python3 - "$config_dir/openclaw.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+tg = data.setdefault("channels", {}).setdefault("telegram", {})
+changed = False
+if not tg.get("enabled"):
+    tg["enabled"] = True
+    changed = True
+if tg.get("tokenFile") != "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN":
+    tg["tokenFile"] = "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN"
+    changed = True
+if not tg.get("dmPolicy"):
+    tg["dmPolicy"] = "pairing"
+    changed = True
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+# Gateway reads TELEGRAM_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
+
+# Gateway reads TELEGRAM_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
+sync_telegram_env() {
+  local config_dir="$1"
+  local secret_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  local env_file="$config_dir/.env"
+  [[ -f "$secret_file" ]] || return 0
+  local token
+  token="$(<"$secret_file")"
+  [[ -n "$token" ]] || return 0
+  python3 - "$env_file" "$token" <<'PY'
+import sys, os
+path, token = sys.argv[1], sys.argv[2]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("TELEGRAM_BOT_TOKEN=")]
+lines.append(f"TELEGRAM_BOT_TOKEN={token}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
+}
+
+
+ensure_telegram_webhook_secret() {
+  local config_dir="$1"
+  local secret_file="$config_dir/secrets/TELEGRAM_WEBHOOK_SECRET"
+  if [[ -f "$secret_file" ]]; then
+    local existing
+    existing="$(tr -d '\n' <"$secret_file")"
+    [[ -n "$existing" ]] && { printf '%s' "$existing"; return 0; }
+  fi
+  mkdir -p "$config_dir/secrets"
+  local secret
+  secret="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  printf '%s' "$secret" >"$secret_file"
+  chmod 600 "$secret_file"
+  printf '%s' "$secret"
+}
+
+
+ensure_telegram_ready() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  local token_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" "$token_file" "$id" <<'PY'
+import json, sys
+from pathlib import Path
+
+path, token_file = Path(sys.argv[1]), Path(sys.argv[2])
+agent_id = sys.argv[3]
+data = json.loads(path.read_text(encoding="utf-8"))
+tg = data.get("channels", {}).get("telegram")
+if not isinstance(tg, dict):
+    raise SystemExit(0)
+
+has_token = token_file.is_file() and token_file.read_text(encoding="utf-8").strip()
+enabled = tg.get("enabled", False)
+changed = False
+
+if enabled and not has_token:
+    tg["enabled"] = False
+    changed = True
+    print(
+        f"WARNING: {agent_id}: Telegram enabled but no token — disabled until "
+        f"./identyclaw.sh set-telegram-token {agent_id}",
+        file=sys.stderr,
+    )
+elif has_token:
+    if not enabled:
+        tg["enabled"] = True
+        changed = True
+    if tg.get("tokenFile") != "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN":
+        tg["tokenFile"] = "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN"
+        changed = True
+    if not tg.get("dmPolicy"):
+        tg["dmPolicy"] = "pairing"
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+# Pod mode: advertise HTTPS /telegram-webhook and bind a unique local listener.
+# Standalone: long-poll (no public Telegram-compatible port).
+
+# Pod mode: advertise HTTPS /telegram-webhook and bind a unique local listener.
+# Standalone: long-poll (no public Telegram-compatible port).
+ensure_telegram_webhook() {
+  local id="$1"
+  local config_dir="$2"
+  local config="$config_dir/openclaw.json"
+  local token_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  [[ -f "$config" ]] || return 0
+  [[ -f "$token_file" ]] || return 0
+  local token
+  token="$(tr -d '\n' <"$token_file")"
+  [[ -n "$token" ]] || return 0
+  load_env
+  local webhook_url="" webhook_port="" secret
+  if [[ "${IDENTYCLAW_DEPLOY_MODE:-standalone}" == "pod" ]]; then
+    local base
+    base="$(agent_ingress_base_url "$id")"
+    [[ -n "$base" ]] && webhook_url="${base%/}/telegram-webhook"
+    webhook_port="$(agent_telegram_webhook_port "$id")"
+  fi
+  secret="$(ensure_telegram_webhook_secret "$config_dir")"
+  python3 - "$config" "${IDENTYCLAW_DEPLOY_MODE:-standalone}" "$webhook_url" "$webhook_port" "$secret" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+mode, webhook_url, webhook_port, secret = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+data = json.loads(path.read_text(encoding="utf-8"))
+tg = data.setdefault("channels", {}).setdefault("telegram", {})
+changed = False
+
+def set_key(key, value):
+    global changed
+    if tg.get(key) != value:
+        tg[key] = value
+        changed = True
+
+def del_key(key):
+    global changed
+    if key in tg:
+        del tg[key]
+        changed = True
+
+if mode == "pod" and webhook_url.startswith("http"):
+    set_key("webhookUrl", webhook_url)
+    set_key("webhookSecret", secret)
+    set_key("webhookPath", "/telegram-webhook")
+    set_key("webhookHost", "127.0.0.1")
+    set_key("webhookPort", int(webhook_port))
+else:
+    for key in ("webhookUrl", "webhookSecret", "webhookPath", "webhookHost", "webhookPort"):
+        del_key(key)
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
+
+ensure_telegram_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local token=""
+  load_env
+  if is_valid_agent_id "$id"; then
+    token="$(agent_env_value "$id" TELEGRAM_BOT_TOKEN "")"
+  fi
+  if [[ -n "$token" && ! -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    write_telegram_token "$config_dir" "$token"
+    echo "    (${id}: Telegram bot token loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    sync_telegram_env "$config_dir"
+  fi
+  ensure_telegram_ready "$id" "$config_dir"
+  ensure_telegram_webhook "$id" "$config_dir"
+}
+
+
+ensure_discord_secrets_from_env() {
+  local id="$1"
+  local config_dir="$2"
+  local token=""
+  load_env
+  if is_valid_agent_id "$id"; then
+    token="$(agent_env_value "$id" DISCORD_BOT_TOKEN "")"
+  fi
+  if [[ -n "$token" && ! -f "$config_dir/secrets/DISCORD_BOT_TOKEN" ]]; then
+    write_discord_token "$config_dir" "$token"
+    echo "    (${id}: Discord bot token loaded from env.local → secrets/)" >&2
+  elif [[ -f "$config_dir/secrets/DISCORD_BOT_TOKEN" ]]; then
+    sync_discord_env "$config_dir"
+  fi
+}
+
+# Let peer agents reach the other gateway when a bot message @mentions them.
+# Keep rootless agents running after logout (linger) and across reboot (podman-restart).
+
+
+ensure_discord_allow_bots_mentions() {
+  local config_dir="$1"
+  local config="$config_dir/openclaw.json"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+discord = data.get("channels", {}).get("discord")
+if not isinstance(discord, dict) or not discord.get("enabled"):
+    raise SystemExit(0)
+if discord.get("allowBots") == "mentions":
+    raise SystemExit(0)
+data.setdefault("channels", {}).setdefault("discord", {})["allowBots"] = "mentions"
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+}
