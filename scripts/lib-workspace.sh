@@ -175,71 +175,9 @@ _himalaya_workspace_skill_markdown() {
   local email="$1"
   local display_name="$2"
   local agent_id="$3"
-  cat <<EOF
----
-name: himalaya
-description: "Migadu/Himalaya email for this Concierge deployment — list, read, reply via workspace scripts."
----
-
-# Email (IdentyClaw Concierge — ${agent_id})
-
-**This overrides the generic Himalaya skill.** Mail is pre-configured — do **not** run \`himalaya account configure\`.
-
-Read **\`EMAIL.md\`** and **\`AGENTS.md\` → Inbound email (concierge)** before any inbox task.
-
-## List inbox (helpers include sender email addresses)
-
-\`\`\`bash
-sh scripts/himalaya-inbox.sh 10
-\`\`\`
-
-Output columns: \`ID\`, sender **email address**, name, subject, date.
-
-**Never** use plain \`himalaya envelope list\` without \`--output json\` — the default table shows names only, not addresses.
-
-## Read message
-
-\`\`\`bash
-sh scripts/himalaya-read.sh <ID>
-\`\`\`
-
-The \`From:\` header has the reply address.
-
-## Reply (concierge duty — send, do not summarize internally)
-
-When the operator asks you to check/reply to inbox mail, **that is approval**. Periodic
-check requests (hourly, etc.) are **standing approval** — enable the \`inbox-check\` task in
-\`workspace/HEARTBEAT.md\` and set \`openclaw.json\` heartbeat interval per **EMAIL.md**.
-
-For each in-scope message:
-
-1. \`sh scripts/himalaya-inbox.sh 10\`
-2. \`sh scripts/himalaya-read.sh <ID>\`
-3. \`memory_search\` / \`identyclaw_get_resource\` for factual answers
-4. \`sh scripts/himalaya-send.sh SENDER "Re: SUBJECT" "BODY"\`
-
-**You must run step 4 and see \`Message successfully sent!\` before reporting a reply as sent.**
-
-**Never:**
-- Ask the operator for the sender's email (you have it from steps 1–2)
-- Say you will "process internally" instead of emailing the sender
-- Use \`himalaya message reply\` / \`message write\` (no \`\$EDITOR\` in this container)
-- Use \`himalaya envelope view\` (does not exist)
-
-## Send
-
-\`\`\`bash
-sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
-\`\`\`
-
-**Critical:** \`From:\` must be \`${email}\` (${display_name}). Migadu rejects other senders.
-
-## Delete
-
-\`\`\`bash
-himalaya message delete <ID>
-\`\`\`
-EOF
+  local src="${IDENTYCLAW_ROOT}/scripts/templates/workspace/skills/himalaya/SKILL.md"
+  AGENT_ID="$agent_id" EMAIL="$email" DISPLAY_NAME="$display_name" \
+    render_workspace_template "$src"
 }
 
 
@@ -1310,34 +1248,29 @@ write_calendar_tooling() {
   local container="${2:-}"
   local tpl_scripts="${IDENTYCLAW_ROOT}/scripts/templates/workspace/scripts"
   local skill_src="${IDENTYCLAW_ROOT}/scripts/templates/workspace/skills/calendar-reminders/SKILL.md"
-  local dest_scripts="$config_dir/workspace/scripts"
-  local dest_skill="$config_dir/workspace/skills/calendar-reminders"
-  local dest_doc="$config_dir/workspace/CALENDAR.md"
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  install_workspace_file "$config_dir" "scripts/calendar.sh" "$tpl_scripts/calendar.sh" 755 "$container"
+  install_workspace_file "$config_dir" "skills/calendar-reminders/SKILL.md" "$skill_src" 644 "$container"
+  write_calendar_doc "$config_dir" "$container"
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    mkdir -p "$config_dir/workspace/calendar"
+  elif _agent_container_name_running "$container"; then
+    podman exec "$container" mkdir -p /home/node/.openclaw/workspace/calendar >/dev/null 2>&1 || true
+  fi
+}
 
-  if [[ -n "$container" ]] && ! [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
-    if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-      podman exec "$container" mkdir -p /home/node/.openclaw/workspace/scripts /home/node/.openclaw/workspace/skills/calendar-reminders /home/node/.openclaw/workspace/calendar
-      [[ -f "$tpl_scripts/calendar.sh" ]] && podman cp "$tpl_scripts/calendar.sh" "$container:/home/node/.openclaw/workspace/scripts/calendar.sh" >/dev/null
-      [[ -f "$skill_src" ]] && podman cp "$skill_src" "$container:/home/node/.openclaw/workspace/skills/calendar-reminders/SKILL.md" >/dev/null
-      podman exec "$container" chmod 755 /home/node/.openclaw/workspace/scripts/calendar.sh >/dev/null 2>&1 || true
-      podman exec "$container" chmod 644 /home/node/.openclaw/workspace/skills/calendar-reminders/SKILL.md >/dev/null 2>&1 || true
-      _write_calendar_doc_in_container "$container"
-      return 0
-    fi
-    echo "    (skip calendar workspace sync — host cannot write container-owned state)" >&2
-    return 0
-  fi
 
-  mkdir -p "$dest_scripts" "$dest_skill" "$config_dir/workspace/calendar"
-  if [[ -f "$tpl_scripts/calendar.sh" ]]; then
-    cp "$tpl_scripts/calendar.sh" "$dest_scripts/calendar.sh"
-    chmod 755 "$dest_scripts/calendar.sh"
-  fi
-  if [[ -f "$skill_src" ]]; then
-    cp "$skill_src" "$dest_skill/SKILL.md"
-    chmod 644 "$dest_skill/SKILL.md"
-  fi
-  write_calendar_doc "$config_dir"
+write_calendar_doc() {
+  local config_dir="$1"
+  local container="${2:-}"
+  install_workspace_file "$config_dir" "CALENDAR.md" \
+    "${IDENTYCLAW_ROOT}/scripts/templates/workspace/CALENDAR.md" 644 "$container"
+}
+
+
+_write_calendar_doc_in_container() {
+  local container="$1"
+  write_calendar_doc "$(agent_home "${container#openclaw-}")" "$container"
 }
 
 

@@ -1153,6 +1153,64 @@ ensure_mail_secrets_from_env() {
   fi
 }
 
+# Prefer host workspace if writable; else running container. Never write both.
+agent_workspace_use_container() {
+  local config_dir="$1"
+  local container="${2:-}"
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    return 1
+  fi
+  [[ -n "$container" ]] && _agent_container_name_running "$container"
+}
+
+# Copy src onto workspace/$dest_rel (mode 644 default). Host if writable, else podman cp.
+install_workspace_file() {
+  local config_dir="$1"
+  local dest_rel="$2"
+  local src="$3"
+  local mode="${4:-644}"
+  local container="${5:-}"
+  local dest
+  [[ -f "$src" ]] || { echo "missing workspace template: ${src}" >&2; return 1; }
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null \
+    || { mkdir -p "$config_dir/workspace" 2>/dev/null && [[ -w "$config_dir/workspace" ]]; }; then
+    dest="$config_dir/workspace/$dest_rel"
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+    chmod "$mode" "$dest"
+    return 0
+  fi
+  if _agent_container_name_running "$container"; then
+    dest="/home/node/.openclaw/workspace/$dest_rel"
+    podman exec "$container" mkdir -p "$(dirname "$dest")"
+    podman cp "$src" "$container:$dest" >/dev/null
+    podman exec "$container" chmod "$mode" "$dest" >/dev/null 2>&1 || true
+    return 0
+  fi
+  echo "    (cannot install workspace/${dest_rel} — host not writable and ${container} is not running)" >&2
+  return 1
+}
+
+# Replace {{NAME}} tokens from the environment (NAME must be [A-Z][A-Z0-9_]*).
+render_workspace_template() {
+  local src="$1"
+  [[ -f "$src" ]] || { echo "missing workspace template: ${src}" >&2; return 1; }
+  python3 - "$src" <<'PY'
+import os, re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+sys.stdout.write(re.sub(r"\{\{([A-Z][A-Z0-9_]*)\}\}", lambda m: os.environ.get(m.group(1), m.group(0)), text))
+PY
+}
+
+_heartbeat_prompt_from_template() {
+  local name="$1"
+  local f="${IDENTYCLAW_ROOT}/scripts/templates/heartbeat/${name}.prompt"
+  [[ -f "$f" ]] || { echo "missing heartbeat template: ${f}" >&2; return 1; }
+  cat "$f"
+}
+
 # Domain libraries (bash resolves functions at call time).
 # shellcheck source=lib-deploy.sh
 source "${IDENTYCLAW_ROOT}/scripts/lib-deploy.sh"

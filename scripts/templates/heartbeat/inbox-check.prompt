@@ -1,0 +1,1 @@
+Read EMAIL.md. Run sh scripts/himalaya-inbox.sh 10. For each new in-scope message, read and reply per concierge rules (memory_search / identyclaw_get_resource first for factual answers). Skip IDENTYCLAW_HOLA_PROBE messages (handled deterministically). Summarize actions taken. If nothing needs attention, reply HEARTBEAT_OK.
