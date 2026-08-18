@@ -109,6 +109,36 @@ runCase("write_telegram_token enables channel via tokenFile (not botToken in jso
   }
 });
 
+runCase("write_telegram_token skips host mkdir when secrets are not writable", () => {
+  const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
+  const dir = join(app, "agents", "agent-a");
+  try {
+    writeMinimalOpenclaw(dir);
+    chmodSync(join(dir, "secrets"), 0o555);
+    chmodSync(dir, 0o555);
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `source "${repoRoot}/scripts/lib.sh"\nwrite_telegram_token "${dir}" "123456:TEST-TOKEN" openclaw-missing-test-container`,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, IDENTYCLAW_APP_DIR: app },
+      },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(
+      `${result.stderr || ""}\n${result.stdout || ""}`,
+      /not writable/,
+    );
+  } finally {
+    chmodSync(join(dir, "secrets"), 0o755);
+    chmodSync(dir, 0o755);
+    rmSync(app, { recursive: true, force: true });
+  }
+});
+
 runCase("ensure_telegram_ready disables channel when token is missing", () => {
   const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
   const dir = join(app, "agents", "agent-a");

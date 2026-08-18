@@ -200,29 +200,38 @@ cmd_set_password() {
 
 cmd_set_discord_token() {
   local id="${1:?Usage: $0 set-discord-token agent-b}"
-  local dir
+  local dir container
+  load_env
   dir="$(agent_home "$id")"
-  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  container="$(agent_container "$id")"
+  if [[ ! -d "$dir" ]] && ! _agent_container_name_running "$container"; then
+    echo "Run $0 init first" >&2
+    exit 1
+  fi
   local token
   read -r -s -p "Discord bot token for ${id}: " token
   echo
-  write_discord_token "$dir" "$token"
+  write_discord_token "$dir" "$token" "$container"
   echo "Discord token stored in ${dir}/secrets/DISCORD_BOT_TOKEN (mode 600)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
 cmd_set_telegram_token() {
   local id="${1:?Usage: $0 set-telegram-token agent-b}"
-  local dir
+  local dir container
   load_env
   dir="$(agent_home "$id")"
-  [[ -d "$dir" ]] || { echo "Run $0 init first" >&2; exit 1; }
+  container="$(agent_container "$id")"
+  if [[ ! -d "$dir" ]] && ! _agent_container_name_running "$container"; then
+    echo "Run $0 init first" >&2
+    exit 1
+  fi
   local token
   read -r -s -p "Telegram bot token for ${id}: " token
   echo
-  write_telegram_token "$dir" "$token"
-  ensure_telegram_ready "$id" "$dir"
-  ensure_telegram_webhook "$id" "$dir"
+  write_telegram_token "$dir" "$token" "$container"
+  ensure_telegram_ready "$id" "$dir" "$container"
+  ensure_telegram_webhook "$id" "$dir" "$container"
   echo "Telegram token stored in ${dir}/secrets/TELEGRAM_BOT_TOKEN (mode 600)"
   if [[ "${IDENTYCLAW_DEPLOY_MODE:-standalone}" == "pod" ]]; then
     echo "Pod webhook: POST $(agent_ingress_base_url "$id")/telegram-webhook"
