@@ -289,10 +289,11 @@ runCase("ensure_exec_allowlist retires leftover JSON inside the container even w
   assert.ok(start >= 0 && end > start, "ensure_exec_allowlist_harmless_bins body not found");
   const body = src.slice(start, end);
   assert.equal(body.includes("_retire_legacy_exec_approvals_in_container"), true);
-  assert.equal(
-    body.includes('if [[ -e "$approvals" ]] && [[ -n "$container" ]]'),
-    false,
-    "must not skip in-container retire when the host cannot stat leftover JSON",
+  assert.equal(body.includes("_retire_legacy_exec_approvals_json"), true);
+  assert.ok(
+    body.indexOf("_retire_legacy_exec_approvals_in_container") <
+      body.indexOf("_retire_legacy_exec_approvals_json"),
+    "must retire in-container before any host-path Python when a container exists",
   );
 });
 

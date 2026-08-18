@@ -1191,8 +1191,30 @@ a2a_discovered_test_candidate_token_ids() {
 
 # Process-lifetime cache: start all / restart all exclude every local token_id, so the
 # live peer map is identical across AGENT_IDS — avoid N× full GET /api/agents probes.
-_IDENTYCLAW_LIVE_API_PEERS_CACHE=""
-_IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY=""
+# Must be files: discover_live_api_peers_json_for_agent is called from $(...), which
+# is a subshell, so bash variables never survive to the next agent.
+_live_api_peers_cache_base() {
+  local dir
+  dir="$(identyclaw_app_dir)/.cache"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "${dir}/live-api-peers.$$"
+}
+
+_live_api_peers_cache_get() {
+  local cache_key="$1"
+  local base="${2:-$(_live_api_peers_cache_base)}"
+  [[ -f "${base}.key" && -f "${base}.json" ]] || return 1
+  [[ "$(cat "${base}.key" 2>/dev/null || true)" == "$cache_key" ]] || return 1
+  cat "${base}.json"
+}
+
+_live_api_peers_cache_set() {
+  local cache_key="$1"
+  local json="$2"
+  local base="${3:-$(_live_api_peers_cache_base)}"
+  printf '%s' "$cache_key" >"${base}.key"
+  printf '%s' "$json" >"${base}.json"
+}
 
 # Probe GET /api/agents, resolve /full + chain URLs, keep peers with live agent-card.
 discover_live_api_peers_json_for_agent() {
@@ -1217,10 +1239,11 @@ discover_live_api_peers_json_for_agent() {
   concurrency="${IDENTYCLAW_A2A_DISCOVER_CONCURRENCY:-12}"
   timeout_ms="${IDENTYCLAW_A2A_DISCOVER_TIMEOUT_MS:-8000}"
   cache_key="${api_base}|${concurrency}|${timeout_ms}|${exclude_args[*]}"
-  if [[ -n "$_IDENTYCLAW_LIVE_API_PEERS_CACHE" \
-    && "$_IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY" == "$cache_key" ]]; then
+  local cached=""
+  cached="$(_live_api_peers_cache_get "$cache_key" 2>/dev/null || true)"
+  if [[ -n "$cached" ]]; then
     echo "    (${id}: reusing cached API peer discovery)" >&2
-    printf '%s' "$_IDENTYCLAW_LIVE_API_PEERS_CACHE"
+    printf '%s' "$cached"
     return 0
   fi
 
@@ -1291,8 +1314,7 @@ for line in reversed(text.splitlines()):
     echo "{}"
     return 0
   }
-  _IDENTYCLAW_LIVE_API_PEERS_CACHE="$probed_json"
-  _IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY="$cache_key"
+  _live_api_peers_cache_set "$cache_key" "$probed_json"
   printf '%s' "$probed_json"
 }
 
@@ -9313,12 +9335,27 @@ chmod 600 "$root/imap.pass" "$root/smtp.pass"
 write_discord_token() {
   local config_dir="$1"
   local token="$2"
+  local container="${3:-}"
   [[ -n "$token" ]] || { echo "empty Discord bot token" >&2; return 1; }
-  mkdir -p "$config_dir/secrets"
-  printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN"
-  chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
-  sync_discord_env "$config_dir"
-  python3 - "$config_dir/openclaw.json" <<'PY'
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN"
+    chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
+  elif _agent_container_name_running "$container"; then
+    printf '%s' "$token" | podman exec -i "$container" sh -c '
+set -e
+mkdir -p /home/node/.openclaw/secrets
+chmod 700 /home/node/.openclaw/secrets
+cat >/home/node/.openclaw/secrets/DISCORD_BOT_TOKEN
+chmod 600 /home/node/.openclaw/secrets/DISCORD_BOT_TOKEN
+'
+  else
+    echo "Cannot store Discord token: host secrets/ not writable and ${container} is not running" >&2
+    echo "Run: ./identyclaw.sh restore-host-access $(agent_id_from_dir "$config_dir")" >&2
+    return 1
+  fi
+  sync_discord_env "$config_dir" "$container"
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -9358,12 +9395,27 @@ PY
 write_telegram_token() {
   local config_dir="$1"
   local token="$2"
+  local container="${3:-}"
   [[ -n "$token" ]] || { echo "empty Telegram bot token" >&2; return 1; }
-  mkdir -p "$config_dir/secrets"
-  printf '%s' "$token" >"$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  chmod 600 "$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  sync_telegram_env "$config_dir"
-  python3 - "$config_dir/openclaw.json" <<'PY'
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    printf '%s' "$token" >"$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+    chmod 600 "$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  elif _agent_container_name_running "$container"; then
+    printf '%s' "$token" | podman exec -i "$container" sh -c '
+set -e
+mkdir -p /home/node/.openclaw/secrets
+chmod 700 /home/node/.openclaw/secrets
+cat >/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN
+chmod 600 /home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN
+'
+  else
+    echo "Cannot store Telegram token: host secrets/ not writable and ${container} is not running" >&2
+    echo "Run: ./identyclaw.sh restore-host-access $(agent_id_from_dir "$config_dir")" >&2
+    return 1
+  fi
+  sync_telegram_env "$config_dir" "$container"
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -9389,13 +9441,17 @@ PY
 # Gateway reads TELEGRAM_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
 sync_telegram_env() {
   local config_dir="$1"
-  local secret_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  local env_file="$config_dir/.env"
-  [[ -f "$secret_file" ]] || return 0
-  local token
-  token="$(<"$secret_file")"
+  local container="${2:-}"
+  local token="" use_container=0 env_path
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -r "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    token="$(<"$config_dir/secrets/TELEGRAM_BOT_TOKEN")"
+  elif _agent_container_name_running "$container"; then
+    token="$(podman exec "$container" cat /home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN 2>/dev/null || true)"
+  fi
   [[ -n "$token" ]] || return 0
-  python3 - "$env_file" "$token" <<'PY'
+  IFS=$'\t' read -r use_container env_path < <(agent_env_write_context "$config_dir" "$container")
+  _agent_env_python "$config_dir" "$container" "$use_container" "$env_path" "$token" <<'PY'
 import sys, os
 path, token = sys.argv[1], sys.argv[2]
 lines = []
@@ -9861,7 +9917,10 @@ _retire_legacy_exec_approvals_json() {
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
-if not path.is_file():
+try:
+    if not path.is_file():
+        raise SystemExit(0)
+except OSError:
     raise SystemExit(0)
 retired = path.with_name(path.name + ".identyclaw-retired")
 try:
@@ -9898,18 +9957,26 @@ ensure_exec_allowlist_harmless_bins() {
     gw_port="$(agent_internal_gateway_port "$agent_id" 2>/dev/null || true)"
   fi
   gw_port="${gw_port:-18789}"
-  _retire_legacy_exec_approvals_json "$approvals"
+  # Host cannot stat container-owned agent dirs (EACCES traceback). Retire in-container.
   if [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1; then
     _retire_legacy_exec_approvals_in_container "$container"
+  else
+    _retire_legacy_exec_approvals_json "$approvals"
   fi
   [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1 || return 0
   local token=""
   token="$(podman exec "$container" python3 -c 'import json;print(json.load(open("/home/node/.openclaw/openclaw.json")).get("gateway",{}).get("auth",{}).get("token") or "")' 2>/dev/null || true)"
   [[ -n "$token" ]] || return 0
   for pattern in /usr/bin/sed /bin/sed /usr/bin/head /bin/head; do
-    podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
-      node dist/index.js approvals allowlist add --agent main "$pattern" \
-      --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 8 podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
+        node dist/index.js approvals allowlist add --agent main "$pattern" \
+        --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
+    else
+      podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
+        node dist/index.js approvals allowlist add --agent main "$pattern" \
+        --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
+    fi
   done
 }
 
