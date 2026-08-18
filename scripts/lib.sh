@@ -316,7 +316,7 @@ agent_config_use_container() {
   if [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
     return 1
   fi
-  [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"
+  [[ -n "$container" ]] && _agent_container_name_running "$container"
 }
 
 
@@ -363,7 +363,7 @@ agent_env_use_container() {
 
   # Agent state dir owned by the container user (0700) — never try host .env writes.
   if [[ ! -w "$config_dir" ]] 2>/dev/null; then
-    [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"
+    [[ -n "$container" ]] && _agent_container_name_running "$container"
     return $?
   fi
 
@@ -373,7 +373,7 @@ agent_env_use_container() {
   if [[ ! -f "$config_dir/.env" ]] 2>/dev/null && [[ -w "$config_dir" ]] 2>/dev/null; then
     return 1
   fi
-  [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"
+  [[ -n "$container" ]] && _agent_container_name_running "$container"
 }
 
 

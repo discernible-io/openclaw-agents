@@ -777,9 +777,9 @@ openclaw_agent_exec() {
   z="$(selinux_mount_suffix)"
   image="$(openclaw_agent_image)"
 
-  if [[ -n "$container" ]] && podman ps --format '{{.Names}}' | grep -qx "$container"; then
+  if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
     ensure_openclaw_cli_link "$container"
-    podman exec "$container" env OPENCLAW_STATE_DIR=/home/node/.openclaw \
+    podman exec "$container" env HOME=/home/node OPENCLAW_STATE_DIR=/home/node/.openclaw \
       node /app/openclaw.mjs "$@"
     return $?
   fi
