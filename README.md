@@ -1,6 +1,6 @@
 # Identyclaw OpenClaw (Podman)
 
-Deploy isolated [OpenClaw](https://docs.openclaw.ai) AI agent gateways with Podman — email (Himalaya), Telegram, Discord, calendar/reminders, IdentyClaw identity tools, and agent-to-agent (A2A) messaging.
+Deploy isolated [OpenClaw](https://docs.openclaw.ai) AI agent gateways with Podman — email (Himalaya), Telegram, Discord, calendar/reminders, IdentyClaw identity tools and agent-to-agent (A2A) messaging.
 
 ## Overview
 
