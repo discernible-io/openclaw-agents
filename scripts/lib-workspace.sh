@@ -1573,7 +1573,9 @@ write_inbox_heartbeat_doc() {
   local container="${3:-}"
   local prompt
   prompt="$(_heartbeat_inbox_check_prompt)"
-  apply_workspace_heartbeat_task "$config_dir" "$container"     "inbox-check" "$interval" "$prompt"     "# Inbox monitoring (periodic) — follow EMAIL.md concierge rules. If nothing needs attention, reply HEARTBEAT_OK."
+  apply_workspace_heartbeat_task "$config_dir" "$container" \
+    "inbox-check" "$interval" "$prompt" \
+    "# Inbox monitoring (periodic) — follow EMAIL.md concierge rules. If nothing needs attention, reply HEARTBEAT_OK."
 }
 
 
