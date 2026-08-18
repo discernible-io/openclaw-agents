@@ -1268,12 +1268,27 @@ ensure_instagram_secrets_from_env() {
 write_discord_token() {
   local config_dir="$1"
   local token="$2"
+  local container="${3:-}"
   [[ -n "$token" ]] || { echo "empty Discord bot token" >&2; return 1; }
-  mkdir -p "$config_dir/secrets"
-  printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN"
-  chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
-  sync_discord_env "$config_dir"
-  python3 - "$config_dir/openclaw.json" <<'PY'
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    printf '%s' "$token" >"$config_dir/secrets/DISCORD_BOT_TOKEN"
+    chmod 600 "$config_dir/secrets/DISCORD_BOT_TOKEN"
+  elif _agent_container_name_running "$container"; then
+    printf '%s' "$token" | podman exec -i "$container" sh -c '
+set -e
+mkdir -p /home/node/.openclaw/secrets
+chmod 700 /home/node/.openclaw/secrets
+cat >/home/node/.openclaw/secrets/DISCORD_BOT_TOKEN
+chmod 600 /home/node/.openclaw/secrets/DISCORD_BOT_TOKEN
+'
+  else
+    echo "Cannot store Discord token: host secrets/ not writable and ${container} is not running" >&2
+    echo "Run: ./identyclaw.sh restore-host-access $(agent_id_from_dir "$config_dir")" >&2
+    return 1
+  fi
+  sync_discord_env "$config_dir" "$container"
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -1287,18 +1302,22 @@ if not discord.get("enabled"):
 PY
 }
 
-# Gateway reads DISCORD_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
 
 # Gateway reads DISCORD_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
+
 sync_discord_env() {
   local config_dir="$1"
-  local secret_file="$config_dir/secrets/DISCORD_BOT_TOKEN"
-  local env_file="$config_dir/.env"
-  [[ -f "$secret_file" ]] || return 0
-  local token
-  token="$(<"$secret_file")"
+  local container="${2:-}"
+  local token="" use_container=0 env_path
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -r "$config_dir/secrets/DISCORD_BOT_TOKEN" ]]; then
+    token="$(<"$config_dir/secrets/DISCORD_BOT_TOKEN")"
+  elif _agent_container_name_running "$container"; then
+    token="$(podman exec "$container" cat /home/node/.openclaw/secrets/DISCORD_BOT_TOKEN 2>/dev/null || true)"
+  fi
   [[ -n "$token" ]] || return 0
-  python3 - "$env_file" "$token" <<'PY'
+  IFS=$'\t' read -r use_container env_path < <(agent_env_write_context "$config_dir" "$container")
+  _agent_env_python "$config_dir" "$container" "$use_container" "$env_path" "$token" <<'PY'
 import sys, os
 path, token = sys.argv[1], sys.argv[2]
 lines = []
@@ -1316,12 +1335,27 @@ PY
 write_telegram_token() {
   local config_dir="$1"
   local token="$2"
+  local container="${3:-}"
   [[ -n "$token" ]] || { echo "empty Telegram bot token" >&2; return 1; }
-  mkdir -p "$config_dir/secrets"
-  printf '%s' "$token" >"$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  chmod 600 "$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  sync_telegram_env "$config_dir"
-  python3 - "$config_dir/openclaw.json" <<'PY'
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    printf '%s' "$token" >"$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+    chmod 600 "$config_dir/secrets/TELEGRAM_BOT_TOKEN"
+  elif _agent_container_name_running "$container"; then
+    printf '%s' "$token" | podman exec -i "$container" sh -c '
+set -e
+mkdir -p /home/node/.openclaw/secrets
+chmod 700 /home/node/.openclaw/secrets
+cat >/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN
+chmod 600 /home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN
+'
+  else
+    echo "Cannot store Telegram token: host secrets/ not writable and ${container} is not running" >&2
+    echo "Run: ./identyclaw.sh restore-host-access $(agent_id_from_dir "$config_dir")" >&2
+    return 1
+  fi
+  sync_telegram_env "$config_dir" "$container"
+  _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -1344,18 +1378,22 @@ if changed:
 PY
 }
 
-# Gateway reads TELEGRAM_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
 
 # Gateway reads TELEGRAM_BOT_TOKEN from --env-file; keep .env in sync with secrets/.
+
 sync_telegram_env() {
   local config_dir="$1"
-  local secret_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  local env_file="$config_dir/.env"
-  [[ -f "$secret_file" ]] || return 0
-  local token
-  token="$(<"$secret_file")"
+  local container="${2:-}"
+  local token="" use_container=0 env_path
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -r "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    token="$(<"$config_dir/secrets/TELEGRAM_BOT_TOKEN")"
+  elif _agent_container_name_running "$container"; then
+    token="$(podman exec "$container" cat /home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN 2>/dev/null || true)"
+  fi
   [[ -n "$token" ]] || return 0
-  python3 - "$env_file" "$token" <<'PY'
+  IFS=$'\t' read -r use_container env_path < <(agent_env_write_context "$config_dir" "$container")
+  _agent_env_python "$config_dir" "$container" "$use_container" "$env_path" "$token" <<'PY'
 import sys, os
 path, token = sys.argv[1], sys.argv[2]
 lines = []
@@ -1372,17 +1410,33 @@ PY
 
 ensure_telegram_webhook_secret() {
   local config_dir="$1"
+  local container="${2:-}"
   local secret_file="$config_dir/secrets/TELEGRAM_WEBHOOK_SECRET"
-  if [[ -f "$secret_file" ]]; then
-    local existing
+  local existing="" secret
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -r "$secret_file" ]]; then
     existing="$(tr -d '\n' <"$secret_file")"
     [[ -n "$existing" ]] && { printf '%s' "$existing"; return 0; }
+  elif _agent_container_name_running "$container"; then
+    existing="$(podman exec "$container" sh -c 'tr -d "\n" < /home/node/.openclaw/secrets/TELEGRAM_WEBHOOK_SECRET 2>/dev/null' || true)"
+    [[ -n "$existing" ]] && { printf '%s' "$existing"; return 0; }
   fi
-  mkdir -p "$config_dir/secrets"
-  local secret
   secret="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
-  printf '%s' "$secret" >"$secret_file"
-  chmod 600 "$secret_file"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    printf '%s' "$secret" >"$secret_file"
+    chmod 600 "$secret_file"
+  elif _agent_container_name_running "$container"; then
+    printf '%s' "$secret" | podman exec -i "$container" sh -c '
+set -e
+mkdir -p /home/node/.openclaw/secrets
+chmod 700 /home/node/.openclaw/secrets
+cat >/home/node/.openclaw/secrets/TELEGRAM_WEBHOOK_SECRET
+chmod 600 /home/node/.openclaw/secrets/TELEGRAM_WEBHOOK_SECRET
+'
+  else
+    echo "Cannot store Telegram webhook secret: host secrets/ not writable and ${container} is not running" >&2
+    return 1
+  fi
   printf '%s' "$secret"
 }
 
@@ -1390,21 +1444,29 @@ ensure_telegram_webhook_secret() {
 ensure_telegram_ready() {
   local id="$1"
   local config_dir="$2"
-  local config="$config_dir/openclaw.json"
-  local token_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  [[ -f "$config" ]] || return 0
-  python3 - "$config" "$token_file" "$id" <<'PY'
+  local container="${3:-}"
+  local has_token=0
+  [[ -n "$container" ]] || container="$(agent_container "$id")"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  if [[ -r "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]] \
+    && [[ -s "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    has_token=1
+  elif _agent_container_name_running "$container" \
+    && podman exec "$container" test -s /home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN 2>/dev/null; then
+    has_token=1
+  fi
+  _agent_openclaw_json_python "$config_dir" "$container" "$has_token" "$id" <<'PY'
 import json, sys
 from pathlib import Path
 
-path, token_file = Path(sys.argv[1]), Path(sys.argv[2])
+path = Path(sys.argv[1])
+has_token = sys.argv[2] == "1"
 agent_id = sys.argv[3]
 data = json.loads(path.read_text(encoding="utf-8"))
 tg = data.get("channels", {}).get("telegram")
 if not isinstance(tg, dict):
     raise SystemExit(0)
 
-has_token = token_file.is_file() and token_file.read_text(encoding="utf-8").strip()
 enabled = tg.get("enabled", False)
 changed = False
 
@@ -1433,31 +1495,33 @@ if changed:
 PY
 }
 
-# Pod mode: advertise HTTPS /telegram-webhook and bind a unique local listener.
-# Standalone: long-poll (no public Telegram-compatible port).
 
 # Pod mode: advertise HTTPS /telegram-webhook and bind a unique local listener.
 # Standalone: long-poll (no public Telegram-compatible port).
+
 ensure_telegram_webhook() {
   local id="$1"
   local config_dir="$2"
-  local config="$config_dir/openclaw.json"
-  local token_file="$config_dir/secrets/TELEGRAM_BOT_TOKEN"
-  [[ -f "$config" ]] || return 0
-  [[ -f "$token_file" ]] || return 0
-  local token
-  token="$(tr -d '\n' <"$token_file")"
+  local container="${3:-}"
+  local token="" webhook_url="" webhook_port="" secret
+  [[ -n "$container" ]] || container="$(agent_container "$id")"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  if [[ -r "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    token="$(tr -d '\n' <"$config_dir/secrets/TELEGRAM_BOT_TOKEN")"
+  elif _agent_container_name_running "$container"; then
+    token="$(podman exec "$container" sh -c 'tr -d "\n" < /home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN' 2>/dev/null || true)"
+  fi
   [[ -n "$token" ]] || return 0
   load_env
-  local webhook_url="" webhook_port="" secret
   if [[ "${IDENTYCLAW_DEPLOY_MODE:-standalone}" == "pod" ]]; then
     local base
     base="$(agent_ingress_base_url "$id")"
     [[ -n "$base" ]] && webhook_url="${base%/}/telegram-webhook"
     webhook_port="$(agent_telegram_webhook_port "$id")"
   fi
-  secret="$(ensure_telegram_webhook_secret "$config_dir")"
-  python3 - "$config" "${IDENTYCLAW_DEPLOY_MODE:-standalone}" "$webhook_url" "$webhook_port" "$secret" <<'PY'
+  secret="$(ensure_telegram_webhook_secret "$config_dir" "$container")" || return 1
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "${IDENTYCLAW_DEPLOY_MODE:-standalone}" "$webhook_url" "$webhook_port" "$secret" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -1499,19 +1563,23 @@ PY
 ensure_telegram_secrets_from_env() {
   local id="$1"
   local config_dir="$2"
+  local container
   local token=""
   load_env
+  container="$(agent_container "$id")"
   if is_valid_agent_id "$id"; then
     token="$(agent_env_value "$id" TELEGRAM_BOT_TOKEN "")"
   fi
-  if [[ -n "$token" && ! -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
-    write_telegram_token "$config_dir" "$token"
+  if [[ -n "$token" ]] && [[ ! -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
+    write_telegram_token "$config_dir" "$token" "$container"
     echo "    (${id}: Telegram bot token loaded from env.local → secrets/)" >&2
-  elif [[ -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
-    sync_telegram_env "$config_dir"
+  elif [[ -f "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]] \
+    || { _agent_container_name_running "$container" \
+      && podman exec "$container" test -s /home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN 2>/dev/null; }; then
+    sync_telegram_env "$config_dir" "$container"
   fi
-  ensure_telegram_ready "$id" "$config_dir"
-  ensure_telegram_webhook "$id" "$config_dir"
+  ensure_telegram_ready "$id" "$config_dir" "$container"
+  ensure_telegram_webhook "$id" "$config_dir" "$container"
 }
 
 
@@ -1530,6 +1598,7 @@ ensure_discord_secrets_from_env() {
     sync_discord_env "$config_dir"
   fi
 }
+
 
 # Let peer agents reach the other gateway when a bot message @mentions them.
 # Keep rootless agents running after logout (linger) and across reboot (podman-restart).

@@ -187,7 +187,7 @@ exit 1
 });
 
 runCase("recreate_pod_agent_container calls resolve_openclaw_run_image", () => {
-  const src = readFileSync(join(repoRoot, "scripts/lib.sh"), "utf8");
+  const src = readFileSync(join(repoRoot, "scripts/lib-deploy.sh"), "utf8");
   const start = src.indexOf("recreate_pod_agent_container()");
   const end = src.indexOf("start_pod_agent()");
   assert.ok(start >= 0 && end > start, "recreate_pod_agent_container body not found");

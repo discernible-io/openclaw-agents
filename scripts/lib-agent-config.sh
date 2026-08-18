@@ -493,7 +493,10 @@ _retire_legacy_exec_approvals_json() {
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
-if not path.is_file():
+try:
+    if not path.is_file():
+        raise SystemExit(0)
+except OSError:
     raise SystemExit(0)
 retired = path.with_name(path.name + ".identyclaw-retired")
 try:
@@ -534,18 +537,26 @@ ensure_exec_allowlist_harmless_bins() {
     gw_port="$(agent_internal_gateway_port "$agent_id" 2>/dev/null || true)"
   fi
   gw_port="${gw_port:-18789}"
-  _retire_legacy_exec_approvals_json "$approvals"
+  # Host cannot stat container-owned agent dirs (EACCES traceback). Retire in-container.
   if [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1; then
     _retire_legacy_exec_approvals_in_container "$container"
+  else
+    _retire_legacy_exec_approvals_json "$approvals"
   fi
   [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1 || return 0
   local token=""
   token="$(podman exec "$container" python3 -c 'import json;print(json.load(open("/home/node/.openclaw/openclaw.json")).get("gateway",{}).get("auth",{}).get("token") or "")' 2>/dev/null || true)"
   [[ -n "$token" ]] || return 0
   for pattern in /usr/bin/sed /bin/sed /usr/bin/head /bin/head; do
-    podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
-      node dist/index.js approvals allowlist add --agent main "$pattern" \
-      --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 8 podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
+        node dist/index.js approvals allowlist add --agent main "$pattern" \
+        --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
+    else
+      podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
+        node dist/index.js approvals allowlist add --agent main "$pattern" \
+        --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
+    fi
   done
 }
 

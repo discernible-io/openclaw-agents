@@ -81,13 +81,6 @@ a2a_discovered_test_candidate_token_ids() {
   a2a_merged_remote_peer_token_ids
 }
 
-# Process-lifetime cache: start all / restart all exclude every local token_id, so the
-# live peer map is identical across AGENT_IDS — avoid N× full GET /api/agents probes.
-_IDENTYCLAW_LIVE_API_PEERS_CACHE=""
-_IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY=""
-
-# Probe GET /api/agents, resolve /full + chain URLs, keep peers with live agent-card.
-
 # Agents in AGENT_IDS missing secrets/imap.pass (blocks test-mail and email HOLA).
 constitution_agents_missing_mail_password() {
   local id out="" dir container

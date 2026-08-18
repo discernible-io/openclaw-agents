@@ -313,7 +313,7 @@ runCase("container-entrypoint retires leftover exec-approvals.json before the ga
 });
 
 runCase("ensure_exec_allowlist retires leftover JSON inside the container even when the host cannot see it", () => {
-  const src = readFileSync(join(repoRoot, "scripts/lib.sh"), "utf8");
+  const src = readFileSync(join(repoRoot, "scripts/lib-agent-config.sh"), "utf8");
   const start = src.indexOf("ensure_exec_allowlist_harmless_bins()");
   const end = src.indexOf("retire_legacy_exec_approvals_one()");
   assert.ok(start >= 0 && end > start, "ensure_exec_allowlist_harmless_bins body not found");

@@ -360,6 +360,32 @@ local_cross_agent_peer_token_ids() {
 
 # First running cross-agent on this host with a resolvable ingress base (webhooks 0.1.5 path).
 
+# File cache (not bash vars): start/restart all exclude every local token_id, so the
+# live peer map is identical across AGENT_IDS — avoid N× GET /api/agents. Vars are
+# lost inside $(...) subshells; files under identyclaw_app_dir/.cache survive them.
+_live_api_peers_cache_base() {
+  local dir
+  dir="$(identyclaw_app_dir)/.cache"
+  mkdir -p "$dir" 2>/dev/null || true
+  printf '%s' "${dir}/live-api-peers.$$"
+}
+
+_live_api_peers_cache_get() {
+  local cache_key="$1"
+  local base="${2:-$(_live_api_peers_cache_base)}"
+  [[ -f "${base}.key" && -f "${base}.json" ]] || return 1
+  [[ "$(cat "${base}.key" 2>/dev/null || true)" == "$cache_key" ]] || return 1
+  cat "${base}.json"
+}
+
+_live_api_peers_cache_set() {
+  local cache_key="$1"
+  local json="$2"
+  local base="${3:-$(_live_api_peers_cache_base)}"
+  printf '%s' "$cache_key" >"${base}.key"
+  printf '%s' "$json" >"${base}.json"
+}
+
 # Probe GET /api/agents, resolve /full + chain URLs, keep peers with live agent-card.
 discover_live_api_peers_json_for_agent() {
   local id="$1"
@@ -383,10 +409,11 @@ discover_live_api_peers_json_for_agent() {
   concurrency="${IDENTYCLAW_A2A_DISCOVER_CONCURRENCY:-12}"
   timeout_ms="${IDENTYCLAW_A2A_DISCOVER_TIMEOUT_MS:-8000}"
   cache_key="${api_base}|${concurrency}|${timeout_ms}|${exclude_args[*]}"
-  if [[ -n "$_IDENTYCLAW_LIVE_API_PEERS_CACHE" \
-    && "$_IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY" == "$cache_key" ]]; then
+  local cached=""
+  cached="$(_live_api_peers_cache_get "$cache_key" 2>/dev/null || true)"
+  if [[ -n "$cached" ]]; then
     echo "    (${id}: reusing cached API peer discovery)" >&2
-    printf '%s' "$_IDENTYCLAW_LIVE_API_PEERS_CACHE"
+    printf '%s' "$cached"
     return 0
   fi
 
@@ -457,8 +484,7 @@ for line in reversed(text.splitlines()):
     echo "{}"
     return 0
   }
-  _IDENTYCLAW_LIVE_API_PEERS_CACHE="$probed_json"
-  _IDENTYCLAW_LIVE_API_PEERS_CACHE_KEY="$cache_key"
+  _live_api_peers_cache_set "$cache_key" "$probed_json"
   printf '%s' "$probed_json"
 }
 

@@ -432,7 +432,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|fix-session-images|retire-exec-approvals|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|fix-session-images|retire-exec-approvals|set-telegram-token|set-discord-token|set-password|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
