@@ -196,5 +196,22 @@ runCase("recreate_pod_agent_container calls resolve_openclaw_run_image", () => {
   assert.equal(body.includes("No OpenClaw image configured"), false);
 });
 
+runCase("API peer discovery cache survives command substitution subshells", () => {
+  const out = bashLib(
+    `base="$(mktemp -u "${TMPDIR:-/tmp}/oc-peers-XXXXXX")"
+_live_api_peers_cache_set "k1" '{"peer":1}' "$base"
+got="$( _live_api_peers_cache_get "k1" "$base" )"
+miss="$( _live_api_peers_cache_get "k2" "$base" || true )"
+printf '%s|%s' "$got" "$miss"
+rm -f "${base}.key" "${base}.json"`,
+    {
+      fakePodman: `#!/usr/bin/env bash
+exit 0
+`,
+    },
+  );
+  assert.equal(out.stdout, '{"peer":1}|');
+});
+
 tally.printSummary("Summary");
 process.exit(tally.exitCode());

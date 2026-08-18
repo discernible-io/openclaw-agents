@@ -109,6 +109,36 @@ runCase("write_telegram_token enables channel via tokenFile (not botToken in jso
   }
 });
 
+runCase("write_telegram_token skips host mkdir when secrets are not writable", () => {
+  const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
+  const dir = join(app, "agents", "agent-a");
+  try {
+    writeMinimalOpenclaw(dir);
+    chmodSync(join(dir, "secrets"), 0o555);
+    chmodSync(dir, 0o555);
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `source "${repoRoot}/scripts/lib.sh"\nwrite_telegram_token "${dir}" "123456:TEST-TOKEN" openclaw-missing-test-container`,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, IDENTYCLAW_APP_DIR: app },
+      },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(
+      `${result.stderr || ""}\n${result.stdout || ""}`,
+      /not writable/,
+    );
+  } finally {
+    chmodSync(join(dir, "secrets"), 0o755);
+    chmodSync(dir, 0o755);
+    rmSync(app, { recursive: true, force: true });
+  }
+});
+
 runCase("ensure_telegram_ready disables channel when token is missing", () => {
   const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
   const dir = join(app, "agents", "agent-a");
@@ -289,10 +319,11 @@ runCase("ensure_exec_allowlist retires leftover JSON inside the container even w
   assert.ok(start >= 0 && end > start, "ensure_exec_allowlist_harmless_bins body not found");
   const body = src.slice(start, end);
   assert.equal(body.includes("_retire_legacy_exec_approvals_in_container"), true);
-  assert.equal(
-    body.includes('if [[ -e "$approvals" ]] && [[ -n "$container" ]]'),
-    false,
-    "must not skip in-container retire when the host cannot stat leftover JSON",
+  assert.equal(body.includes("_retire_legacy_exec_approvals_json"), true);
+  assert.ok(
+    body.indexOf("_retire_legacy_exec_approvals_in_container") <
+      body.indexOf("_retire_legacy_exec_approvals_json"),
+    "must retire in-container before any host-path Python when a container exists",
   );
 });
 
