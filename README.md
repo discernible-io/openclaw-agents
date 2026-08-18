@@ -35,8 +35,8 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.7.1-2-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, federated API sessions, generic `identyclaw_request` |
-| **A2A** | **identyclaw-a2a** @0.4.10 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
-| **Webhooks** | **identyclaw-webhooks** @0.1.9 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
+| **A2A** | **identyclaw-a2a** @0.4.12 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
+| **Webhooks** | **identyclaw-webhooks** @0.1.10 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); optional `GET /api/agents` seeding (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` or `./identyclaw.sh discover-a2a-peers`) |
 | **Channels** | Discord (`@openclaw/discord`, bundled); Telegram (OpenClaw core channel). Tokens via `set-discord-token` / `set-telegram-token`. Optional Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
 | **Calendar** | Local `calendar-reminders` skill + `scripts/calendar.sh` (workspace JSON). Precise alerts use OpenClaw **automations** (`cron`); heartbeat sweeps upcoming events. Optional Google Calendar via ClawLink |
@@ -610,9 +610,9 @@ IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1   # dynamic outbound + inbound JWT learn
 Pin and install plugins (defaults in `env.example`):
 
 ```bash
-IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.11
-IDENTYCLAW_CLAWHUB_PLUGIN=git:github.com/discernible-io/openclaw-identyclaw-plugin@main
-IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.9
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.12
+IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.9.1
+IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.10
 ```
 
 Each agent's own public base can come from Passport `metadata.webhook_url` when `IDENTYCLAW_RODIT_SELF_CONFIGURE=1` (default).
