@@ -1274,76 +1274,6 @@ _write_calendar_doc_in_container() {
 }
 
 
-write_calendar_doc() {
-  local config_dir="$1"
-  mkdir -p "$config_dir/workspace"
-  cat >"$config_dir/workspace/CALENDAR.md" <<'EOF'
-# Calendar and reminders
-
-Events live in `workspace/calendar/events.json` (local JSON — no Google login required).
-Precise alerts use OpenClaw **automations** (`cron` tool). Heartbeat only sweeps the next day.
-
-## Operator setup
-
-```bash
-./identyclaw.sh set-telegram-token <agent-id>   # optional delivery channel
-./identyclaw.sh set-discord-token <agent-id>    # optional delivery channel
-./identyclaw.sh enable-calendar-check <agent-id> 30m
-./identyclaw.sh restart <agent-id>
-```
-
-## Agent SOP
-
-1. Read this file and `skills/calendar-reminders/SKILL.md`.
-2. Create/list/cancel with `sh scripts/calendar.sh …` (plain `exec`, no `elevated`).
-3. After `add`, create one automation per reminder offset and `calendar.sh set-jobs`.
-4. Deliver via Telegram or Discord when those channels are enabled; otherwise the current chat or email.
-5. On heartbeat task `calendar-upcoming`: `sh scripts/calendar.sh upcoming 24`. Empty → `HEARTBEAT_OK`.
-
-Do not use `sleep` or polling loops as a reminder clock.
-
-Optional Google Calendar: only if ClawLink `googlecalendar_*` tools are installed and paired.
-EOF
-  chmod 644 "$config_dir/workspace/CALENDAR.md"
-}
-
-
-_write_calendar_doc_in_container() {
-  local container="$1"
-  podman exec "$container" python3 - <<'PY'
-from pathlib import Path
-path = Path("/home/node/.openclaw/workspace/CALENDAR.md")
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text("""# Calendar and reminders
-
-Events live in `workspace/calendar/events.json` (local JSON — no Google login required).
-Precise alerts use OpenClaw **automations** (`cron` tool). Heartbeat only sweeps the next day.
-
-## Operator setup
-
-```bash
-./identyclaw.sh set-telegram-token <agent-id>   # optional delivery channel
-./identyclaw.sh set-discord-token <agent-id>    # optional delivery channel
-./identyclaw.sh enable-calendar-check <agent-id> 30m
-./identyclaw.sh restart <agent-id>
-```
-
-## Agent SOP
-
-1. Read this file and `skills/calendar-reminders/SKILL.md`.
-2. Create/list/cancel with `sh scripts/calendar.sh …` (plain `exec`, no `elevated`).
-3. After `add`, create one automation per reminder offset and `calendar.sh set-jobs`.
-4. Deliver via Telegram or Discord when those channels are enabled; otherwise the current chat or email.
-5. On heartbeat task `calendar-upcoming`: `sh scripts/calendar.sh upcoming 24`. Empty → `HEARTBEAT_OK`.
-
-Do not use `sleep` or polling loops as a reminder clock.
-
-Optional Google Calendar: only if ClawLink `googlecalendar_*` tools are installed and paired.
-""", encoding="utf-8")
-path.chmod(0o644)
-PY
-}
-
 
 ensure_calendar_skill_enabled() {
   local config_dir="$1"
@@ -1491,24 +1421,22 @@ EOF
 
 
 _heartbeat_inbox_check_prompt() {
-  cat <<'EOF'
-Read EMAIL.md. Run sh scripts/himalaya-inbox.sh 10. For each new in-scope message, read and reply per concierge rules (memory_search / identyclaw_get_resource first for factual answers). Skip IDENTYCLAW_HOLA_PROBE messages (handled deterministically). Summarize actions taken. If nothing needs attention, reply HEARTBEAT_OK.
-EOF
+  _heartbeat_prompt_from_template inbox-check
 }
 
 
-_upsert_heartbeat_task() {
-  local heartbeat_file="$1"
-  local task_name="$2"
-  local interval="$3"
-  local prompt="$4"
-  local footer_line="${5:-}"
-  mkdir -p "$(dirname "$heartbeat_file")"
-  HEARTBEAT_TASK_NAME="$task_name" \
-  HEARTBEAT_TASK_INTERVAL="$interval" \
-  HEARTBEAT_TASK_PROMPT="$prompt" \
-  HEARTBEAT_TASK_FOOTER="$footer_line" \
-  python3 - "$heartbeat_file" <<'PY'
+
+\
+_run_heartbeat_upsert_python() {
+  local use_container="$1"
+  local container="$2"
+  local heartbeat_path="$3"
+  if [[ "$use_container" == "1" ]]; then
+    podman exec -i -e HEARTBEAT_TASK_NAME -e HEARTBEAT_TASK_INTERVAL -e HEARTBEAT_TASK_PROMPT -e HEARTBEAT_TASK_FOOTER \
+      "$container" python3 - "$heartbeat_path"
+  else
+    python3 - "$heartbeat_path"
+  fi <<'HBPY'
 import os, re, sys
 from pathlib import Path
 
@@ -1544,12 +1472,30 @@ for tname, (tint, tprompt) in tasks.items():
     out.append("")
 if footers:
     out.extend(footers)
+path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
 path.chmod(0o644)
-PY
+HBPY
 }
 
 
+_upsert_heartbeat_task() {
+  local heartbeat_file="$1"
+  local task_name="$2"
+  local interval="$3"
+  local prompt="$4"
+  local footer_line="${5:-}"
+  mkdir -p "$(dirname "$heartbeat_file")"
+  HEARTBEAT_TASK_NAME="$task_name" \
+  HEARTBEAT_TASK_INTERVAL="$interval" \
+  HEARTBEAT_TASK_PROMPT="$prompt" \
+  HEARTBEAT_TASK_FOOTER="$footer_line" \
+  _run_heartbeat_upsert_python 0 "" "$heartbeat_file"
+}
+
+
+
+\
 _upsert_heartbeat_task_in_container() {
   local container="$1"
   local task_name="$2"
@@ -1560,56 +1506,33 @@ _upsert_heartbeat_task_in_container() {
   HEARTBEAT_TASK_INTERVAL="$interval" \
   HEARTBEAT_TASK_PROMPT="$prompt" \
   HEARTBEAT_TASK_FOOTER="$footer_line" \
-  podman exec -i -e HEARTBEAT_TASK_NAME -e HEARTBEAT_TASK_INTERVAL -e HEARTBEAT_TASK_PROMPT -e HEARTBEAT_TASK_FOOTER \
-    "$container" python3 <<'PY'
-import os, re
-from pathlib import Path
+  _run_heartbeat_upsert_python 1 "$container" "/home/node/.openclaw/workspace/HEARTBEAT.md"
+}
 
-path = Path("/home/node/.openclaw/workspace/HEARTBEAT.md")
-name = os.environ["HEARTBEAT_TASK_NAME"]
-interval = os.environ["HEARTBEAT_TASK_INTERVAL"]
-prompt = os.environ["HEARTBEAT_TASK_PROMPT"]
-footer_line = os.environ.get("HEARTBEAT_TASK_FOOTER", "")
-
-content = path.read_text(encoding="utf-8") if path.is_file() else "tasks:\n\n"
-
-task_re = re.compile(
-    r"^- name: (?P<name>\S+)\n  interval: (?P<interval>\S+)\n  prompt: \"(?P<prompt>(?:[^\"\\]|\\.)*)\"\n?",
-    re.M,
-)
-tasks: dict[str, tuple[str, str]] = {}
-for m in task_re.finditer(content):
-    tasks[m.group("name")] = (m.group("interval"), m.group("prompt"))
-tasks[name] = (interval, prompt)
-
-footers: list[str] = []
-for line in content.splitlines():
-    if line.startswith("# ") and line not in footers:
-        footers.append(line)
-if footer_line and footer_line not in footers:
-    footers.append(footer_line)
-
-out = ["tasks:", ""]
-for tname, (tint, tprompt) in tasks.items():
-    out.append(f"- name: {tname}")
-    out.append(f"  interval: {tint}")
-    out.append(f'  prompt: "{tprompt}"')
-    out.append("")
-if footers:
-    out.extend(footers)
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
-path.chmod(0o644)
-PY
+# Write HEARTBEAT.md once: host workspace if writable, else running container.
+apply_workspace_heartbeat_task() {
+  local config_dir="$1"
+  local container="$2"
+  local task_name="$3"
+  local interval="$4"
+  local prompt="$5"
+  local footer="${6:-}"
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    _upsert_heartbeat_task "$config_dir/workspace/HEARTBEAT.md" "$task_name" "$interval" "$prompt" "$footer"
+  elif _agent_container_name_running "$container"; then
+    _upsert_heartbeat_task_in_container "$container" "$task_name" "$interval" "$prompt" "$footer"
+  fi
 }
 
 
+
+\
 ensure_heartbeat_config() {
   local config_dir="$1"
   local interval="${2:-1h}"
-  local config="$config_dir/openclaw.json"
-  [[ -f "$config" ]] || return 0
-  python3 - "$config" "$interval" <<'PY'
+  local container="${3:-}"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" "$interval" <<'HBPY'
 import json, sys
 from pathlib import Path
 
@@ -1635,69 +1558,40 @@ data["agents"] = agents
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
-PY
+HBPY
 }
+
 
 
 _ensure_heartbeat_config_in_container() {
   local container="$1"
   local interval="${2:-1h}"
-  podman exec -i "$container" python3 - "$interval" <<'PY'
-import json, sys
-from pathlib import Path
-
-interval = sys.argv[1]
-path = Path("/home/node/.openclaw/openclaw.json")
-data = json.loads(path.read_text(encoding="utf-8"))
-agents = data.setdefault("agents", {})
-defaults = agents.setdefault("defaults", {})
-heartbeat = defaults.setdefault("heartbeat", {})
-changed = False
-for key, value in {
-    "every": interval,
-    "target": "none",
-    "lightContext": True,
-    "isolatedSession": True,
-}.items():
-    if heartbeat.get(key) != value:
-        heartbeat[key] = value
-        changed = True
-defaults["heartbeat"] = heartbeat
-agents["defaults"] = defaults
-data["agents"] = agents
-if changed:
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    path.chmod(0o600)
-PY
+  ensure_heartbeat_config "$(agent_home "${container#openclaw-}")" "$interval" "$container"
 }
+
 
 
 write_inbox_heartbeat_doc() {
   local config_dir="$1"
   local interval="${2:-1h}"
+  local container="${3:-}"
   local prompt
   prompt="$(_heartbeat_inbox_check_prompt)"
-  _upsert_heartbeat_task \
-    "$config_dir/workspace/HEARTBEAT.md" \
-    "inbox-check" "$interval" "$prompt" \
-    "# Inbox monitoring (periodic) — follow EMAIL.md concierge rules. If nothing needs attention, reply HEARTBEAT_OK."
+  apply_workspace_heartbeat_task "$config_dir" "$container"     "inbox-check" "$interval" "$prompt"     "# Inbox monitoring (periodic) — follow EMAIL.md concierge rules. If nothing needs attention, reply HEARTBEAT_OK."
 }
+
 
 
 _write_inbox_heartbeat_doc_in_container() {
   local container="$1"
   local interval="${2:-1h}"
-  local prompt
-  prompt="$(_heartbeat_inbox_check_prompt)"
-  _upsert_heartbeat_task_in_container \
-    "$container" \
-    "inbox-check" "$interval" "$prompt" \
-    "# Inbox monitoring (periodic) — follow EMAIL.md concierge rules. If nothing needs attention, reply HEARTBEAT_OK."
+  write_inbox_heartbeat_doc "$(agent_home "${container#openclaw-}")" "$interval" "$container"
 }
 
 
+
 ensure_inbox_heartbeat_config() {
-  ensure_heartbeat_config "$1" "${2:-1h}"
+  ensure_heartbeat_config "$1" "${2:-1h}" "${3:-}"
 }
 
 
@@ -1776,15 +1670,10 @@ _apply_inbox_heartbeat() {
   local interval="$3"
   local container
   container="$(agent_container "$id")"
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    _write_inbox_heartbeat_doc_in_container "$container" "$interval"
-    _ensure_inbox_heartbeat_config_in_container "$container" "$interval"
-  fi
-  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
-    write_inbox_heartbeat_doc "$config_dir" "$interval"
-    ensure_inbox_heartbeat_config "$config_dir" "$interval"
-  fi
+  write_inbox_heartbeat_doc "$config_dir" "$interval" "$container"
+  ensure_heartbeat_config "$config_dir" "$interval" "$container"
 }
+
 
 
 ensure_inbox_heartbeat_from_env() {
@@ -1819,18 +1708,17 @@ enable_inbox_heartbeat() {
 
 
 _heartbeat_calendar_prompt() {
-  cat <<'EOF'
-Read CALENDAR.md and skills/calendar-reminders/SKILL.md. Run sh scripts/calendar.sh upcoming 24. Summarize unacked events starting soon. If none, reply HEARTBEAT_OK.
-EOF
+  _heartbeat_prompt_from_template calendar-upcoming
 }
+
 
 
 ensure_heartbeat_every_at_most() {
   local config_dir="$1"
   local interval="${2:-30m}"
-  local config="$config_dir/openclaw.json"
-  [[ -f "$config" ]] || return 0
-  python3 - "$config" "$interval" <<'PY'
+  local container="${3:-}"
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" "$interval" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -1884,14 +1772,10 @@ _apply_calendar_heartbeat() {
   local container prompt
   prompt="$(_heartbeat_calendar_prompt)"
   container="$(agent_container "$id")"
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    _upsert_heartbeat_task_in_container "$container" "calendar-upcoming" "$interval" "$prompt"
-  fi
-  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
-    _upsert_heartbeat_task "$config_dir/workspace/HEARTBEAT.md" "calendar-upcoming" "$interval" "$prompt"
-    ensure_heartbeat_every_at_most "$config_dir" "$interval"
-  fi
+  apply_workspace_heartbeat_task "$config_dir" "$container"     "calendar-upcoming" "$interval" "$prompt"
+  ensure_heartbeat_every_at_most "$config_dir" "$interval" "$container"
 }
+
 
 
 _read_calendar_heartbeat_interval() {
@@ -2133,38 +2017,32 @@ _write_slc_workspace_docs_in_container() {
 
 _heartbeat_slc_game_prompt() {
   # Single line: HEARTBEAT.md stores prompt in double quotes (no " inside).
-  # Unattended must never POST /api/game/games — solo/empty lobbies cancel and burn ~400k tokens/tick.
-  # Mechanics only — no invest/trade/AFK strategy. Deal settlement is plumbing for isolated ticks.
-  cat <<'EOF'
-ensure_session apiEndpoint https://slcapi.discernible.io:9443. Fast idle gate first: GET /api/game/games/mine then GET /api/game/games?status=lobby. NEVER create lobbies (no POST /api/game/games, no slc_create, no empty/solo lobby). Resume only an active mine game (lobby|running); join an open lobby only if agentCount>=1 already seated. If mine has nothing active and no joinable peer lobby: reply HEARTBEAT_OK immediately — do not create, do not open contests, do not refresh skill or explore further. When playing: refresh skill GET /api/game/skill.md auth false responseType text (require >= 1.20.1, api_base with :9443); ignore local SLC.md / cached synthetics-last-cradle. Mechanics only — no standing invest/trade/AFK/max-invest policy. Standing approval while armed: a2a_send_message and game-related email to living co-players; wallet create/fund/transfer/rotate stay gated. GET tasks + state + messages + trades (and inbox if concierge); load durable deal log for this gameId+turn. Peer map: players[].id = game ULID for transfers; players[].roditId = Passport for identity/A2A/email; displayName is label only. Prefer A2A if routable else email+HOLA; advertise Passport once in public message body if unknown. If negotiation_open: GET messages then reply or post (messaging only in negotiation); when you accept a this-turn outbound transfer, persist gameId+turn+toAgentId ULID+amounts to durable workspace memory before the phase ends. If submit_execution_action: reconstruct open commitments from deal log + messages + side channels + trades; if accepted this-turn outbound transfers remain unsettled, submit MUST include them (transfer or transfer_and_invest) — bare invest/none that drops agreed outbound is forbidden; then follow live skill for the rest of the explicit action body (ULID toAgentId; hide/find when actionHints require); empty tick returns action_required (not silent none). Call identyclaw_game_tick or POST /api/game/tick or .../action WITH that action body; clear settled deal-log rows after success. If waitingOn non-empty note displayNames; do not invent peer submits. On view_honors / finished / cancelled / GAME_NOT_FOUND: HEARTBEAT_OK and do not start another game. Ignore cancelled lobby IDs; never bare-GET /api/game/games/{id}. No remote slc_* MCP. Reply HEARTBEAT_OK or one-line summary. Do not loop in operator chat.
-EOF
+  _heartbeat_prompt_from_template slc-game
 }
 
 
+
+\
 write_slc_heartbeat_doc() {
   local config_dir="$1"
   local interval="${2:-10m}"
+  local container="${3:-}"
   local prompt
   prompt="$(_heartbeat_slc_game_prompt)"
   prompt="${prompt//$'\n'/ }"
-  _upsert_heartbeat_task \
-    "$config_dir/workspace/HEARTBEAT.md" \
+  apply_workspace_heartbeat_task "$config_dir" "$container" \
     "slc-game" "$interval" "$prompt" \
     "# SLC — never create lobbies; resume/join only; skill >=1.20.1; honor deal log."
 }
+
 
 
 _write_slc_heartbeat_doc_in_container() {
   local container="$1"
   local interval="${2:-10m}"
-  local prompt
-  prompt="$(_heartbeat_slc_game_prompt)"
-  prompt="${prompt//$'\n'/ }"
-  _upsert_heartbeat_task_in_container \
-    "$container" \
-    "slc-game" "$interval" "$prompt" \
-    "# SLC — never create lobbies; resume/join only; skill >=1.20.1; honor deal log."
+  write_slc_heartbeat_doc "$(agent_home "${container#openclaw-}")" "$interval" "$container"
 }
+
 
 
 ensure_slc_heartbeat_config() {
@@ -2299,18 +2177,18 @@ _apply_slc_heartbeat() {
   local interval="$3"
   local container
   container="$(agent_container "$id")"
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    _write_slc_workspace_docs_in_container "$container"
-    _write_slc_heartbeat_doc_in_container "$container" "$interval"
-    _ensure_slc_heartbeat_config_in_container "$container" "$interval"
-    prune_stale_slc_agent_crons "$id" || true
-  fi
   if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
     write_slc_workspace_docs "$config_dir"
-    write_slc_heartbeat_doc "$config_dir" "$interval"
-    ensure_slc_heartbeat_config "$config_dir" "$interval"
+  elif _agent_container_name_running "$container"; then
+    _write_slc_workspace_docs_in_container "$container"
+  fi
+  write_slc_heartbeat_doc "$config_dir" "$interval" "$container"
+  ensure_slc_heartbeat_config "$config_dir" "$interval" "$container"
+  if _agent_container_name_running "$container"; then
+    prune_stale_slc_agent_crons "$id" || true
   fi
 }
+
 
 # Install SLC KB + stub playbooks even when heartbeat is not armed (RAG / refuse stale).
 
@@ -2320,13 +2198,13 @@ ensure_slc_workspace_docs() {
   local config_dir="$2"
   local container
   container="$(agent_container "$id")"
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    _write_slc_workspace_docs_in_container "$container" || true
-  fi
   if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
     write_slc_workspace_docs "$config_dir" || true
+  elif _agent_container_name_running "$container"; then
+    _write_slc_workspace_docs_in_container "$container" || true
   fi
 }
+
 
 
 ensure_slc_heartbeat_from_env() {
@@ -2364,28 +2242,10 @@ enable_slc_heartbeat() {
 
 write_agent_browser_doc() {
   local config_dir="$1"
-  mkdir -p "$config_dir/workspace"
-  cat >"$config_dir/workspace/BROWSER.md" <<'EOF'
-# Browser tool (pod / container deploy)
-
-This gateway runs Chromium **inside the agent container** (host browser). The isolated **sandbox browser** sidecar is **not** enabled here — do not use `target="sandbox"` or `targetId="sandbox"`.
-
-## Correct usage
-
-1. Omit `target` (defaults to host) or set `target="host"`.
-2. Open: `action="open"`, `url="https://…"`, optional `label="my-tab"`.
-3. Snapshot: use `action="tabs"` first, then `action="snapshot"` with `targetId` from the tab list (e.g. `t1`) or the same `label`.
-4. Profile: default managed profile is `openclaw` (cookies under `browser/openclaw/user-data/`).
-
-## If browser times out on first use
-
-Chromium cold-start can take ~30s. Retry `open`, or run inside the container:
-
-`node /app/openclaw.mjs browser doctor`
-
-EOF
-  chmod 644 "$config_dir/workspace/BROWSER.md"
+  local container="${2:-}"
+  install_workspace_file "$config_dir" "BROWSER.md"     "${IDENTYCLAW_ROOT}/scripts/templates/workspace/BROWSER.md" 644 "$container"
 }
+
 
 # Store Migadu IMAP/SMTP password. Writes on host when secrets/ is writable;
 # otherwise falls back to the running container (pod UID ownership).
