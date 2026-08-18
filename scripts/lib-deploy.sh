@@ -784,6 +784,13 @@ openclaw_agent_exec() {
     return $?
   fi
 
+  # Pod userns leaves agent state owned by the container uid. An ephemeral
+  # keep-id run cannot write that tree (mkdir /home/node/.openclaw → EACCES).
+  if [[ ! -w "$config_dir" ]]; then
+    echo "    (openclaw CLI: ${container:-container} is not running and ${config_dir} is not host-writable)" >&2
+    return 1
+  fi
+
   podman run --rm --userns=keep-id \
     -e HOME=/home/node \
     -e OPENCLAW_STATE_DIR=/home/node/.openclaw \

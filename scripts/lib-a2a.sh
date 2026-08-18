@@ -2633,7 +2633,7 @@ ensure_a2a_plugin_build() {
   local config_dir container
   config_dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
-  agent_has_near_credentials "$config_dir" || return 0
+  agent_has_near_credentials "$config_dir" "$container" || return 0
   install_a2a_plugin "$config_dir" 0 "$id"
   install_identyclaw_webhooks_plugin "$config_dir" 0 "$id" || true
   ensure_webhooks_plugin_config "$config_dir" "$container"
@@ -2728,7 +2728,7 @@ ensure_a2a_config() {
   local config_dir="$2"
   local container="${3:-}"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  agent_has_near_credentials "$config_dir" || return 0
+  agent_has_near_credentials "$config_dir" "$container" || return 0
 
   load_env
   [[ -n "$container" ]] || container="$(agent_container "$id")"
@@ -3125,7 +3125,7 @@ install_identyclaw_webhooks_plugin() {
   load_env
   plugin_spec="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN}"
   [[ -n "$id" ]] && container="$(agent_container "$id")" || container=""
-  agent_has_near_credentials "$config_dir" || return 0
+  agent_has_near_credentials "$config_dir" "$container" || return 0
 
   desired_ver="$(clawhub_plugin_pinned_version "$plugin_spec")"
   installed_ver="$(webhooks_plugin_installed_version "$config_dir" "$container")"
@@ -3176,7 +3176,7 @@ ensure_webhooks_plugin_config() {
   local config_dir="$1"
   local container="${2:-}"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  agent_has_near_credentials "$config_dir" || return 0
+  agent_has_near_credentials "$config_dir" "$container" || return 0
 
   _agent_openclaw_json_python "$config_dir" "$container" <<'PY'
 import json, sys
@@ -3229,7 +3229,7 @@ install_a2a_plugin() {
   load_env
   plugin_spec="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN}"
   [[ -n "$id" ]] && container="$(agent_container "$id")" || container=""
-  agent_has_near_credentials "$config_dir" || return 0
+  agent_has_near_credentials "$config_dir" "$container" || return 0
 
   desired_ver="$(clawhub_plugin_pinned_version "$plugin_spec")"
   installed_ver="$(a2a_plugin_installed_version "$config_dir" "$container")"
@@ -3536,7 +3536,7 @@ ensure_a2a_packages() {
   load_env
   container="$(agent_container "$id")"
   config_dir="$(agent_home "$id")"
-  agent_has_near_credentials "$config_dir" || return 0
+  agent_has_near_credentials "$config_dir" "$container" || return 0
   if ! install_a2a_plugin "$config_dir" 0 "$id"; then
     return 0
   fi
