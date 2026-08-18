@@ -1180,19 +1180,17 @@ PY
 
 
 _heartbeat_twitter_mentions_prompt() {
-  cat <<'EOF'
-Check X/Twitter mentions and notifications. Read workspace/TWITTER.md, run workspace/node_modules/.bin/bird check then bird mentions. Summarize anything needing a response. Draft replies in workspace/twitter/drafts/ when appropriate.
-EOF
+  _heartbeat_prompt_from_template twitter-mentions
 }
 
 
 write_twitter_heartbeat_doc() {
   local config_dir="$1"
+  local container="${2:-}"
   local agent_id prompt
   agent_id="$(basename "$config_dir")"
   prompt="$(_heartbeat_twitter_mentions_prompt)"
-  _upsert_heartbeat_task \
-    "$config_dir/workspace/HEARTBEAT.md" \
+  apply_workspace_heartbeat_task "$config_dir" "$container" \
     "twitter-mentions" "1h" "$prompt" \
     "# X/Twitter monitoring (hourly) — follow TWITTER.md; if bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK."
 }
@@ -1200,17 +1198,12 @@ write_twitter_heartbeat_doc() {
 
 _write_twitter_heartbeat_doc_in_container() {
   local container="$1"
-  local agent_id="${container#openclaw-}" prompt
-  prompt="$(_heartbeat_twitter_mentions_prompt)"
-  _upsert_heartbeat_task_in_container \
-    "$container" \
-    "twitter-mentions" "1h" "$prompt" \
-    "# X/Twitter monitoring (hourly) — follow TWITTER.md; if bird check fails (missing/expired cookies), tell the operator to refresh via ./identyclaw.sh set-twitter-cookies ${agent_id}. If nothing needs attention, reply HEARTBEAT_OK."
+  write_twitter_heartbeat_doc "$(agent_home "${container#openclaw-}")" "$container"
 }
 
 
 ensure_twitter_heartbeat_config() {
-  ensure_heartbeat_config "$1" "1h"
+  ensure_heartbeat_config "$1" "1h" "${2:-}"
 }
 
 

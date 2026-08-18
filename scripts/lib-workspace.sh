@@ -1425,8 +1425,6 @@ _heartbeat_inbox_check_prompt() {
 }
 
 
-
-\
 _run_heartbeat_upsert_python() {
   local use_container="$1"
   local container="$2"
@@ -1495,7 +1493,6 @@ _upsert_heartbeat_task() {
 
 
 
-\
 _upsert_heartbeat_task_in_container() {
   local container="$1"
   local task_name="$2"
@@ -1526,7 +1523,6 @@ apply_workspace_heartbeat_task() {
 
 
 
-\
 ensure_heartbeat_config() {
   local config_dir="$1"
   local interval="${2:-1h}"
@@ -2022,7 +2018,6 @@ _heartbeat_slc_game_prompt() {
 
 
 
-\
 write_slc_heartbeat_doc() {
   local config_dir="$1"
   local interval="${2:-10m}"
@@ -2046,7 +2041,7 @@ _write_slc_heartbeat_doc_in_container() {
 
 
 ensure_slc_heartbeat_config() {
-  ensure_heartbeat_config "$1" "${2:-10m}"
+  ensure_heartbeat_config "$1" "${2:-10m}" "${3:-}"
 }
 
 
