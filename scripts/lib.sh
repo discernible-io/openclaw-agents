@@ -177,7 +177,7 @@ load_env() {
         value="${value:1:${#value}-2}"
       fi
       case "$key" in
-        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|CONSTITUTION_*|SKIP_*|DEPLOY_*|NEAR_RPC_*) printf -v "$key" '%s' "$value" ;;
+        OPENCLAW_*|HIMALAYA_*|AGENT_*|PUBLISH_HOST|IDENTYCLAW_*|A2A_*|CONSTITUTION_*|SKIP_*|DEPLOY_*|NEAR_RPC_*|NGINX_*|POD_NAME) printf -v "$key" '%s' "$value" ;;
       esac
     done <"$f"
   fi
@@ -3903,7 +3903,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|fix-session-images|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|fix-session-images|retire-exec-approvals|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -9850,97 +9850,100 @@ PY
 }
 
 # sed cannot be a safeBin (OpenClaw always denies it); allowlist resolved paths instead.
-# Newer OpenClaw stores approvals in state/openclaw.sqlite. Writing exec-approvals.json
-# while SQLite already has a row triggers ExecApprovalsMigrationRequiredError (doctor
-# preserves canonical SQLite and refuses to delete conflicting legacy JSON).
+# OpenClaw 2026.7.1+ stores approvals in state/openclaw.sqlite. Any leftover
+# exec-approvals.json trips ExecApprovalsMigrationRequiredError: doctor keeps the
+# canonical SQLite row and will not delete conflicting legacy JSON, so runtimes
+# fail closed until the file is gone. Never recreate it; retire leftovers and
+# merge sed/head via `approvals allowlist add` when the gateway is up.
+_retire_legacy_exec_approvals_json() {
+  local path_arg="$1"
+  python3 - "$path_arg" <<'PY' || true
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(0)
+retired = path.with_name(path.name + ".identyclaw-retired")
+try:
+    path.replace(retired)
+except OSError:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+PY
+}
+
 ensure_exec_allowlist_harmless_bins() {
   local config_dir="$1"
   local container="${2:-}"
   local approvals="${config_dir}/exec-approvals.json"
-  local sqlite_state="${config_dir}/state/openclaw.sqlite"
   local gw_port=""
   local agent_id=""
+  [[ -d "$config_dir" ]] || return 0
   agent_id="$(agent_id_from_dir "$config_dir" 2>/dev/null || true)"
   if [[ -n "$agent_id" ]]; then
     gw_port="$(agent_internal_gateway_port "$agent_id" 2>/dev/null || true)"
   fi
   gw_port="${gw_port:-18789}"
-  if [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1; then
-    # Only touch legacy JSON when SQLite-backed approvals are not in use.
+  _retire_legacy_exec_approvals_json "$approvals"
+  if [[ -e "$approvals" ]] && [[ -n "$container" ]] \
+    && podman container exists "$container" >/dev/null 2>&1; then
     podman exec "$container" python3 - <<'PY' || true
-import json
 from pathlib import Path
 path = Path("/home/node/.openclaw/exec-approvals.json")
-sqlite = Path("/home/node/.openclaw/state/openclaw.sqlite")
-if sqlite.is_file():
-    # SQLite is canonical — never recreate legacy JSON (blocks exec approvals).
+if not path.is_file():
     raise SystemExit(0)
-patterns = ["/usr/bin/sed", "/bin/sed", "/usr/bin/head", "/bin/head"]
-data = {"version": 1, "socket": {}, "defaults": {}, "agents": {}}
-if path.is_file():
+retired = path.with_name(path.name + ".identyclaw-retired")
+try:
+    path.replace(retired)
+except OSError:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        path.unlink()
+    except OSError:
         pass
-data.setdefault("version", 1)
-data.setdefault("defaults", {})
-agents = data.setdefault("agents", {})
-for agent_id in ("main", "*"):
-    entry = agents.setdefault(agent_id, {})
-    allow = entry.setdefault("allowlist", [])
-    existing = {e.get("pattern") for e in allow if isinstance(e, dict)}
-    for pattern in patterns:
-        if pattern not in existing:
-            allow.append({"pattern": pattern, "source": "identyclaw-bootstrap"})
-            existing.add(pattern)
-path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-path.chmod(0o600)
 PY
-    # Prefer CLI merge when gateway is up (SQLite-backed approvals on newer OpenClaw).
-    if podman exec "$container" true >/dev/null 2>&1; then
-      local token=""
-      token="$(podman exec "$container" python3 -c 'import json;print(json.load(open("/home/node/.openclaw/openclaw.json")).get("gateway",{}).get("auth",{}).get("token") or "")' 2>/dev/null || true)"
-      if [[ -n "$token" ]]; then
-        for pattern in /usr/bin/sed /bin/sed /usr/bin/head /bin/head; do
-          podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
-            node dist/index.js approvals allowlist add --agent main "$pattern" \
-            --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
-        done
-      fi
-    fi
-    return 0
   fi
-  [[ -d "$config_dir" ]] || return 0
-  # Host path: skip JSON writes once shared SQLite state exists.
-  if [[ -f "$sqlite_state" ]]; then
-    return 0
-  fi
-  python3 - "$approvals" <<'PY' || true
-import json, sys
+  [[ -n "$container" ]] && podman container exists "$container" >/dev/null 2>&1 || return 0
+  local token=""
+  token="$(podman exec "$container" python3 -c 'import json;print(json.load(open("/home/node/.openclaw/openclaw.json")).get("gateway",{}).get("auth",{}).get("token") or "")' 2>/dev/null || true)"
+  [[ -n "$token" ]] || return 0
+  for pattern in /usr/bin/sed /bin/sed /usr/bin/head /bin/head; do
+    podman exec -e OPENCLAW_GATEWAY_TOKEN="$token" "$container" \
+      node dist/index.js approvals allowlist add --agent main "$pattern" \
+      --url "ws://127.0.0.1:${gw_port}" --token "$token" >/dev/null 2>&1 || true
+  done
+}
+
+# Retire leftover exec-approvals.json for one agent (running container or host path).
+retire_legacy_exec_approvals_one() {
+  local id="${1:?}"
+  local container dir result=""
+  load_env
+  container="$(agent_container "$id")"
+  dir="$(agent_home "$id")"
+  if _agent_container_name_running "$container"; then
+    result="$(podman exec "$container" python3 -c '
 from pathlib import Path
-path = Path(sys.argv[1])
-patterns = ["/usr/bin/sed", "/bin/sed", "/usr/bin/head", "/bin/head"]
-data = {"version": 1, "socket": {}, "defaults": {}, "agents": {}}
-if path.is_file():
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-data.setdefault("version", 1)
-data.setdefault("defaults", {})
-agents = data.setdefault("agents", {})
-for agent_id in ("main", "*"):
-    entry = agents.setdefault(agent_id, {})
-    allow = entry.setdefault("allowlist", [])
-    existing = {e.get("pattern") for e in allow if isinstance(e, dict)}
-    for pattern in patterns:
-        if pattern not in existing:
-            allow.append({"pattern": pattern, "source": "identyclaw-bootstrap"})
-            existing.add(pattern)
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-path.chmod(0o600)
-PY
+p = Path("/home/node/.openclaw/exec-approvals.json")
+if p.is_file():
+    p.replace(p.with_name(p.name + ".identyclaw-retired"))
+    print("retired leftover exec-approvals.json")
+else:
+    print("already gone")
+' 2>/dev/null || echo "podman exec failed")"
+    ensure_exec_allowlist_harmless_bins "$dir" "$container" || true
+    printf '%s: %s\n' "$id" "$result"
+    return 0
+  fi
+  _retire_legacy_exec_approvals_json "${dir}/exec-approvals.json"
+  if [[ -e "${dir}/exec-approvals.json" ]]; then
+    printf '%s: leftover still present (container not running; host rename failed)\n' "$id"
+  elif [[ -e "${dir}/exec-approvals.json.identyclaw-retired" ]]; then
+    printf '%s: retired on host (container not running)\n' "$id"
+  else
+    printf '%s: already gone (container not running)\n' "$id"
+  fi
 }
 
 # Copy nginx/inc from the current git checkout into APP_DIR and render nginx.conf.
@@ -9981,7 +9984,7 @@ pod_nginx_bind_specs() {
 
 resolve_nginx_image() {
   local container image
-  container="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
+  container="${NGINX_CONTAINER_NAME:-openclaw-nginx}"
   if [[ -n "${NGINX_IMAGE:-}" ]]; then
     printf '%s\n' "$NGINX_IMAGE"
     return 0
@@ -9997,14 +10000,14 @@ resolve_nginx_image() {
   return 1
 }
 
-# Recreate identyclaw-nginx with APP_DIR binds (certs, logs, rendered conf, copied inc).
+# Recreate openclaw-nginx with APP_DIR binds (certs, logs, rendered conf, copied inc).
 # Safe while agent containers keep running. Replaces stale clone-path mounts.
 recreate_pod_nginx_sidecar() {
   load_env
   [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] || return 0
   local app container image z pod_name nginx_conf vol_args=()
   app="$(identyclaw_app_dir)"
-  container="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
+  container="${NGINX_CONTAINER_NAME:-openclaw-nginx}"
   pod_name="${POD_NAME:-identyclaw-agents-pod}"
   prepare_pod_nginx_host_files || return 1
   ensure_pod_logs_for_container "${app}/logs/nginx"

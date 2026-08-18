@@ -12,7 +12,7 @@
 #   APP_PORT — listen+publish port (Telegram-compatible: 80, 88, 443, 8443).
 #              Default: IDENTYCLAW_INGRESS_PORT from env.local after load_env, else deploy_tier_app_port (8443).
 #   POD_NAME=identyclaw-agents-pod
-#   NGINX_CONTAINER_NAME=identyclaw-nginx
+#   NGINX_CONTAINER_NAME=openclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
 #   REPO_ROOT            Git checkout path (for identyclaw.sh init/bootstrap)
 #   AGENT_IDS            Space-separated list (default: agent-a agent-c agent-e)
@@ -27,7 +27,7 @@ OPENCLAW_IMAGE="${OPENCLAW_IMAGE:?OPENCLAW_IMAGE is required}"
 NGINX_IMAGE="${NGINX_IMAGE:?NGINX_IMAGE is required}"
 
 POD_NAME="${POD_NAME:-identyclaw-agents-pod}"
-NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
+NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-openclaw-nginx}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 export IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$APP_DIR}"

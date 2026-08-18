@@ -24,7 +24,7 @@ env:
   APP_PORT: '8443'
   NGINX_BUILD_ENV: main
   POD_NAME: identyclaw-agents-pod
-  NGINX_CONTAINER_NAME: identyclaw-nginx
+  NGINX_CONTAINER_NAME: openclaw-nginx
   REGISTRY: ghcr.io
   OPENCLAW_IMAGE_NAME: ${{ github.repository }}/openclaw-agent
   NGINX_IMAGE_NAME: ${{ github.repository }}/identyclaw-nginx

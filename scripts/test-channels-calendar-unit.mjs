@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -264,6 +265,30 @@ runCase("rendered nginx proxies Telegram to the per-agent webhook listener", () 
     assert.equal(conf.includes("proxy_pass http://openclaw_agent_l_telegram;"), true);
     const telegramBlock = conf.split("location = /telegram-webhook")[1]?.split("location ")[0] || "";
     assert.equal(telegramBlock.includes("proxy_pass http://openclaw_agent_l;"), false);
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
+});
+
+runCase("ensure_exec_allowlist_harmless_bins retires leftover JSON and does not recreate it", () => {
+  const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
+  const dir = join(app, "agents", "agent-a");
+  try {
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(
+      join(dir, "exec-approvals.json"),
+      JSON.stringify({ version: 1, agents: { main: { allowlist: [] } } }, null, 2) + "\n",
+    );
+    writeFileSync(join(dir, "state", "openclaw.sqlite"), "");
+    bashLib(`ensure_exec_allowlist_harmless_bins "${dir}"`, {
+      IDENTYCLAW_APP_DIR: app,
+    });
+    assert.equal(existsSync(join(dir, "exec-approvals.json")), false);
+    assert.equal(existsSync(join(dir, "exec-approvals.json.identyclaw-retired")), true);
+    bashLib(`ensure_exec_allowlist_harmless_bins "${dir}"`, {
+      IDENTYCLAW_APP_DIR: app,
+    });
+    assert.equal(existsSync(join(dir, "exec-approvals.json")), false);
   } finally {
     rmSync(app, { recursive: true, force: true });
   }

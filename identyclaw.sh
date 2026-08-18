@@ -62,6 +62,7 @@
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
 #   cache-stats [id|all] Prompt-cache hit metrics (OpenRouter sticky session_id + usage)
+#   retire-exec-approvals [id|all]  Remove leftover exec-approvals.json (SQLite is canonical)
 
 set -euo pipefail
 
@@ -824,6 +825,34 @@ cmd_fix_session_images() {
   else
     fix_openclaw_session_images "$target"
   fi
+}
+
+cmd_retire_exec_approvals() {
+  local target="${1:-all}"
+  local id seen="" extra
+  require_podman
+  load_env
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      retire_legacy_exec_approvals_one "$id" || true
+      seen="${seen} $(agent_container "$id")"
+    done
+    # Running containers not listed in AGENT_IDS (stale or extra letters).
+    while read -r extra; do
+      [[ -n "$extra" ]] || continue
+      [[ " ${seen} " == *" ${extra} "* ]] && continue
+      id="${extra#openclaw-}"
+      is_valid_agent_id "$id" || continue
+      echo "==> extra container ${extra}"
+      retire_legacy_exec_approvals_one "$id" || true
+    done < <(podman ps --format '{{.Names}}' 2>/dev/null | grep -E '^openclaw-agent-[a-z]$' || true)
+    return 0
+  fi
+  is_valid_agent_id "$target" || {
+    echo "Usage: $0 retire-exec-approvals [agent-id|all]" >&2
+    return 1
+  }
+  retire_legacy_exec_approvals_one "$target"
 }
 
 # Run deterministic inbound A2A webhook smoke handler once (constitution peer → local webhook).
@@ -2612,6 +2641,7 @@ main() {
     webhook-url) cmd_webhook_url "$@" ;;
     token) cmd_token "$@" ;;
     cache-stats) cmd_cache_stats "$@" ;;
+    retire-exec-approvals) cmd_retire_exec_approvals "$@" ;;
     chat) cmd_chat "$@" ;;
     ask) cmd_ask "$@" ;;
     onboard) cmd_onboard "$@" ;;
