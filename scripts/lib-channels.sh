@@ -1411,7 +1411,7 @@ ensure_telegram_webhook_secret() {
     existing="$(tr -d '\n' <"$secret_file")"
     [[ -n "$existing" ]] && { printf '%s' "$existing"; return 0; }
   elif _agent_container_name_running "$container"; then
-    existing="$(podman exec "$container" sh -c 'tr -d "\n" < /home/node/.openclaw/secrets/TELEGRAM_WEBHOOK_SECRET 2>/dev/null' || true)"
+    existing="$(podman exec "$container" sh -c 'tr -d "\n" < /home/node/.openclaw/secrets/TELEGRAM_WEBHOOK_SECRET' 2>/dev/null || true)"
     [[ -n "$existing" ]] && { printf '%s' "$existing"; return 0; }
   fi
   secret="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
