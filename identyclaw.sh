@@ -58,6 +58,8 @@
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents
 #   near-activate <id> [account_id]  Set active NEAR creds (.active + .env + plugin) then restart
+#   pairing <id> list [channel]          List pending pairing requests (default: telegram)
+#   pairing <id> approve <channel> <code>  Approve a DM pairing code
 #   token <id>           Print gateway token for Control UI
 #   chat <id>            Interactive terminal chat (openclaw chat)
 #   ask <id> <message>   One-shot question to an agent
@@ -929,6 +931,35 @@ cmd_generate_certs() {
   echo "TLS material ready in $(identyclaw_app_dir)/certs/"
 }
 
+cmd_pairing() {
+  local id="${1:?Usage: $0 pairing agent-b list|approve <channel> [code]}"
+  shift
+  local action="${1:?Usage: $0 pairing <id> list|approve <channel> [code]}"
+  shift
+  require_podman
+  require_agent_running "$id"
+  local container
+  container="$(agent_container "$id")"
+  case "$action" in
+    list)
+      local channel="${1:-telegram}"
+      podman exec "$container" node dist/index.js pairing list "$channel"
+      ;;
+    approve)
+      local channel="${1:?Usage: $0 pairing <id> approve <channel> <code>}"
+      local code="${2:?Usage: $0 pairing <id> approve <channel> <code>}"
+      podman exec "$container" node dist/index.js pairing approve "$channel" "$code"
+      ;;
+    *)
+      echo "Unknown pairing action: $action (use list or approve)" >&2
+      echo "Usage:" >&2
+      echo "  $0 pairing <id> list [channel]          (default: telegram)" >&2
+      echo "  $0 pairing <id> approve <channel> <code>" >&2
+      exit 1
+      ;;
+  esac
+}
+
 cmd_token() {
   local id="${1:?Usage: $0 token agent-b}"
   agent_gateway_token "$id"
@@ -1348,6 +1379,7 @@ main() {
     test-webhook-p2p) cmd_test_webhook_p2p "$@" ;;
     send-rodit-webhook) cmd_send_rodit_webhook "$@" ;;
     webhook-url) cmd_webhook_url "$@" ;;
+    pairing) cmd_pairing "$@" ;;
     token) cmd_token "$@" ;;
     cache-stats) cmd_cache_stats "$@" ;;
     retire-exec-approvals) cmd_retire_exec_approvals "$@" ;;
