@@ -2708,17 +2708,21 @@ build_a2a_peer_map() {
   # self-fleet noise). Seed them explicitly from deploy PUBLIC_HOST+INGRESS_PORT
   # so local A2A works even when a peer's on-chain Passport webhook_url is stale
   # (e.g. andrew.dihola.io:88 while ingress is :8443).
-  local local_peers_json="{" local_first=1 local_peer_tid local_deploy_id
-  for local_peer_tid in $(local_cross_agent_peer_token_ids "$self_id"); do
+  # Prefer iterating AGENT_IDS + agent_token_id (container probe) over
+  # find_deploy_id_for_token_id, which only hits host-readable Passport caches.
+  local local_peers_json="{" local_first=1 local_peer_tid local_deploy_id peer_tid
+  for local_deploy_id in $AGENT_IDS; do
+    [[ "$local_deploy_id" == "$self_id" ]] && continue
+    local_peer_tid="$(agent_token_id "$local_deploy_id" 2>/dev/null || true)"
     is_passport_token_id "$local_peer_tid" || continue
-    local_deploy_id="$(find_deploy_id_for_token_id "$local_peer_tid" 2>/dev/null || true)"
-    public_base=""
-    if [[ -n "$local_deploy_id" ]]; then
-      public_base="$(agent_public_base_url "$local_deploy_id" 2>/dev/null || true)"
-      [[ -z "$public_base" ]] && public_base="$(agent_a2a_public_base_url "$local_deploy_id" 2>/dev/null || true)"
-    fi
+    [[ -n "$self_token_id" && "$local_peer_tid" == "$self_token_id" ]] && continue
+    public_base="$(agent_public_base_url "$local_deploy_id" 2>/dev/null || true)"
+    [[ -z "$public_base" ]] && public_base="$(agent_a2a_public_base_url "$local_deploy_id" 2>/dev/null || true)"
     [[ -z "$public_base" ]] && public_base="$(a2a_peer_public_base_url_static "$local_peer_tid" "$self_config_dir" 2>/dev/null || true)"
-    [[ -n "$public_base" ]] || continue
+    [[ -n "$public_base" ]] || {
+      echo "    (${self_id}: skip same-host ${local_deploy_id}/${local_peer_tid} — no public base)" >&2
+      continue
+    }
     public_base="${public_base%/}"
     card_url="${public_base}/.well-known/agent-card.json"
     if [[ "$local_first" -eq 1 ]]; then
