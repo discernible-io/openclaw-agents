@@ -1347,7 +1347,7 @@ Federation shares **Rodit login** only (\`identyclaw_ensure_session({ apiEndpoin
 
 1. \`identyclaw_ensure_session({ apiEndpoint: "<peer>" })\`
 2. Discover: \`identyclaw_list_resources\` / \`identyclaw_get_resource\` / peer skill.md / OpenAPI
-3. Call product routes with \`identyclaw_request({ method, path, apiEndpoint })\`. For SLC: refresh live \`https://slcapi.discernible.io:9443/api/game/skill.md\` (≥ 1.20.1) — no local playbook — then GET tasks+state(+messages), choose an explicit action from state (\`transfer\`|\`invest\`|\`transfer_and_invest\`|\`none\`), then \`identyclaw_game_tick({ apiEndpoint, … })\` or \`POST /api/game/tick\` / \`…/action\` **with that action body**. Empty tick bodies return \`action_required\` — they are not a silent \`none\`.
+3. Call product routes with \`identyclaw_request({ method, path, apiEndpoint })\` using paths from that peer’s skill.md / OpenAPI. Prefer typed helpers (\`identyclaw_game_tick\`, …) only when the peer skill documents them.
 
 Keep Passport/HOLA/DID tools on the **home** API (omit \`apiEndpoint\`). A 404 on \`/api/me/identity\` against a federated host is expected when that peer does not implement it — not a login failure.
 
@@ -2187,9 +2187,11 @@ _apply_slc_heartbeat() {
 }
 
 
-# Install SLC KB + stub playbooks even when heartbeat is not armed (RAG / refuse stale).
+# Install SLC KB + AGENTS.md host pointer only when explicitly requested
+# (enable-slc-heartbeat / armed heartbeat). Idle fleets stay free of SLC docs.
 
-# Install SLC KB + stub playbooks even when heartbeat is not armed (RAG / refuse stale).
+# Install SLC KB + AGENTS.md host pointer only when explicitly requested
+# (enable-slc-heartbeat / armed heartbeat). Idle fleets stay free of SLC docs.
 ensure_slc_workspace_docs() {
   local id="$1"
   local config_dir="$2"
@@ -2208,9 +2210,11 @@ ensure_slc_heartbeat_from_env() {
   local id="$1"
   local config_dir="$2"
   local interval
-  ensure_slc_workspace_docs "$id" "$config_dir"
+  # Only install SLC KB / AGENTS.md pointers when heartbeat is armed.
+  # Idle fleets keep workspaces free of SLC docs across restart/rebuild.
   interval="$(_read_slc_heartbeat_interval "$id" "$config_dir")"
   [[ -n "$interval" ]] || return 0
+  ensure_slc_workspace_docs "$id" "$config_dir"
   _apply_slc_heartbeat "$id" "$config_dir" "$interval"
 }
 

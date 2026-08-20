@@ -85,7 +85,7 @@ load_env() {
   # OpenClaw model failover: provider idle/request watchdog + agent turn cap (seconds).
   OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-600}"
   # Idle/request watchdog per model attempt. 120s is too aggressive for deepseek
-  # on large Telegram/SLC sessions (idle timeout → qwen fallback → incomplete turn).
+  # on large Telegram/tool-heavy sessions (idle timeout → qwen fallback → incomplete turn).
   OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-240}"
   OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-60000}"
   # Stuck-session recovery (defaults ~2m warn / ~6m abort) kills long exec mid-turn; keep abort >= agent timeout.

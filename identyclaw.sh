@@ -33,7 +33,7 @@
 #   enable-mail-responder [interval]  Install user systemd timer to run respond-mail (default 5min)
 #   enable-inbox-check <id> [interval]  Enable LLM inbox heartbeat (default 1h)
 #   enable-calendar-check <id> [interval]  Enable calendar/reminder heartbeat (default 30m)
-#   enable-slc-heartbeat <id> [interval]  Enable SLC game heartbeat (default 10m; removes stale local playbooks)
+#   enable-slc-heartbeat <id> [interval]  No-op purge: remove SLC workspace docs/heartbeat leftovers
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
 #   cleanup-sessions [id|all] [--dry-run]  Truncate oversized sessions (telegram/cron/A2A/tui) + store/cache maintenance
 #   enable-session-cleanup [OnCalendar]  Install daily user systemd timer for cleanup-sessions (default 04:15)

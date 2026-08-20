@@ -2588,11 +2588,9 @@ if not allow_entries or not any(str(e).strip() == "*" for e in allow_entries):
     tools["allow"] = ["*"]
     changed = True
 
-# Do NOT wire remote SLC MCP for OpenClaw agents. OpenClaw mcp.servers.headers
-# are static; they cannot use the IdentyClaw plugin's per-URL federated JWT
-# cache. Game MCP tools remain authenticated on the server — agents play via
-# identyclaw_ensure_session + identyclaw_request (paths from skill.md) until a
-# proxy or OpenClaw dynamic MCP auth exists.
+# Do NOT wire remote MCP servers that need dynamic federated JWTs. OpenClaw
+# mcp.servers.headers are static; they cannot use the IdentyClaw plugin's
+# per-URL session cache. Drop legacy "slc" entries if present.
 mcp_servers = data.get("mcp", {}).get("servers")
 if isinstance(mcp_servers, dict) and "slc" in mcp_servers:
     del mcp_servers["slc"]
