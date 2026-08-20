@@ -35,8 +35,8 @@
 #   enable-calendar-check <id> [interval]  Enable calendar/reminder heartbeat (default 30m)
 #   enable-slc-heartbeat <id> [interval]  No-op purge: remove SLC workspace docs/heartbeat leftovers
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
-#   cleanup-sessions [id|all] [--dry-run]  Truncate oversized sessions (telegram/cron/A2A/tui) + store/cache maintenance
-#   enable-session-cleanup [OnCalendar]  Install daily user systemd timer for cleanup-sessions (default 04:15)
+#   cleanup-sessions [id|all] [--dry-run]  Unwedge sticky runs + truncate oversized sessions + store/cache maintenance
+#   enable-session-cleanup [interval|OnCalendar]  Install user systemd timer for cleanup-sessions (default 1h)
 #   respond-a2a-hola-smoke [id|all]  Deterministic inbound A2A HOLA probe email sender (smoke tests)
 #   enable-a2a-hola-smoke-responder [interval]  Timer for respond-a2a-hola-smoke (default 1min)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
@@ -718,7 +718,7 @@ cmd_fix_session_images() {
   fi
 }
 
-# Truncate oversized transcripts (all session keys), enforce store cleanup, rotate huge cache-trace.
+# Unwedge sticky runs, truncate oversized transcripts, enforce store cleanup, rotate cache-trace.
 # Prefer this over LLM /compact when auto-compaction times out ("Context is too large…").
 cmd_cleanup_sessions() {
   local target="all"
@@ -731,10 +731,13 @@ cmd_cleanup_sessions() {
       --dry-run|-n) dry_run=1 ;;
       -h|--help|help)
         echo "Usage: $0 cleanup-sessions [id|all] [--dry-run]"
+        echo "  Clears sticky status=running / orphan locks older than"
+        echo "  IDENTYCLAW_SESSION_CLEANUP_STUCK_AGE_MS (default: agent timeout + 5m),"
+        echo "  restarting the gateway when needed so Telegram/A2A can accept new turns."
         echo "  Truncates sessions at/above IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR (default 50k)"
         echo "  to the last IDENTYCLAW_SESSION_CLEANUP_MAX_LINES lines (default 120)."
         echo "  Also runs sessions cleanup --enforce and rotates oversized cache-trace.jsonl."
-        echo "  Schedule daily: $0 enable-session-cleanup"
+        echo "  Schedule hourly: $0 enable-session-cleanup"
         exit 0
         ;;
       all|agent-[a-z]) target="$arg" ;;
@@ -753,17 +756,19 @@ cmd_cleanup_sessions() {
   fi
 }
 
-# Install a daily user systemd timer that runs cleanup-sessions for all AGENT_IDS.
+# Install a user systemd timer that runs cleanup-sessions for all AGENT_IDS.
+# Arg may be an interval (1h, 30min) or an OnCalendar expression (*-*-* 04:15:00).
 cmd_enable_session_cleanup() {
   require_rootless_user
-  local on_calendar="${1:-${IDENTYCLAW_SESSION_CLEANUP_ON_CALENDAR:-*-*-* 04:15:00}}"
+  local schedule="${1:-${IDENTYCLAW_SESSION_CLEANUP_INTERVAL:-${IDENTYCLAW_SESSION_CLEANUP_ON_CALENDAR:-1h}}}"
   local unit_dir="${HOME}/.config/systemd/user"
   local script_path="${ROOT}/identyclaw.sh"
+  local timer_desc timer_body
   load_env
   mkdir -p "$unit_dir"
   cat >"${unit_dir}/identyclaw-session-cleanup.service" <<EOF
 [Unit]
-Description=IdentyClaw OpenClaw session cleanup (truncate oversized context + store maintenance)
+Description=IdentyClaw OpenClaw session cleanup (unwedge sticky runs + truncate oversized context)
 After=podman-restart.service
 
 [Service]
@@ -771,21 +776,39 @@ Type=oneshot
 WorkingDirectory=${ROOT}
 ExecStart=/usr/bin/env bash ${script_path} cleanup-sessions all
 EOF
+  # Calendar expressions contain '*' or spaces or HH:MM; intervals look like 1h / 30min.
+  if [[ "$schedule" == *"*"* || "$schedule" == *" "* || "$schedule" == *":"* ]]; then
+    timer_desc="IdentyClaw session cleanup (${schedule})"
+    timer_body="$(cat <<EOF
+[Timer]
+OnCalendar=${schedule}
+Persistent=true
+RandomizedDelaySec=5min
+EOF
+)"
+  else
+    timer_desc="IdentyClaw session cleanup every ${schedule}"
+    timer_body="$(cat <<EOF
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=${schedule}
+AccuracySec=1min
+Persistent=true
+EOF
+)"
+  fi
   cat >"${unit_dir}/identyclaw-session-cleanup.timer" <<EOF
 [Unit]
-Description=Daily IdentyClaw session cleanup (${on_calendar})
+Description=${timer_desc}
 
-[Timer]
-OnCalendar=${on_calendar}
-Persistent=true
-RandomizedDelaySec=10min
+${timer_body}
 
 [Install]
 WantedBy=timers.target
 EOF
   systemctl --user daemon-reload
   systemctl --user enable --now identyclaw-session-cleanup.timer
-  echo "==> Session cleanup timer enabled (OnCalendar=${on_calendar})."
+  echo "==> Session cleanup timer enabled (${schedule})."
   echo "    Run once:  $0 cleanup-sessions all"
   echo "    Dry-run:   $0 cleanup-sessions all --dry-run"
   echo "    Status:    systemctl --user status identyclaw-session-cleanup.timer"

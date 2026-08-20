@@ -193,13 +193,155 @@ fix_openclaw_session_images() {
   echo "==> ${id}: done"
 }
 
-# Daily / ops cleanup: truncate ALL oversized sessions (telegram, A2A/direct, cron, tui),
-# optionally enforce session-store maintenance, and rotate huge cache-trace logs.
+# Clear sticky run state that wedges Telegram/A2A (status=running past timeout, orphan locks).
+# Returns 0 and prints "restart=1" on stdout last line when the gateway should be restarted.
+_unwedge_stuck_openclaw_sessions() {
+  local id="$1"
+  local container="$2"
+  local dry_run="${3:-0}"
+  local stuck_age_ms agent_timeout_s out
+  agent_timeout_s="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-600}"
+  # Default: agent turn budget + 5m slack (covers compaction retries that never clear status).
+  stuck_age_ms="${IDENTYCLAW_SESSION_CLEANUP_STUCK_AGE_MS:-$((agent_timeout_s * 1000 + 300000))}"
+  if [[ "${IDENTYCLAW_SESSION_CLEANUP_UNWEDGE:-1}" != "1" && "${IDENTYCLAW_SESSION_CLEANUP_UNWEDGE:-1}" != "true" ]]; then
+    echo "    (${id}: sticky unwedge disabled)"
+    echo "restart=0"
+    return 0
+  fi
+  echo "==> ${id}: sticky-run unwedge (age>=${stuck_age_ms}ms; dry_run=${dry_run})"
+  out="$(podman exec -i "$container" python3 - "$stuck_age_ms" "$dry_run" <<'PY'
+import json, sys, time
+from pathlib import Path
+
+stuck_age_ms = int(sys.argv[1])
+dry_run = sys.argv[2] == "1"
+base = Path("/home/node/.openclaw/agents/main/sessions")
+store = base / "sessions.json"
+now_ms = int(time.time() * 1000)
+cleared = []
+locks_removed = []
+
+if not store.is_file():
+    print("    (no sessions.json)")
+    print("restart=0")
+    raise SystemExit(0)
+
+idx = json.loads(store.read_text(encoding="utf-8"))
+changed = False
+for key, entry in list(idx.items()):
+    if not isinstance(entry, dict):
+        continue
+    status = entry.get("status")
+    started = entry.get("startedAt")
+    try:
+        started_ms = int(started) if started is not None else None
+    except (TypeError, ValueError):
+        started_ms = None
+    age = (now_ms - started_ms) if started_ms is not None else None
+    sticky = status == "running" and age is not None and age >= stuck_age_ms
+    if not sticky:
+        continue
+    cleared.append("%s age=%sms status=%s" % (key, age, status))
+    if dry_run:
+        continue
+    entry["abortedLastRun"] = False
+    for k in list(entry.keys()):
+        if k in ("status", "startedAt", "runtimeMs", "endedAt") or "restartRecovery" in k or str(k).startswith("active"):
+            entry.pop(k, None)
+    entry["updatedAt"] = now_ms
+    idx[key] = entry
+    changed = True
+    sid = entry.get("sessionId")
+    if sid:
+        for lock in base.glob("%s*lock*" % sid):
+            try:
+                lock.unlink()
+                locks_removed.append(lock.name)
+            except OSError as e:
+                print("    (lock remove failed %s: %s)" % (lock.name, e), file=sys.stderr)
+
+# Orphan locks with no matching sticky clear still block restarts after crashes.
+if not dry_run:
+    for lock in base.glob("*.jsonl.lock"):
+        try:
+            age_s = now_ms / 1000.0 - lock.stat().st_mtime
+        except OSError:
+            continue
+        if age_s * 1000 < stuck_age_ms:
+            continue
+        # Skip locks we already removed above.
+        if lock.name in locks_removed:
+            continue
+        # Only remove if sessions.json has no fresh running owner for this sid.
+        sid = lock.name.replace(".jsonl.lock", "")
+        owned_fresh = False
+        for entry in idx.values():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("sessionId") != sid:
+                continue
+            if entry.get("status") == "running":
+                started = entry.get("startedAt")
+                try:
+                    started_ms = int(started) if started is not None else None
+                except (TypeError, ValueError):
+                    started_ms = None
+                if started_ms is not None and (now_ms - started_ms) < stuck_age_ms:
+                    owned_fresh = True
+                break
+        if owned_fresh:
+            continue
+        try:
+            lock.unlink()
+            locks_removed.append(lock.name)
+            changed = True
+        except OSError:
+            pass
+
+if dry_run:
+    for line in cleared:
+        print("    would clear %s" % line)
+    orphan_locks = []
+    for lock in base.glob("*.jsonl.lock"):
+        try:
+            age_s = now_ms / 1000.0 - lock.stat().st_mtime
+        except OSError:
+            continue
+        if age_s * 1000 >= stuck_age_ms:
+            orphan_locks.append("%s age=%ss" % (lock.name, int(age_s)))
+    for line in orphan_locks:
+        print("    would remove lock %s" % line)
+    need_restart = 1 if (cleared or orphan_locks) else 0
+else:
+    if changed:
+        store.write_text(json.dumps(idx, indent=2) + "\n", encoding="utf-8")
+    for line in cleared:
+        print("    cleared %s" % line)
+    for name in locks_removed:
+        print("    removed lock %s" % name)
+    if not cleared and not locks_removed:
+        print("    (none)")
+    need_restart = 1 if (cleared or locks_removed) else 0
+
+print("restart=%d" % need_restart)
+PY
+)" || {
+    echo "    (${id}: sticky unwedge failed)" >&2
+    echo "restart=0"
+    return 1
+  }
+  printf '%s\n' "$out"
+}
+
+# Periodic / ops cleanup: truncate ALL oversized sessions (telegram, A2A/direct, cron, tui),
+# unwedge sticky runs that freeze channels, optionally enforce session-store maintenance,
+# and rotate huge cache-trace logs.
 # Uses --max-lines (hard truncate) so LLM auto-compaction timeouts cannot block recovery.
 cleanup_openclaw_sessions() {
   local id="$1"
   local dry_run="${2:-0}"
   local container max_lines token_floor store_cleanup cache_mb out size_bytes limit_bytes
+  local unwedge_out need_restart=0
   container="$(agent_container "$id")"
   max_lines="${IDENTYCLAW_SESSION_CLEANUP_MAX_LINES:-${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-120}}"
   token_floor="${IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR:-${IDENTYCLAW_SESSION_COMPACT_TOKEN_FLOOR:-50000}}"
@@ -210,6 +352,28 @@ cleanup_openclaw_sessions() {
     echo "==> ${id}: container not running — skip" >&2
     return 1
   }
+
+  unwedge_out="$(_unwedge_stuck_openclaw_sessions "$id" "$container" "$dry_run" || true)"
+  printf '%s\n' "$unwedge_out"
+  if printf '%s\n' "$unwedge_out" | grep -qx 'restart=1'; then
+    need_restart=1
+  fi
+
+  # In-memory runs ignore sessions.json edits — bounce gateway after unwedge (skip on dry-run).
+  if [[ "$need_restart" == "1" && "$dry_run" != "1" ]]; then
+    echo "==> ${id}: restarting gateway after sticky unwedge"
+    if ! podman restart "$container" >/dev/null; then
+      echo "    (${id}: podman restart failed)" >&2
+    else
+      # Brief wait so sessions compact RPC can reach a live gateway.
+      local i
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        podman exec "$container" true 2>/dev/null && break
+        sleep 1
+      done
+      sleep 3
+    fi
+  fi
 
   echo "==> ${id}: session cleanup (floor=${token_floor} tokens → last ${max_lines} lines; dry_run=${dry_run})"
   _openclaw_list_oversized_sessions "$container" "$token_floor" all \

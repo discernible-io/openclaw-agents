@@ -1165,8 +1165,8 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh test-mail-hola [id] [peer-token-id]` | Reciprocal email HOLA; `REQUIRE_MAIL_HOLA=1` enforces replies |
 | `./identyclaw.sh respond-mail [id\|all]` | Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point) |
 | `./identyclaw.sh enable-mail-responder [interval]` | Install user systemd timer running `respond-mail` (default 5min) |
-| `./identyclaw.sh cleanup-sessions [id\|all] [--dry-run]` | Truncate oversized sessions (telegram/cron/A2A/tui) + store/cache maintenance |
-| `./identyclaw.sh enable-session-cleanup [OnCalendar]` | Daily user systemd timer for `cleanup-sessions` (default `04:15`) |
+| `./identyclaw.sh cleanup-sessions [id\|all] [--dry-run]` | Unwedge sticky runs + truncate oversized sessions + store/cache maintenance |
+| `./identyclaw.sh enable-session-cleanup [interval\|OnCalendar]` | User systemd timer for `cleanup-sessions` (default every `1h`) |
 | `./identyclaw.sh enable-inbox-check agent-a [interval]` | Enable LLM inbox heartbeat / concierge (default 1h) |
 | `./identyclaw.sh enable-calendar-check agent-a [interval]` | Enable calendar/reminder heartbeat (default 30m) |
 | `./identyclaw.sh respond-a2a-webhook-smoke [id\|all]` | Handle inbound A2A webhook smoke probes (constitution helper) |
