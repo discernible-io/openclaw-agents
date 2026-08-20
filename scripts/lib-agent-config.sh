@@ -1237,18 +1237,32 @@ validate_openrouter_api_key() {
   }
 }
 
-# OpenClaw 2026.6+ reads model auth from openclaw-agent.sqlite; legacy auth-profiles.json alone is ignored.
+# OpenClaw 2026.6+ stores model auth in openclaw-agent.sqlite (ephemeral across memory wipes).
+# Durable -app source of truth: secrets/OPENROUTER_API_KEY (same pattern as TELEGRAM_BOT_TOKEN).
+# Fallbacks: .env OPENROUTER_API_KEY, auth-profiles.json.migrated-*, live auth-profiles.json.
+# Every start/rebuild re-pastes into sqlite and seeds secrets/ when only a fallback remains.
 
-# OpenClaw 2026.6+ reads model auth from openclaw-agent.sqlite; legacy auth-profiles.json alone is ignored.
+# OpenClaw 2026.6+ stores model auth in openclaw-agent.sqlite (ephemeral across memory wipes).
+# Durable -app source of truth: secrets/OPENROUTER_API_KEY (same pattern as TELEGRAM_BOT_TOKEN).
+# Fallbacks: .env OPENROUTER_API_KEY, auth-profiles.json.migrated-*, live auth-profiles.json.
+# Every start/rebuild re-pastes into sqlite and seeds secrets/ when only a fallback remains.
 ensure_openrouter_sqlite_auth() {
   local id="$1" rc=0
   local container
   container="$(agent_container "$id")"
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
 
-  podman exec "$container" node <<'NODE' 2>/dev/null || rc=$?
+  # -i is required so the heredoc reaches node inside the container.
+  podman exec -i "$container" node <<'NODE' 2>/dev/null || rc=$?
 const { spawnSync } = require("child_process");
 const fs = require("fs");
+const path = require("path");
+
+const agentDir = "/home/node/.openclaw/agents/main/agent";
+const secretsDir = "/home/node/.openclaw/secrets";
+const secretPath = path.join(secretsDir, "OPENROUTER_API_KEY");
+const profilesPath = path.join(agentDir, "auth-profiles.json");
+const envPath = "/home/node/.openclaw/.env";
 
 function authList() {
   return spawnSync("node", ["/app/openclaw.mjs", "models", "auth", "list", "--agent", "main"], {
@@ -1257,16 +1271,115 @@ function authList() {
   });
 }
 
-const listed = authList();
-const out = listed.stdout || "";
-if (/openrouter:default/.test(out) || /\[openrouter\/api_key\]/.test(out)) {
-  process.exit(0);
+function keyFromProfilesFile(file) {
+  try {
+    const key = JSON.parse(fs.readFileSync(file, "utf8"))?.profiles?.["openrouter:default"]?.key;
+    return key?.startsWith("sk-or-") ? key : null;
+  } catch {
+    return null;
+  }
 }
 
-const path = "/home/node/.openclaw/agents/main/agent/auth-profiles.json";
-if (!fs.existsSync(path)) process.exit(0);
-const key = JSON.parse(fs.readFileSync(path, "utf8"))?.profiles?.["openrouter:default"]?.key;
-if (!key?.startsWith("sk-or-")) process.exit(0);
+function keyFromFile(file) {
+  try {
+    if (!fs.existsSync(file)) return null;
+    const key = fs.readFileSync(file, "utf8").trim();
+    return key.startsWith("sk-or-") ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function keyFromEnv() {
+  try {
+    if (!fs.existsSync(envPath)) return null;
+    for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+      if (!line || line.startsWith("#") || !line.includes("=")) continue;
+      const i = line.indexOf("=");
+      const k = line.slice(0, i).trim();
+      let v = line.slice(i + 1).trim();
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+        v = v.slice(1, -1);
+      }
+      if (k === "OPENROUTER_API_KEY" && v.startsWith("sk-or-")) return v;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function resolveOpenRouterKey() {
+  const fromSecret = keyFromFile(secretPath);
+  if (fromSecret) return { key: fromSecret, source: "secrets/OPENROUTER_API_KEY" };
+
+  const fromEnv = keyFromEnv();
+  if (fromEnv) return { key: fromEnv, source: ".env OPENROUTER_API_KEY" };
+
+  let best = null;
+  try {
+    for (const name of fs.readdirSync(agentDir)) {
+      if (!name.startsWith("auth-profiles.json.migrated")) continue;
+      const file = path.join(agentDir, name);
+      const key = keyFromProfilesFile(file);
+      if (!key) continue;
+      const mtime = fs.statSync(file).mtimeMs;
+      if (!best || mtime > best.mtime) best = { key, mtime, source: name };
+    }
+  } catch {
+    /* ignore */
+  }
+  if (best) return { key: best.key, source: best.source };
+
+  const fromLive = keyFromProfilesFile(profilesPath);
+  if (fromLive) return { key: fromLive, source: "auth-profiles.json" };
+  return null;
+}
+
+function seedSecret(key) {
+  try {
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(secretPath, key, { mode: 0o600 });
+    fs.chmodSync(secretPath, 0o600);
+  } catch {
+    /* ignore — host may remount; next writable start will retry */
+  }
+}
+
+function syncEnv(key) {
+  try {
+    let lines = [];
+    if (fs.existsSync(envPath)) {
+      lines = fs.readFileSync(envPath, "utf8").split(/\r?\n/).filter((ln) => !ln.startsWith("OPENROUTER_API_KEY="));
+      while (lines.length && lines[lines.length - 1] === "") lines.pop();
+    }
+    lines.push(`OPENROUTER_API_KEY=${key}`);
+    fs.writeFileSync(envPath, lines.join("\n") + "\n", { mode: 0o600 });
+    try {
+      fs.chmodSync(envPath, 0o600);
+    } catch {
+      /* ignore */
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+const listed = authList();
+const out = listed.stdout || "";
+const hasSqliteAuth = /openrouter:default/.test(out) || /\[openrouter\/api_key\]/.test(out);
+
+const resolved = resolveOpenRouterKey();
+if (!resolved) process.exit(0);
+
+// Always keep secrets/ + .env populated so the next wipe/rebuild does not need patching.
+seedSecret(resolved.key);
+syncEnv(resolved.key);
+
+if (hasSqliteAuth) process.exit(0);
+
+// Do not recreate live auth-profiles.json: OpenClaw migrates it into sqlite and treats a
+// reintroduced JSON as AuthProfileMigrationRequiredError.
 
 const r = spawnSync(
   "node",
@@ -1280,12 +1393,12 @@ const r = spawnSync(
     "--profile-id",
     "openrouter:default",
   ],
-  { input: key, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
+  { input: resolved.key, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] },
 );
 if (r.status !== 0) process.exit(r.status ?? 1);
 NODE
   if [[ $rc -ne 0 ]]; then
-    echo "    (${id}: OpenRouter sqlite auth sync failed — paste key: openclaw models auth paste-api-key --provider openrouter)" >&2
+    echo "    (${id}: OpenRouter sqlite auth sync failed — check secrets/OPENROUTER_API_KEY or run: ./identyclaw.sh set-api-key ${id})" >&2
   fi
 }
 
@@ -1293,79 +1406,56 @@ NODE
 write_openrouter_api_key() {
   local id="$1"
   local key="$2"
-  local config_dir agent_dir
+  local config_dir container
   config_dir="$(agent_home "$id")"
-  agent_dir="$config_dir/agents/main/agent"
-  validate_openrouter_api_key "$key"
-  if mkdir -p "$agent_dir" 2>/dev/null; then
-    _write_openrouter_auth_profiles_host "$agent_dir" "$key"
-  else
-    _write_openrouter_auth_profiles_in_container "$id" "$key"
-  fi
-}
-
-
-_write_openrouter_auth_profiles_host() {
-  local agent_dir="$1"
-  local key="$2"
-  python3 - "$agent_dir/auth-profiles.json" "$key" <<'PY'
-import json, sys, os
-path, key = sys.argv[1], sys.argv[2]
-data = {
-    "version": 1,
-    "profiles": {
-        "openrouter:default": {
-            "type": "api_key",
-            "provider": "openrouter",
-            "key": key,
-        }
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-PY
-  printf '{"version":1,"usageStats":{}}\n' >"$agent_dir/auth-state.json"
-  chmod 600 "$agent_dir/auth-state.json"
-}
-
-
-_write_openrouter_auth_profiles_in_container() {
-  local id="$1"
-  local key="$2"
-  local container
   container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || {
-    echo "Cannot store OpenRouter key: no access to agent dir and ${container} is not running" >&2
+  validate_openrouter_api_key "$key"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    printf '%s' "$key" >"$config_dir/secrets/OPENROUTER_API_KEY"
+    chmod 600 "$config_dir/secrets/OPENROUTER_API_KEY"
+  elif _agent_container_name_running "$container"; then
+    printf '%s' "$key" | podman exec -i "$container" sh -c '
+set -e
+mkdir -p /home/node/.openclaw/secrets
+chmod 700 /home/node/.openclaw/secrets
+cat >/home/node/.openclaw/secrets/OPENROUTER_API_KEY
+chmod 600 /home/node/.openclaw/secrets/OPENROUTER_API_KEY
+'
+  else
+    echo "Cannot store OpenRouter key: host secrets/ not writable and ${container} is not running" >&2
+    echo "Run: ./identyclaw.sh restore-host-access ${id}" >&2
     return 1
-  }
-  podman exec -i "$container" python3 - "$key" <<'PY'
-import json, os, sys
-key = sys.argv[1]
-root = "/home/node/.openclaw/agents/main/agent"
-os.makedirs(root, mode=0o700, exist_ok=True)
-path = os.path.join(root, "auth-profiles.json")
-data = {
-    "version": 1,
-    "profiles": {
-        "openrouter:default": {
-            "type": "api_key",
-            "provider": "openrouter",
-            "key": key,
-        }
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-state = os.path.join(root, "auth-state.json")
-with open(state, "w", encoding="utf-8") as f:
-    f.write('{"version":1,"usageStats":{}}\n')
-os.chmod(state, 0o600)
-PY
+  fi
+  sync_openrouter_env "$config_dir" "$container"
   ensure_openrouter_sqlite_auth "$id"
+}
+
+
+# Gateway / rebuild path reads secrets/OPENROUTER_API_KEY; keep .env in sync for --env-file.
+sync_openrouter_env() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local key="" use_container=0 env_path
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -r "$config_dir/secrets/OPENROUTER_API_KEY" ]]; then
+    key="$(tr -d '\n' <"$config_dir/secrets/OPENROUTER_API_KEY")"
+  elif _agent_container_name_running "$container"; then
+    key="$(podman exec "$container" sh -c 'tr -d "\n" < /home/node/.openclaw/secrets/OPENROUTER_API_KEY' 2>/dev/null || true)"
+  fi
+  [[ -n "$key" ]] || return 0
+  IFS=$'\t' read -r use_container env_path < <(agent_env_write_context "$config_dir" "$container")
+  _agent_env_python "$config_dir" "$container" "$use_container" "$env_path" "$key" <<'PY'
+import sys, os
+path, key = sys.argv[1], sys.argv[2]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("OPENROUTER_API_KEY=")]
+lines.append(f"OPENROUTER_API_KEY={key}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
 }
 
 
@@ -1388,15 +1478,63 @@ ensure_opencode_sqlite_auth() {
   container="$(agent_container "$id")"
   podman ps --format '{{.Names}}' | grep -qx "$container" || return 0
 
+  # Prefer secrets/OPENCODE_API_KEY, then migrated/.env/live profiles. Seed secrets/ when found.
   key="$(podman exec "$container" python3 -c "
-import json
+import json, os
 from pathlib import Path
-p = Path('/home/node/.openclaw/agents/main/agent/auth-profiles.json')
-if not p.is_file():
-    raise SystemExit(0)
-profiles = json.loads(p.read_text(encoding='utf-8')).get('profiles', {})
-k = (profiles.get('opencode:default') or {}).get('key') or (profiles.get('opencode-go:default') or {}).get('key')
-if k and k.startswith('sk-') and not k.startswith('sk-or-'):
+root = Path('/home/node/.openclaw/agents/main/agent')
+secrets = Path('/home/node/.openclaw/secrets')
+secret_path = secrets / 'OPENCODE_API_KEY'
+
+def valid(k):
+    return bool(k) and k.startswith('sk-') and not k.startswith('sk-or-')
+
+def key_from_profiles(path: Path):
+    if not path.is_file():
+        return None
+    try:
+        profiles = json.loads(path.read_text(encoding='utf-8')).get('profiles', {})
+    except Exception:
+        return None
+    for pid in ('opencode:default', 'opencode-go:default'):
+        k = (profiles.get(pid) or {}).get('key')
+        if valid(k):
+            return k
+    return None
+
+k = None
+if secret_path.is_file():
+    k = secret_path.read_text(encoding='utf-8').strip()
+    if not valid(k):
+        k = None
+if not k:
+    env = Path('/home/node/.openclaw/.env')
+    if env.is_file():
+        for line in env.read_text(encoding='utf-8').splitlines():
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            name, val = line.split('=', 1)
+            if name.strip() != 'OPENCODE_API_KEY':
+                continue
+            val = val.strip().strip('\"').strip(\"'\")
+            if valid(val):
+                k = val
+                break
+if not k:
+    migrated = sorted(root.glob('auth-profiles.json.migrated*'), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in migrated:
+        k = key_from_profiles(path)
+        if k:
+            break
+if not k:
+    k = key_from_profiles(root / 'auth-profiles.json')
+if k:
+    try:
+        secrets.mkdir(parents=True, exist_ok=True)
+        secret_path.write_text(k, encoding='utf-8')
+        os.chmod(secret_path, 0o600)
+    except Exception:
+        pass
     print(k, end='')
 " 2>/dev/null)" || return 0
   [[ -n "$key" ]] || return 0
@@ -1411,7 +1549,7 @@ if k and k.startswith('sk-') and not k.startswith('sk-or-'):
       --provider opencode-go --profile-id opencode-go:default <<<"$key" >/dev/null 2>&1 || rc=1
   fi
   if [[ $rc -ne 0 ]]; then
-    echo "    (${id}: OpenCode sqlite auth sync failed — openclaw models auth paste-api-key --provider opencode)" >&2
+    echo "    (${id}: OpenCode sqlite auth sync failed — check secrets/OPENCODE_API_KEY)" >&2
   fi
 }
 
@@ -1419,79 +1557,55 @@ if k and k.startswith('sk-') and not k.startswith('sk-or-'):
 write_opencode_api_key() {
   local id="$1"
   local key="$2"
-  local config_dir agent_dir
+  local config_dir container
   config_dir="$(agent_home "$id")"
-  agent_dir="$config_dir/agents/main/agent"
-  validate_opencode_api_key "$key"
-  if mkdir -p "$agent_dir" 2>/dev/null; then
-    _write_opencode_auth_profiles_host "$agent_dir" "$key"
-  else
-    _write_opencode_auth_profiles_in_container "$id" "$key"
-    return $?
-  fi
-  if agent_container_running "$id"; then
-    ensure_opencode_sqlite_auth "$id"
-  fi
-}
-
-
-_write_opencode_auth_profiles_host() {
-  local agent_dir="$1"
-  local key="$2"
-  python3 - "$agent_dir/auth-profiles.json" "$key" <<'PY'
-import json, sys, os
-path, key = sys.argv[1], sys.argv[2]
-profile = {"type": "api_key", "key": key}
-data = {
-    "version": 1,
-    "profiles": {
-        "opencode:default": {**profile, "provider": "opencode"},
-        "opencode-go:default": {**profile, "provider": "opencode-go"},
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-PY
-  printf '{"version":1,"usageStats":{}}\n' >"$agent_dir/auth-state.json"
-  chmod 600 "$agent_dir/auth-state.json"
-}
-
-
-_write_opencode_auth_profiles_in_container() {
-  local id="$1"
-  local key="$2"
-  local container
   container="$(agent_container "$id")"
-  podman ps --format '{{.Names}}' | grep -qx "$container" || {
-    echo "Cannot store OpenCode key: no access to agent dir and ${container} is not running" >&2
+  validate_opencode_api_key "$key"
+  if mkdir -p "$config_dir/secrets" 2>/dev/null && [[ -w "$config_dir/secrets" ]]; then
+    printf '%s' "$key" >"$config_dir/secrets/OPENCODE_API_KEY"
+    chmod 600 "$config_dir/secrets/OPENCODE_API_KEY"
+  elif _agent_container_name_running "$container"; then
+    printf '%s' "$key" | podman exec -i "$container" sh -c '
+set -e
+mkdir -p /home/node/.openclaw/secrets
+chmod 700 /home/node/.openclaw/secrets
+cat >/home/node/.openclaw/secrets/OPENCODE_API_KEY
+chmod 600 /home/node/.openclaw/secrets/OPENCODE_API_KEY
+'
+  else
+    echo "Cannot store OpenCode key: host secrets/ not writable and ${container} is not running" >&2
+    echo "Run: ./identyclaw.sh restore-host-access ${id}" >&2
     return 1
-  }
-  podman exec -i "$container" python3 - "$key" <<'PY'
-import json, os, sys
-key = sys.argv[1]
-root = "/home/node/.openclaw/agents/main/agent"
-os.makedirs(root, mode=0o700, exist_ok=True)
-path = os.path.join(root, "auth-profiles.json")
-profile = {"type": "api_key", "key": key}
-data = {
-    "version": 1,
-    "profiles": {
-        "opencode:default": {**profile, "provider": "opencode"},
-        "opencode-go:default": {**profile, "provider": "opencode-go"},
-    },
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-os.chmod(path, 0o600)
-state = os.path.join(root, "auth-state.json")
-with open(state, "w", encoding="utf-8") as f:
-    f.write('{"version":1,"usageStats":{}}\n')
-os.chmod(state, 0o600)
-PY
+  fi
+  sync_opencode_env "$config_dir" "$container"
   ensure_opencode_sqlite_auth "$id"
+}
+
+
+sync_opencode_env() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local key="" use_container=0 env_path
+  [[ -n "$container" ]] || container="$(agent_container_for_config_dir "$config_dir")"
+  if [[ -r "$config_dir/secrets/OPENCODE_API_KEY" ]]; then
+    key="$(tr -d '\n' <"$config_dir/secrets/OPENCODE_API_KEY")"
+  elif _agent_container_name_running "$container"; then
+    key="$(podman exec "$container" sh -c 'tr -d "\n" < /home/node/.openclaw/secrets/OPENCODE_API_KEY' 2>/dev/null || true)"
+  fi
+  [[ -n "$key" ]] || return 0
+  IFS=$'\t' read -r use_container env_path < <(agent_env_write_context "$config_dir" "$container")
+  _agent_env_python "$config_dir" "$container" "$use_container" "$env_path" "$key" <<'PY'
+import sys, os
+path, key = sys.argv[1], sys.argv[2]
+lines = []
+if os.path.isfile(path):
+    with open(path, encoding="utf-8") as f:
+        lines = [ln for ln in f if not ln.startswith("OPENCODE_API_KEY=")]
+lines.append(f"OPENCODE_API_KEY={key}\n")
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(lines)
+os.chmod(path, 0o600)
+PY
 }
 
 
@@ -1514,12 +1628,22 @@ mirror_agent_config() {
   token="$(grep '^OPENCLAW_GATEWAY_TOKEN=' "$to_dir/.env" | cut -d= -f2-)"
   [[ -n "$token" ]] || { echo "Missing OPENCLAW_GATEWAY_TOKEN in $to_dir/.env" >&2; exit 1; }
 
-  if [[ -f "$from_dir/agents/main/agent/auth-profiles.json" ]]; then
+  if [[ -f "$from_dir/secrets/OPENROUTER_API_KEY" ]]; then
+    mkdir -p "$to_dir/secrets"
+    cp "$from_dir/secrets/OPENROUTER_API_KEY" "$to_dir/secrets/OPENROUTER_API_KEY"
+    chmod 600 "$to_dir/secrets/OPENROUTER_API_KEY"
+  elif [[ -f "$from_dir/agents/main/agent/auth-profiles.json" ]]; then
+    # Legacy mirror path — prefer secrets/OPENROUTER_API_KEY going forward.
     mkdir -p "$to_dir/agents/main/agent"
     cp "$from_dir/agents/main/agent/auth-profiles.json" "$to_dir/agents/main/agent/auth-profiles.json"
     chmod 600 "$to_dir/agents/main/agent/auth-profiles.json"
     printf '{"version":1,"usageStats":{}}\n' >"$to_dir/agents/main/agent/auth-state.json"
     chmod 600 "$to_dir/agents/main/agent/auth-state.json"
+  fi
+  if [[ -f "$from_dir/secrets/OPENCODE_API_KEY" ]]; then
+    mkdir -p "$to_dir/secrets"
+    cp "$from_dir/secrets/OPENCODE_API_KEY" "$to_dir/secrets/OPENCODE_API_KEY"
+    chmod 600 "$to_dir/secrets/OPENCODE_API_KEY"
   fi
 
   python3 - "$from_dir/openclaw.json" "$to_dir/openclaw.json" "$gw" "$token" <<'PY'

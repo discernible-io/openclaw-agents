@@ -1103,7 +1103,7 @@ Rebuild the image to bake in the symlink (`Containerfile.agent`):
 ./identyclaw.sh restart all
 ```
 
-If auth still fails after a real key is saved, check `~/openclaw-agents-app/agents/agent-a/agents/main/agent/auth-profiles.json` — the `key` field must start with `sk-or-`, not a command like `cd ~/...`.
+If auth still fails after a real key is saved, check `~/openclaw-agents-app/agents/agent-a/secrets/OPENROUTER_API_KEY` (canonical; survives rebuilds). Legacy fallbacks: `.env OPENROUTER_API_KEY` and `agents/main/agent/auth-profiles.json.migrated-*`. The key must start with `sk-or-`, not a shell command.
 
 ### Onboarding: systemd / gateway not detected
 
@@ -1147,7 +1147,7 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh set-instagram agent-a` | Store Instagram username/password in `secrets/` |
 | `./identyclaw.sh set-twitter agent-a` | Store X/Twitter login; enables hourly DM polling via heartbeat |
 | `./identyclaw.sh set-twitter-cookies agent-a` | Store X session cookies (`AUTH_TOKEN` + `CT0`) for bird-twitter skill |
-| `./identyclaw.sh set-api-key agent-a` | Store OpenRouter API key (`sk-or-...`) with validation |
+| `./identyclaw.sh set-api-key agent-a` | Store OpenRouter API key in `secrets/OPENROUTER_API_KEY` (`sk-or-...`; survives rebuilds) |
 | `./identyclaw.sh set-opencode-key agent-a` | Store OpenCode Zen/Go API key (when `OPENCLAW_LLM_PROVIDER=opencode`) |
 | `./identyclaw.sh mirror agent-c` | Copy config + LLM auth from another agent (e.g. agent-a → agent-c) |
 | `./identyclaw.sh export-agent agent-a [file]` | Pack agent secrets + config for migration (`--with-browser` optional) |

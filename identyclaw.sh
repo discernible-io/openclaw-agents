@@ -50,8 +50,8 @@
 #   test-webhook-p2p [from] [to]  P2P webhook (defaults: local → peer)
 #   send-rodit-webhook <id> <peer-token-id> [text]  POST signed /hooks/wake to peer after 10s (outbound.agents key)
 #   webhook-url <id> [path]  Print public HTTPS webhook URL (pod mode) or loopback URL
-#   set-api-key <id> [key]     Store OpenRouter API key (validated); or OPENROUTER_API_KEY
-#   set-opencode-key <id> [key]  Store OpenCode Zen/Go API key (validated); or OPENCODE_API_KEY
+#   set-api-key <id> [key]     Store OpenRouter API key in secrets/ (survives rebuilds); or OPENROUTER_API_KEY
+#   set-opencode-key <id> [key]  Store OpenCode API key in secrets/ (survives rebuilds); or OPENCODE_API_KEY
 #   mirror <to> [from]     Copy working openclaw.json + OpenRouter auth from another agent
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
 #   import-agent <id> <file>  Restore agent from export-agent archive
@@ -1185,7 +1185,7 @@ cmd_set_api_key() {
   fi
   [[ -n "$key" ]] || { echo "empty key" >&2; exit 1; }
   write_openrouter_api_key "$id" "$key"
-  echo "API key stored for ${id} (auth-profiles.json)"
+  echo "API key stored for ${id} (secrets/OPENROUTER_API_KEY; survives rebuilds)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
@@ -1204,7 +1204,7 @@ cmd_set_opencode_key() {
   fi
   [[ -n "$key" ]] || { echo "empty key" >&2; exit 1; }
   write_opencode_api_key "$id" "$key"
-  echo "API key stored for ${id} (opencode + opencode-go auth-profiles.json)"
+  echo "API key stored for ${id} (secrets/OPENCODE_API_KEY; survives rebuilds)"
   echo "Restart to apply: $0 restart ${id}"
 }
 
