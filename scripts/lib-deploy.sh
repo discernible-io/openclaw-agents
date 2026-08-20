@@ -157,17 +157,47 @@ pod_agent_ingress_host_args() {
   [[ -n "$host" ]] && printf '%s\n' "--add-host=${host}:127.0.0.1"
 }
 
-# Migadu publishes multiple A/AAAA records; glibc prefers IPv6 first. On this host IPv6
-# SMTP is reset and mta0 (51.255.82.75) is flaky — pin smtp.migadu.com to mta1 IPv4 so
-# Himalaya STARTTLS succeeds and cert validation keeps the hostname. Override: MIGADU_SMTP_IPV4.
+# Migadu publishes multiple A/AAAA records; glibc may prefer broken IPv6, and MTA
+# A records rotate. Pin smtp.migadu.com to a live IPv4 so Himalaya STARTTLS keeps
+# the hostname for cert validation. Override with MIGADU_SMTP_IPV4; otherwise pick
+# the first A record that accepts TCP 587 (stale hardcodes break SMTP send).
+_migadu_smtp_ipv4_candidates() {
+  if command -v dig >/dev/null 2>&1; then
+    dig +short smtp.migadu.com A 2>/dev/null | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/'
+  fi
+  if command -v getent >/dev/null 2>&1; then
+    getent ahostsv4 smtp.migadu.com 2>/dev/null | awk '{ print $1 }'
+  fi
+  # Last-known-good fallbacks (update if Migadu rotates again)
+  printf '%s\n' 57.128.22.240 51.210.223.36 141.94.97.118
+}
 
-# Migadu publishes multiple A/AAAA records; glibc prefers IPv6 first. On this host IPv6
-# SMTP is reset and mta0 (51.255.82.75) is flaky — pin smtp.migadu.com to mta1 IPv4 so
-# Himalaya STARTTLS succeeds and cert validation keeps the hostname. Override: MIGADU_SMTP_IPV4.
+_migadu_smtp_ipv4_reachable() {
+  local ip="$1"
+  [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  timeout 2 bash -c "echo >/dev/tcp/${ip}/587" >/dev/null 2>&1
+}
+
 pod_migadu_smtp_host_args() {
-  local ip="${MIGADU_SMTP_IPV4:-37.59.57.117}"
+  local ip cand
   load_env
-  [[ "$IDENTYCLAW_DEPLOY_MODE" == "pod" ]] || return 0
+  [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] || return 0
+  ip="${MIGADU_SMTP_IPV4:-}"
+  if [[ -n "$ip" ]]; then
+    if ! _migadu_smtp_ipv4_reachable "$ip"; then
+      echo "Warning: MIGADU_SMTP_IPV4=${ip} is not reachable on :587; probing DNS A records." >&2
+      ip=""
+    fi
+  fi
+  if [[ -z "$ip" ]]; then
+    while IFS= read -r cand; do
+      [[ -z "$cand" ]] && continue
+      if _migadu_smtp_ipv4_reachable "$cand"; then
+        ip="$cand"
+        break
+      fi
+    done < <(_migadu_smtp_ipv4_candidates | awk '!seen[$0]++')
+  fi
   [[ -n "$ip" ]] || return 0
   printf '%s\n' "--add-host=smtp.migadu.com:${ip}"
 }
