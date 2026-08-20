@@ -35,6 +35,8 @@
 #   enable-calendar-check <id> [interval]  Enable calendar/reminder heartbeat (default 30m)
 #   enable-slc-heartbeat <id> [interval]  Enable SLC game heartbeat (default 10m; removes stale local playbooks)
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
+#   cleanup-sessions [id|all] [--dry-run]  Truncate oversized sessions (telegram/cron/A2A/tui) + store/cache maintenance
+#   enable-session-cleanup [OnCalendar]  Install daily user systemd timer for cleanup-sessions (default 04:15)
 #   respond-a2a-hola-smoke [id|all]  Deterministic inbound A2A HOLA probe email sender (smoke tests)
 #   enable-a2a-hola-smoke-responder [interval]  Timer for respond-a2a-hola-smoke (default 1min)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
@@ -73,7 +75,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,66p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -714,6 +716,81 @@ cmd_fix_session_images() {
   else
     fix_openclaw_session_images "$target"
   fi
+}
+
+# Truncate oversized transcripts (all session keys), enforce store cleanup, rotate huge cache-trace.
+# Prefer this over LLM /compact when auto-compaction times out ("Context is too large…").
+cmd_cleanup_sessions() {
+  local target="all"
+  local dry_run=0
+  local arg id
+  require_podman
+  load_env
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run|-n) dry_run=1 ;;
+      -h|--help|help)
+        echo "Usage: $0 cleanup-sessions [id|all] [--dry-run]"
+        echo "  Truncates sessions at/above IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR (default 50k)"
+        echo "  to the last IDENTYCLAW_SESSION_CLEANUP_MAX_LINES lines (default 120)."
+        echo "  Also runs sessions cleanup --enforce and rotates oversized cache-trace.jsonl."
+        echo "  Schedule daily: $0 enable-session-cleanup"
+        exit 0
+        ;;
+      all|agent-[a-z]) target="$arg" ;;
+      *)
+        echo "Usage: $0 cleanup-sessions [id|all] [--dry-run]" >&2
+        exit 1
+        ;;
+    esac
+  done
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      cleanup_openclaw_sessions "$id" "$dry_run" || true
+    done
+  else
+    cleanup_openclaw_sessions "$target" "$dry_run"
+  fi
+}
+
+# Install a daily user systemd timer that runs cleanup-sessions for all AGENT_IDS.
+cmd_enable_session_cleanup() {
+  require_rootless_user
+  local on_calendar="${1:-${IDENTYCLAW_SESSION_CLEANUP_ON_CALENDAR:-*-*-* 04:15:00}}"
+  local unit_dir="${HOME}/.config/systemd/user"
+  local script_path="${ROOT}/identyclaw.sh"
+  load_env
+  mkdir -p "$unit_dir"
+  cat >"${unit_dir}/identyclaw-session-cleanup.service" <<EOF
+[Unit]
+Description=IdentyClaw OpenClaw session cleanup (truncate oversized context + store maintenance)
+After=podman-restart.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${ROOT}
+ExecStart=/usr/bin/env bash ${script_path} cleanup-sessions all
+EOF
+  cat >"${unit_dir}/identyclaw-session-cleanup.timer" <<EOF
+[Unit]
+Description=Daily IdentyClaw session cleanup (${on_calendar})
+
+[Timer]
+OnCalendar=${on_calendar}
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now identyclaw-session-cleanup.timer
+  echo "==> Session cleanup timer enabled (OnCalendar=${on_calendar})."
+  echo "    Run once:  $0 cleanup-sessions all"
+  echo "    Dry-run:   $0 cleanup-sessions all --dry-run"
+  echo "    Status:    systemctl --user status identyclaw-session-cleanup.timer"
+  echo "    Logs:      journalctl --user -u identyclaw-session-cleanup.service -f"
+  echo "    Disable:   systemctl --user disable --now identyclaw-session-cleanup.timer"
 }
 
 cmd_retire_exec_approvals() {
@@ -1367,6 +1444,8 @@ main() {
     enable-calendar-check) cmd_enable_calendar_check "$@" ;;
     enable-slc-heartbeat) cmd_enable_slc_heartbeat "$@" ;;
     fix-session-images) cmd_fix_session_images "$@" ;;
+    cleanup-sessions) cmd_cleanup_sessions "$@" ;;
+    enable-session-cleanup) cmd_enable_session_cleanup "$@" ;;
     respond-a2a-webhook-smoke) cmd_respond_a2a_webhook_smoke "$@" ;;
     enable-a2a-webhook-smoke-responder) cmd_enable_a2a_webhook_smoke_responder "$@" ;;
     respond-a2a-hola-smoke) cmd_respond_a2a_hola_smoke "$@" ;;

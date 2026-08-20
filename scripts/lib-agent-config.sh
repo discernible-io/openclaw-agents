@@ -94,23 +94,12 @@ ensure_openclaw_tool_result_image_patch() {
 }
 
 
-fix_openclaw_session_images() {
-  local id="$1"
-  local container max_lines token_floor
-  container="$(agent_container "$id")"
-  max_lines="${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-120}"
-  token_floor="${IDENTYCLAW_SESSION_COMPACT_TOKEN_FLOOR:-80000}"
-
-  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || {
-    echo "==> ${id}: container not running — skip" >&2
-    return 1
-  }
-
-  echo "==> ${id}: patching OpenClaw tool-result image placeholder"
-  ensure_openclaw_tool_result_image_patch "$id" || return 1
-  podman exec --user root "$container" node /tmp/patch-openclaw-tool-result-images.mjs --root /app 2>&1 | tail -5 || true
-
-  echo "==> ${id}: compacting long sessions (>= ${token_floor} tokens → last ${max_lines} lines)"
+# List oversized session keys as "tokens<TAB>key" on stdout.
+# mode=legacy → main/tui/heartbeat only (skips cron); mode=all → every session key.
+_openclaw_list_oversized_sessions() {
+  local container="$1"
+  local token_floor="$2"
+  local mode="${3:-all}"
   podman exec "$container" node dist/index.js sessions list --json --limit all 2>/dev/null | python3 -c '
 import json, re, sys
 raw = sys.stdin.read()
@@ -127,14 +116,16 @@ if isinstance(data, dict) and not sessions:
             sessions = v
             break
 floor = int(sys.argv[1])
+mode = sys.argv[2]
 for s in sessions:
     key = s.get("key") or s.get("sessionKey") or ""
     if not key:
         continue
-    if ":cron:" in key:
-        continue
-    if not (key.endswith(":main") or ":tui-" in key or ":main:heartbeat" in key):
-        continue
+    if mode == "legacy":
+        if ":cron:" in key:
+            continue
+        if not (key.endswith(":main") or ":tui-" in key or ":main:heartbeat" in key):
+            continue
     toks = s.get("totalTokens") or s.get("inputTokens") or 0
     usage = s.get("usage") or {}
     if not toks:
@@ -145,22 +136,158 @@ for s in sessions:
         toks = 0
     if toks >= floor:
         print(f"{toks}\t{key}")
-' "$token_floor" | while IFS=$'\t' read -r toks key; do
+' "$token_floor" "$mode"
+}
+
+_openclaw_compact_session_keys() {
+  local id="$1"
+  local container="$2"
+  local max_lines="$3"
+  local dry_run="${4:-0}"
+  local toks key out compacted=0 failed=0
+  while IFS=$'\t' read -r toks key; do
     [[ -n "$key" ]] || continue
+    if [[ "$dry_run" == "1" ]]; then
+      echo "    would compact ${key} (${toks} tokens → last ${max_lines} lines)"
+      compacted=$((compacted + 1))
+      continue
+    fi
     echo "    compact ${key} (${toks} tokens)"
     if ! out="$(podman exec "$container" node dist/index.js sessions compact "$key" \
       --max-lines "$max_lines" --json 2>&1)"; then
       echo "    (${id}: compact failed for ${key}: ${out})" >&2
+      failed=$((failed + 1))
       continue
     fi
     if echo "$out" | grep -q '"ok": false'; then
       echo "    (${id}: compact refused for ${key}: ${out})" >&2
+      failed=$((failed + 1))
     else
       echo "    ok"
+      compacted=$((compacted + 1))
     fi
   done
+  echo "    (${id}: compact summary compacted=${compacted} failed=${failed})"
+}
+
+fix_openclaw_session_images() {
+  local id="$1"
+  local container max_lines token_floor
+  container="$(agent_container "$id")"
+  max_lines="${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-120}"
+  token_floor="${IDENTYCLAW_SESSION_COMPACT_TOKEN_FLOOR:-80000}"
+
+  agent_container_running "$id" || {
+    echo "==> ${id}: container not running — skip" >&2
+    return 1
+  }
+
+  echo "==> ${id}: patching OpenClaw tool-result image placeholder"
+  ensure_openclaw_tool_result_image_patch "$id" || return 1
+  podman exec --user root "$container" node /tmp/patch-openclaw-tool-result-images.mjs --root /app 2>&1 | tail -5 || true
+
+  echo "==> ${id}: compacting long sessions (>= ${token_floor} tokens → last ${max_lines} lines)"
+  _openclaw_list_oversized_sessions "$container" "$token_floor" legacy \
+    | _openclaw_compact_session_keys "$id" "$container" "$max_lines" 0
 
   echo "==> ${id}: done"
+}
+
+# Daily / ops cleanup: truncate ALL oversized sessions (telegram, A2A/direct, cron, tui),
+# optionally enforce session-store maintenance, and rotate huge cache-trace logs.
+# Uses --max-lines (hard truncate) so LLM auto-compaction timeouts cannot block recovery.
+cleanup_openclaw_sessions() {
+  local id="$1"
+  local dry_run="${2:-0}"
+  local container max_lines token_floor store_cleanup cache_mb out size_bytes limit_bytes
+  container="$(agent_container "$id")"
+  max_lines="${IDENTYCLAW_SESSION_CLEANUP_MAX_LINES:-${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-120}}"
+  token_floor="${IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR:-${IDENTYCLAW_SESSION_COMPACT_TOKEN_FLOOR:-50000}}"
+  store_cleanup="${IDENTYCLAW_SESSION_CLEANUP_STORE:-1}"
+  cache_mb="${IDENTYCLAW_SESSION_CLEANUP_CACHE_TRACE_MB:-200}"
+
+  agent_container_running "$id" || {
+    echo "==> ${id}: container not running — skip" >&2
+    return 1
+  }
+
+  echo "==> ${id}: session cleanup (floor=${token_floor} tokens → last ${max_lines} lines; dry_run=${dry_run})"
+  _openclaw_list_oversized_sessions "$container" "$token_floor" all \
+    | _openclaw_compact_session_keys "$id" "$container" "$max_lines" "$dry_run"
+
+  if [[ "$store_cleanup" == "1" || "$store_cleanup" == "true" ]]; then
+    echo "==> ${id}: session store maintenance"
+    if [[ "$dry_run" == "1" ]]; then
+      out="$(podman exec "$container" node dist/index.js sessions cleanup --dry-run --json 2>&1 || true)"
+      echo "$out" | python3 -c '
+import json, re, sys
+raw = sys.stdin.read()
+m = re.search(r"\{[\s\S]*\}\s*$", raw)
+if not m:
+    print(raw[-500:] if raw else "(no output)")
+    raise SystemExit(0)
+d = json.loads(m.group(0))
+print(
+    "    would mutate=%s before=%s after=%s pruned=%s capped=%s"
+    % (
+        d.get("wouldMutate"),
+        d.get("beforeCount"),
+        d.get("afterCount"),
+        d.get("pruned"),
+        d.get("capped"),
+    )
+)
+' 2>/dev/null || echo "    (dry-run parse skipped)"
+    else
+      if ! out="$(podman exec "$container" node dist/index.js sessions cleanup --enforce --json 2>&1)"; then
+        echo "    (${id}: sessions cleanup failed: ${out})" >&2
+      else
+        echo "$out" | python3 -c '
+import json, re, sys
+raw = sys.stdin.read()
+m = re.search(r"\{[\s\S]*\}\s*$", raw)
+if not m:
+    print("    ok")
+    raise SystemExit(0)
+d = json.loads(m.group(0))
+print(
+    "    before=%s after=%s pruned=%s capped=%s"
+    % (
+        d.get("beforeCount"),
+        d.get("afterCount"),
+        d.get("pruned"),
+        d.get("capped"),
+    )
+)
+' 2>/dev/null || echo "    ok"
+      fi
+    fi
+  fi
+
+  # Rotate oversized prompt-cache traces (disk only; not chat context).
+  if [[ "$cache_mb" != "0" && "$cache_mb" != "off" ]]; then
+    limit_bytes=$((cache_mb * 1024 * 1024))
+    size_bytes="$(podman exec "$container" sh -c \
+      'wc -c </home/node/.openclaw/logs/cache-trace.jsonl 2>/dev/null || echo 0' | tr -d '[:space:]')"
+    size_bytes="${size_bytes:-0}"
+    if [[ "$size_bytes" =~ ^[0-9]+$ ]] && (( size_bytes > limit_bytes )); then
+      if [[ "$dry_run" == "1" ]]; then
+        echo "    would rotate cache-trace.jsonl ($((size_bytes / 1024 / 1024))MB > ${cache_mb}MB)"
+      else
+        echo "==> ${id}: rotating cache-trace.jsonl ($((size_bytes / 1024 / 1024))MB > ${cache_mb}MB)"
+        podman exec "$container" sh -c '
+          f=/home/node/.openclaw/logs/cache-trace.jsonl
+          if [ -f "$f" ]; then
+            mv -f "$f" "${f}.1" 2>/dev/null || rm -f "$f"
+            : >"$f"
+            chmod 600 "$f" 2>/dev/null || true
+          fi
+        ' || echo "    (${id}: cache-trace rotate failed)" >&2
+      fi
+    fi
+  fi
+
+  echo "==> ${id}: cleanup done"
 }
 
 
