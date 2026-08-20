@@ -258,6 +258,7 @@ himalaya message read <ID> --output plain                          # never envel
 - Plain `himalaya envelope list` (table) shows sender **names only**, not email addresses.
 - **Never** ask the operator for a sender's email if you have the message ID — read the message.
 - `himalaya message reply` / `message write` need `$EDITOR` and **fail** headless — use `scripts/himalaya-send.sh`.
+- Bare `himalaya message send` with **empty stdin** panics (`mail-parser` index out of bounds). That is not broken SMTP — use `scripts/himalaya-send.sh` (or a full heredoc with From/To/Subject/body).
 EOF
 }
 
@@ -297,13 +298,15 @@ messages to Trash (IMAP \`\\Deleted\`); it does not permanently expunge them.
 ## Send (headless — required in this container)
 
 There is **no \`\$EDITOR\`** in the gateway container, so \`himalaya message write\` always fails.
-Use the helper or raw send:
+**Prefer the helper** (never call \`himalaya message send\` with empty stdin — that panics in \`mail-parser\`):
 
 \`\`\`bash
 sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
 \`\`\`
 
-Or:
+Success prints \`Message successfully sent!\`. A \`mail-parser\` / index-out-of-bounds panic means empty or invalid stdin, not a dead SMTP path. A hang with no output is SMTP connectivity (host \`MIGADU_SMTP_IPV4\` / pod \`--add-host\` pin).
+
+Raw send only with a **full** heredoc (From/To/Subject + blank line + body):
 
 \`\`\`bash
 himalaya message send <<MAIL
@@ -860,6 +863,7 @@ himalaya message read <ID> --output plain
 - Plain `envelope list` table shows names only, not email addresses.
 - Never ask the operator for a sender's email if you have the message ID.
 - `himalaya message reply` / `message write` need `$EDITOR` and fail headless — use `scripts/himalaya-send.sh`.
+- Bare `himalaya message send` with empty stdin panics (`mail-parser` index out of bounds) — that is not broken SMTP; use `scripts/himalaya-send.sh`.
 
 ## Delete (move to Trash)
 
@@ -873,6 +877,8 @@ sh scripts/himalaya-delete.sh --all
 ```bash
 sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
 ```
+
+Success prints `Message successfully sent!`. A `mail-parser` panic means empty/invalid stdin, not dead SMTP. A hang with no output is SMTP connectivity (host pin).
 
 **Critical:** `From:` must be `{email}`. Migadu rejects other senders (553 *Sender address rejected*).
 
@@ -1066,6 +1072,7 @@ check requests (hourly, etc.) are **standing approval** — enable the `inbox-ch
 `workspace/HEARTBEAT.md` and set `openclaw.json` heartbeat interval per **EMAIL.md**.
 Never ask for sender email or "process internally" instead of replying. **Run `sh scripts/himalaya-send.sh` and confirm
 `Message successfully sent!` before reporting a reply as sent.**
+Never call bare `himalaya message send` with empty stdin — that panics in `mail-parser` and is not evidence SMTP is broken.
 
 **Critical:** \`From:\` must be \`{email}\` ({display_name}).
 """

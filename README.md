@@ -1047,6 +1047,8 @@ Also ensure:
 
 **Pod deploy — IPv6 SMTP reset / stale IPv4 pin:** If IMAP works but SMTP hangs or fails with `Connection reset by peer`, glibc may be preferring broken IPv6 — or a **stale** `--add-host` IPv4 for `smtp.migadu.com` (Migadu rotates MTA addresses; a dead pin makes `himalaya-send` hang until exec timeout → agent turn timeout). Pod deploy pins the hostname to the first A record that accepts TCP 587 via `--add-host` (override with `MIGADU_SMTP_IPV4` in `env.local`). Recreate the pod after changing: `./scripts/deploy-local-podman.sh --skip-build`.
 
+**`mail-parser` panic (`index out of bounds: the len is 0 but the index is 0`):** `himalaya message send` was invoked with **empty stdin** (e.g. `</dev/null` or a tool that opened the process with no message body). That crashes before SMTP. Use `sh scripts/himalaya-send.sh TO SUBJECT BODY` (or a full RFC822 heredoc). Do not treat this panic as evidence that outbound mail is broken when the helper succeeds.
+
 Quick check: `./identyclaw.sh test-mail agent-a` (IMAP) then send with `sh scripts/himalaya-send.sh …` inside the container.
 
 ### `onboard`: Address already in use (port 18789 / 18793)

@@ -47,12 +47,15 @@ For each in-scope message:
 - Say you will "process internally" instead of emailing the sender
 - Use `himalaya message reply` / `message write` (no `$EDITOR` in this container)
 - Use `himalaya envelope view` (does not exist)
+- Call bare `himalaya message send` with empty stdin, `</dev/null`, or a partial pipe — that **panics** (`mail-parser` index out of bounds). Prefer `scripts/himalaya-send.sh` only.
 
 ## Send
 
 ```bash
 sh scripts/himalaya-send.sh recipient@example.com "Subject" "Body"
 ```
+
+Success prints `Message successfully sent!`. If you see a `mail-parser` panic, you fed empty/invalid stdin — retry with the helper above; do **not** conclude SMTP is broken. A hang with no output is a connectivity issue (host SMTP pin), not a parser bug.
 
 **Critical:** `From:` must be `{{EMAIL}}` ({{DISPLAY_NAME}}). Migadu rejects other senders.
 
