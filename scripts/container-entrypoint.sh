@@ -43,6 +43,15 @@ if [ -f /opt/identyclaw/patch-openclaw-tool-result-images.mjs ]; then
     || echo "[identyclaw] tool-result image patch skipped" >&2
 fi
 
+# Coerce LLM-stringified JSON bodies in identyclaw_request (avoids INVALID_JSON).
+# Plugin lives on the bind-mounted OpenClaw home — re-apply on every start so
+# image rebuild / podman-restart survive without relying on host APP_DIR/repo sync.
+# No-op when the extension is not installed yet (host start/upgrade patches after).
+if [ -f /opt/identyclaw/patch-identyclaw-request-body.mjs ]; then
+  node /opt/identyclaw/patch-identyclaw-request-body.mjs --root /home/node/.openclaw \
+    || echo "[identyclaw] request-body patch skipped" >&2
+fi
+
 # Leftover exec-approvals.json lives on the bind-mounted OpenClaw home, so it
 # survives image rebuilds. Newer OpenClaw stores approvals in SQLite and fails
 # closed with ExecApprovalsMigrationRequiredError while this file exists.

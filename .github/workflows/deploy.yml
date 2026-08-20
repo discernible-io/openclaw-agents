@@ -118,6 +118,8 @@ jobs:
             identyclaw.sh
             env.example
             nginx
+            Containerfile.agent
+            nginx.Dockerfile
 
       - name: Install SSH key
         uses: shimataro/ssh-key-action@v2
@@ -183,7 +185,7 @@ jobs:
 
       - name: Sync deploy scripts to host
         run: |
-          tar -czf - scripts identyclaw.sh env.example nginx | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
+          tar -czf - scripts identyclaw.sh env.example nginx Containerfile.agent nginx.Dockerfile | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
             set -euo pipefail
             mkdir -p ${{ env.APP_DIR }}/repo
             tar -xzf - -C ${{ env.APP_DIR }}/repo

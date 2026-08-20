@@ -3291,12 +3291,36 @@ link_identyclaw_plugin_deps_in_container() {
 }
 
 
+# Resolve patch-identyclaw-request-body.mjs from the active CLI tree or APP_DIR/repo.
+# Operators often rebuild via openclaw-agents-app/repo/identyclaw.sh; keep that copy in sync.
+identyclaw_request_body_patch_src() {
+  local candidate
+  for candidate in \
+    "${IDENTYCLAW_ROOT}/scripts/patch-identyclaw-request-body.mjs" \
+    "$(identyclaw_app_dir)/repo/scripts/patch-identyclaw-request-body.mjs"
+  do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+
 # Coerce LLM-stringified JSON bodies in identyclaw_request (avoids INVALID_JSON).
 apply_identyclaw_request_body_patch_in_container() {
   local container="$1"
-  local patch_src="${IDENTYCLAW_ROOT}/scripts/patch-identyclaw-request-body.mjs"
+  local patch_src=""
   [[ -n "$container" ]] || return 0
-  [[ -f "$patch_src" ]] || return 0
+  # Prefer image-baked copy when present (survives rebuilds without host script sync).
+  if _agent_container_name_running "$container" \
+    && podman exec "$container" test -f /opt/identyclaw/patch-identyclaw-request-body.mjs 2>/dev/null; then
+    podman exec "$container" node /opt/identyclaw/patch-identyclaw-request-body.mjs \
+      --root /home/node/.openclaw >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  patch_src="$(identyclaw_request_body_patch_src)" || return 0
   _agent_container_name_running "$container" || return 0
   podman cp "$patch_src" "${container}:/tmp/patch-identyclaw-request-body.mjs" >/dev/null 2>&1 || return 1
   podman exec "$container" node /tmp/patch-identyclaw-request-body.mjs \

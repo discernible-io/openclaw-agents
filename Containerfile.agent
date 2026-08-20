@@ -56,7 +56,10 @@ RUN mkdir -p /opt/identyclaw/plugin-seed \
 
 COPY scripts/container-entrypoint.sh /opt/identyclaw/entrypoint.sh
 COPY scripts/patch-openclaw-tool-result-images.mjs /opt/identyclaw/patch-openclaw-tool-result-images.mjs
-RUN chmod 755 /opt/identyclaw/entrypoint.sh /opt/identyclaw/patch-openclaw-tool-result-images.mjs
+COPY scripts/patch-identyclaw-request-body.mjs /opt/identyclaw/patch-identyclaw-request-body.mjs
+RUN chmod 755 /opt/identyclaw/entrypoint.sh \
+      /opt/identyclaw/patch-openclaw-tool-result-images.mjs \
+      /opt/identyclaw/patch-identyclaw-request-body.mjs
 
 USER node
 ENTRYPOINT ["/opt/identyclaw/entrypoint.sh"]

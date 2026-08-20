@@ -685,6 +685,14 @@ sync_deploy_scripts_to_app_dir() {
   mkdir -p "${app_dir}/repo/scripts"
   cp -a "${repo_root}/scripts/." "${app_dir}/repo/scripts/"
   cp -a "${repo_root}/identyclaw.sh" "${repo_root}/env.example" "${app_dir}/repo/"
+  # Image build context for ./identyclaw.sh build-image when operators use APP_DIR/repo.
+  # Includes request-body + tool-result patches baked into /opt/identyclaw.
+  if [[ -f "${repo_root}/Containerfile.agent" ]]; then
+    cp -a "${repo_root}/Containerfile.agent" "${app_dir}/repo/"
+  fi
+  if [[ -f "${repo_root}/nginx.Dockerfile" ]]; then
+    cp -a "${repo_root}/nginx.Dockerfile" "${app_dir}/repo/"
+  fi
   # Sidecar includes live under APP_DIR (not the git clone path) so nginx survives
   # checkout rename/move. deploy-pod.sh copies the same tree on recreate.
   if [[ -d "${repo_root}/nginx" ]]; then
