@@ -2704,6 +2704,37 @@ build_a2a_peer_map() {
   done
   configured_json+="}"
 
+  # Same-host AGENT_IDS peers are excluded from GET /api/agents seeding (avoid
+  # self-fleet noise). Seed them explicitly from deploy PUBLIC_HOST+INGRESS_PORT
+  # so local A2A works even when a peer's on-chain Passport webhook_url is stale
+  # (e.g. andrew.dihola.io:88 while ingress is :8443).
+  local local_peers_json="{" local_first=1 local_peer_tid local_deploy_id
+  for local_peer_tid in $(local_cross_agent_peer_token_ids "$self_id"); do
+    is_passport_token_id "$local_peer_tid" || continue
+    local_deploy_id="$(find_deploy_id_for_token_id "$local_peer_tid" 2>/dev/null || true)"
+    public_base=""
+    if [[ -n "$local_deploy_id" ]]; then
+      public_base="$(agent_public_base_url "$local_deploy_id" 2>/dev/null || true)"
+      [[ -z "$public_base" ]] && public_base="$(agent_a2a_public_base_url "$local_deploy_id" 2>/dev/null || true)"
+    fi
+    [[ -z "$public_base" ]] && public_base="$(a2a_peer_public_base_url_static "$local_peer_tid" "$self_config_dir" 2>/dev/null || true)"
+    [[ -n "$public_base" ]] || continue
+    public_base="${public_base%/}"
+    card_url="${public_base}/.well-known/agent-card.json"
+    if [[ "$local_first" -eq 1 ]]; then
+      local_first=0
+    else
+      local_peers_json+=","
+    fi
+    local_peers_json+="\"${local_peer_tid}\":{\"url\":\"${card_url}\""
+    local_peers_json+=",\"loginBaseUrl\":\"${public_base}\""
+    local_peers_json+="}"
+  done
+  local_peers_json+="}"
+  if [[ "$local_peers_json" != "{}" ]]; then
+    echo "    (${self_id}: seeding same-host A2A peers from deploy ingress)" >&2
+  fi
+
   api_json="{}"
   # Opt-in (IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1). First caller in this process does
   # GET /api/agents + parallel agent-card probes; later AGENT_IDS reuse the cache.
@@ -2716,13 +2747,18 @@ build_a2a_peer_map() {
     fi
   fi
 
-  local api_file cfg_file peers_json
+  local api_file cfg_file local_file peers_json merged_remote
   api_file="$(mktemp)"
   cfg_file="$(mktemp)"
+  local_file="$(mktemp)"
   printf '%s' "$api_json" > "$api_file"
   printf '%s' "$configured_json" > "$cfg_file"
-  peers_json="$(merge_a2a_peer_json_maps_files "$api_file" "$cfg_file")"
-  rm -f "$api_file" "$cfg_file"
+  printf '%s' "$local_peers_json" > "$local_file"
+  # Remote (API + A2A_PEER_AGENTS) first; same-host deploy URLs win on collision.
+  merged_remote="$(merge_a2a_peer_json_maps_files "$api_file" "$cfg_file")"
+  printf '%s' "$merged_remote" > "$api_file"
+  peers_json="$(merge_a2a_peer_json_maps_files "$api_file" "$local_file")"
+  rm -f "$api_file" "$cfg_file" "$local_file"
   echo "$peers_json"
 }
 
