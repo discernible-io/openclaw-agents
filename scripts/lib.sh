@@ -84,7 +84,9 @@ load_env() {
   resolve_openclaw_model_defaults
   # OpenClaw model failover: provider idle/request watchdog + agent turn cap (seconds).
   OPENCLAW_AGENT_TIMEOUT_SECONDS="${OPENCLAW_AGENT_TIMEOUT_SECONDS:-600}"
-  OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-120}"
+  # Idle/request watchdog per model attempt. 120s is too aggressive for deepseek
+  # on large Telegram/SLC sessions (idle timeout → qwen fallback → incomplete turn).
+  OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS="${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-240}"
   OPENCLAW_FALLBACK_SKIP_TTL_MS="${OPENCLAW_FALLBACK_SKIP_TTL_MS:-60000}"
   # Stuck-session recovery (defaults ~2m warn / ~6m abort) kills long exec mid-turn; keep abort >= agent timeout.
   OPENCLAW_STUCK_SESSION_WARN_MS="${OPENCLAW_STUCK_SESSION_WARN_MS:-300000}"
@@ -180,8 +182,10 @@ resolve_openclaw_model_defaults() {
       ;;
     openrouter)
       OPENCLAW_MODEL_PRIMARY="${OPENCLAW_MODEL_PRIMARY:-openrouter/deepseek/deepseek-v4-flash}"
-      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/qwen/qwen3-coder}"
-      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/google/gemini-2.5-flash}"
+      # Prefer gemini over qwen3-coder: qwen often hits stopReason=length / toolUse
+      # incomplete turns and stringifies JSON tool bodies (INVALID_JSON).
+      OPENCLAW_MODEL_FALLBACK_1="${OPENCLAW_MODEL_FALLBACK_1:-openrouter/google/gemini-2.5-flash}"
+      OPENCLAW_MODEL_FALLBACK_2="${OPENCLAW_MODEL_FALLBACK_2:-openrouter/qwen/qwen3-coder}"
       ;;
     *)
       echo "Unknown OPENCLAW_LLM_PROVIDER: ${provider} (use openrouter or opencode)" >&2

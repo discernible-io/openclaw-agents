@@ -1173,7 +1173,7 @@ write_openclaw_json() {
   "models": {
     "providers": {
       "openrouter": {
-        "timeoutSeconds": ${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-120}
+        "timeoutSeconds": ${OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS:-240}
       }
     }
   },

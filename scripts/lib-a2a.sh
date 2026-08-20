@@ -3289,6 +3289,31 @@ link_identyclaw_plugin_deps_in_container() {
     rm -rf "$ext/node_modules/openclaw"
     ln -sf /app "$ext/node_modules/openclaw"
   ' 2>/dev/null || true
+  apply_identyclaw_request_body_patch_in_container "$container" || true
+}
+
+
+# Coerce LLM-stringified JSON bodies in identyclaw_request (avoids INVALID_JSON).
+apply_identyclaw_request_body_patch_in_container() {
+  local container="$1"
+  local patch_src="${IDENTYCLAW_ROOT}/scripts/patch-identyclaw-request-body.mjs"
+  [[ -n "$container" ]] || return 0
+  [[ -f "$patch_src" ]] || return 0
+  _agent_container_name_running "$container" || return 0
+  podman cp "$patch_src" "${container}:/tmp/patch-identyclaw-request-body.mjs" >/dev/null 2>&1 || return 1
+  podman exec "$container" node /tmp/patch-identyclaw-request-body.mjs \
+    --root /home/node/.openclaw >/dev/null 2>&1 || return 1
+}
+
+
+ensure_identyclaw_request_body_patch() {
+  local id="$1"
+  local container
+  container="$(agent_container "$id")"
+  apply_identyclaw_request_body_patch_in_container "$container" || {
+    echo "    (${id}: identyclaw_request body patch failed)" >&2
+    return 1
+  }
 }
 
 

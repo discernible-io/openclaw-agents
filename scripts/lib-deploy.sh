@@ -592,6 +592,7 @@ start_pod_agent() {
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     ensure_openclaw_tool_result_image_patch "$id" || true
+    ensure_identyclaw_request_body_patch "$id" || true
     echo "Recreated ${container}"
     return 0
   fi
@@ -610,6 +611,7 @@ start_pod_agent() {
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     ensure_openclaw_tool_result_image_patch "$id" || true
+    ensure_identyclaw_request_body_patch "$id" || true
     echo "Started ${container} (pod container)"
     return 0
   fi
@@ -637,6 +639,7 @@ start_pod_agent() {
     sync_agent_openclaw_json_when_container_running "$id"
     ensure_discord_plugin_compat_and_restart "$id"
     ensure_openclaw_tool_result_image_patch "$id" || true
+    ensure_identyclaw_request_body_patch "$id" || true
     echo "Started ${container} (pod container)"
     return 0
   fi
