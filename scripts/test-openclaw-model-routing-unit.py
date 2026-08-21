@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Unit tests for lib-openclaw-model-routing.py (no Podman)."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+def _load_lib():
+    path = Path(__file__).resolve().parent / "lib-openclaw-model-routing.py"
+    spec = importlib.util.spec_from_file_location("lib_openclaw_model_routing", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+LIB = _load_lib()
+
+
+class ModelRoutingTests(unittest.TestCase):
+    def test_catalog_and_native_plugin_disable(self):
+        data = {
+            "plugins": {"entries": {"anthropic": {"enabled": True}, "openrouter": {"enabled": True}}},
+            "models": {"providers": {}},
+        }
+        LIB.apply_openclaw_model_routing(
+            data,
+            primary="openrouter/openai/gpt-5.6-terra",
+            fallback_1="openrouter/google/gemini-2.5-flash",
+            fallback_2="openrouter/qwen/qwen3-coder",
+        )
+        models = data["models"]["providers"]["openrouter"]["models"]
+        ids = [row["id"] for row in models]
+        self.assertEqual(
+            ids,
+            [
+                "openai/gpt-5.6-terra",
+                "google/gemini-2.5-flash",
+                "qwen/qwen3-coder",
+            ],
+        )
+        self.assertEqual(data["models"]["providers"]["openrouter"]["api"], "openai-completions")
+        self.assertEqual(
+            data["models"]["providers"]["openrouter"]["baseUrl"],
+            "https://openrouter.ai/api/v1",
+        )
+        entries = data["plugins"]["entries"]
+        self.assertTrue(entries["openrouter"]["enabled"])
+        self.assertFalse(entries["openai"]["enabled"])
+        self.assertFalse(entries["anthropic"]["enabled"])
+        self.assertFalse(entries["google"]["enabled"])
+        self.assertFalse(entries["deepseek"]["enabled"])
+        self.assertEqual(
+            data["agents"]["defaults"]["model"]["primary"],
+            "openrouter/openai/gpt-5.6-terra",
+        )
+
+    def test_stale_native_hijack_and_off_chain_deepseek(self):
+        allow = [
+            "openrouter/openai/gpt-5.6-terra",
+            "openrouter/google/gemini-2.5-flash",
+            "openrouter/qwen/qwen3-coder",
+        ]
+        providers = ["openrouter"]
+        hijack = {"model": "gpt-5.6-terra", "modelProvider": "openai"}
+        self.assertTrue(
+            LIB.session_model_is_stale(
+                hijack, allow_ids=allow, provider_ids=providers
+            )
+        )
+        deepseek = {
+            "model": "deepseek/deepseek-v4-flash",
+            "modelProvider": "openrouter",
+        }
+        self.assertTrue(
+            LIB.session_model_is_stale(
+                deepseek, allow_ids=allow, provider_ids=providers
+            )
+        )
+        in_chain = {
+            "model": "openai/gpt-5.6-terra",
+            "modelProvider": "openrouter",
+        }
+        self.assertFalse(
+            LIB.session_model_is_stale(
+                in_chain, allow_ids=allow, provider_ids=providers
+            )
+        )
+
+    def test_repair_sqlite_session_nodes(self):
+        allow = [
+            "openrouter/anthropic/claude-sonnet-5",
+            "openrouter/google/gemini-2.5-flash",
+            "openrouter/qwen/qwen3-coder",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "openclaw-agent.sqlite"
+            conn = sqlite3.connect(str(db))
+            conn.execute(
+                "CREATE TABLE session_nodes (session_key TEXT PRIMARY KEY, entry_json TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO session_nodes VALUES (?, ?)",
+                (
+                    "agent:main:telegram:direct:1",
+                    json.dumps(
+                        {
+                            "model": "deepseek/deepseek-v4-flash",
+                            "modelProvider": "openrouter",
+                            "status": "done",
+                        }
+                    ),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO session_nodes VALUES (?, ?)",
+                (
+                    "agent:main:cron:keep",
+                    json.dumps(
+                        {
+                            "model": "anthropic/claude-sonnet-5",
+                            "modelProvider": "openrouter",
+                        }
+                    ),
+                ),
+            )
+            conn.commit()
+            conn.close()
+            n = LIB.repair_session_nodes_sqlite(
+                db,
+                allow_ids=allow,
+                provider_ids=["openrouter"],
+                paid_fallback="qwen/qwen3-coder",
+                fb2="openrouter/qwen/qwen3-coder",
+            )
+            self.assertEqual(n, 1)
+            conn = sqlite3.connect(str(db))
+            rows = {
+                k: json.loads(v)
+                for k, v in conn.execute(
+                    "SELECT session_key, entry_json FROM session_nodes"
+                )
+            }
+            conn.close()
+            self.assertNotIn("model", rows["agent:main:telegram:direct:1"])
+            self.assertNotIn("modelProvider", rows["agent:main:telegram:direct:1"])
+            self.assertEqual(
+                rows["agent:main:cron:keep"]["model"], "anthropic/claude-sonnet-5"
+            )
+
+
+if __name__ == "__main__":
+    result = unittest.main(verbosity=2, exit=False)
+    sys.exit(0 if result.result.wasSuccessful() else 1)

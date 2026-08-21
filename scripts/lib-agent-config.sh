@@ -2,6 +2,56 @@
 # openclaw.json, models, memory, security, LLM keys, export/import.
 # Sourced from scripts/lib.sh — do not execute directly.
 
+# Keep nested OpenRouter model ids on OpenRouter (host or in-container).
+_agent_openclaw_model_routing_patch() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local primary="$3"
+  local fb1="$4"
+  local fb2="$5"
+  local agent_timeout="${6:-600}"
+  local provider_timeout="${7:-240}"
+  local thinking="${8:-off}"
+  local patch_py="${IDENTYCLAW_ROOT}/scripts/patch-openclaw-model-routing.py"
+  local lib_py="${IDENTYCLAW_ROOT}/scripts/lib-openclaw-model-routing.py"
+  local out=""
+  [[ -f "$patch_py" && -f "$lib_py" ]] || {
+    echo "    (model routing patch scripts missing under ${IDENTYCLAW_ROOT}/scripts)" >&2
+    return 1
+  }
+  if [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
+    out="$(python3 "$patch_py" "$config_dir/openclaw.json" \
+      --primary "$primary" --fallback-1 "$fb1" --fallback-2 "$fb2" \
+      --agent-timeout "$agent_timeout" --provider-timeout "$provider_timeout" \
+      --thinking "$thinking")" || return 1
+    echo "    (model routing ${out})"
+    return 0
+  fi
+  if ensure_agent_host_config_access "$config_dir" 2>/dev/null \
+    && [[ -r "$config_dir/openclaw.json" && -w "$config_dir/openclaw.json" ]]; then
+    out="$(python3 "$patch_py" "$config_dir/openclaw.json" \
+      --primary "$primary" --fallback-1 "$fb1" --fallback-2 "$fb2" \
+      --agent-timeout "$agent_timeout" --provider-timeout "$provider_timeout" \
+      --thinking "$thinking")" || return 1
+    echo "    (model routing ${out})"
+    return 0
+  fi
+  if agent_config_use_container "$config_dir" "$container"; then
+    podman cp "$lib_py" "${container}:/tmp/lib-openclaw-model-routing.py" >/dev/null || return 1
+    podman cp "$patch_py" "${container}:/tmp/patch-openclaw-model-routing.py" >/dev/null || return 1
+    out="$(podman exec "$container" python3 /tmp/patch-openclaw-model-routing.py \
+      /home/node/.openclaw/openclaw.json \
+      --primary "$primary" --fallback-1 "$fb1" --fallback-2 "$fb2" \
+      --agent-timeout "$agent_timeout" --provider-timeout "$provider_timeout" \
+      --thinking "$thinking")" || return 1
+    echo "    (model routing ${out})"
+    return 0
+  fi
+  echo "    (cannot patch model routing — openclaw.json not writable and container ${container:-<none>} unavailable)" >&2
+  return 1
+}
+
+
 # Apply sticky OpenRouter session_id + diagnostics.cacheTrace (host or in-container).
 _agent_openclaw_cache_config_patch() {
   local config_dir="$1"
@@ -221,13 +271,14 @@ now_ms = int(time.time() * 1000)
 cleared = []
 locks_removed = []
 
+idx = {}
+changed = False
 if not store.is_file():
     print("    (no sessions.json)")
-    print("restart=0")
-    raise SystemExit(0)
-
-idx = json.loads(store.read_text(encoding="utf-8"))
-changed = False
+else:
+    idx = json.loads(store.read_text(encoding="utf-8"))
+    if not isinstance(idx, dict):
+        idx = {}
 for key, entry in list(idx.items()):
     if not isinstance(entry, dict):
         continue
@@ -322,6 +373,52 @@ else:
     if not cleared and not locks_removed:
         print("    (none)")
     need_restart = 1 if (cleared or locks_removed) else 0
+
+# OpenClaw 2026.7 stores live session status in sqlite session_nodes.
+sqlite_path = Path("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite")
+if sqlite_path.is_file():
+    import sqlite3
+    conn = sqlite3.connect(str(sqlite_path), timeout=15)
+    try:
+        rows = conn.execute(
+            "SELECT session_key, status, entry_json, updated_at FROM session_nodes"
+        ).fetchall()
+        sqlite_cleared = []
+        for key, status, raw, updated_at in rows:
+            if status != "running":
+                continue
+            try:
+                updated_ms = int(updated_at) if updated_at is not None else None
+            except (TypeError, ValueError):
+                updated_ms = None
+            age = (now_ms - updated_ms) if updated_ms is not None else stuck_age_ms
+            if age < stuck_age_ms:
+                continue
+            sqlite_cleared.append("%s age=%sms status=%s" % (key, age, status))
+            if dry_run:
+                continue
+            try:
+                entry = json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                entry = {}
+            if isinstance(entry, dict):
+                entry["status"] = "done"
+                for k in ("activeRunId", "startedAt"):
+                    entry.pop(k, None)
+                raw = json.dumps(entry, separators=(",", ":"))
+            conn.execute(
+                "UPDATE session_nodes SET status=?, entry_json=?, updated_at=? WHERE session_key=?",
+                ("done", raw, now_ms, key),
+            )
+        if sqlite_cleared and not dry_run:
+            conn.commit()
+        for line in sqlite_cleared:
+            prefix = "would clear sqlite " if dry_run else "cleared sqlite "
+            print("    %s%s" % (prefix, line))
+        if sqlite_cleared:
+            need_restart = 1
+    finally:
+        conn.close()
 
 print("restart=%d" % need_restart)
 PY
@@ -1057,6 +1154,12 @@ PY
     "${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}" \
     "${OPENCLAW_CACHE_TRACE:-1}" \
     "$openrouter_enabled" || true
+  # Nested OpenRouter ids (openrouter/openai/…) must stay on OpenRouter — native
+  # openai/anthropic/google catalogs steal them and 401 without those API keys.
+  _agent_openclaw_model_routing_patch "$config_dir" "$container" \
+    "$primary" "$fb1" "$fb2" \
+    "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" \
+    "$OPENCLAW_THINKING_DEFAULT" || true
 }
 
 
