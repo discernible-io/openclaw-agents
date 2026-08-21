@@ -71,6 +71,33 @@ if [ -f /opt/identyclaw/patch-openclaw-model-routing.py ] \
     || echo "[identyclaw] model-routing patch skipped" >&2
 fi
 
+# Sticky OpenRouter session_id + diagnostics.cacheTrace — always after model-routing,
+# which rebuilds agents.defaults.models. Baked into the image so rebuild/restart
+# re-applies without waiting for host sync. Defaults match host load_env; override
+# via container env OPENCLAW_OPENROUTER_SESSION_ID / OPENCLAW_CACHE_TRACE when set.
+if [ -f /opt/identyclaw/patch-openclaw-cache-config.mjs ] \
+  && [ -f /home/node/.openclaw/openclaw.json ]; then
+  # Enable sticky body/header injection when the configured primary is OpenRouter
+  # (matches host ensure_openclaw_model_defaults). Non-OpenRouter fleets get
+  # cacheTrace only via --openrouter 0.
+  _or=0
+  if node -e '
+    const fs = require("fs");
+    let d = {};
+    try { d = JSON.parse(fs.readFileSync("/home/node/.openclaw/openclaw.json", "utf8")); } catch {}
+    const p = (((d.agents || {}).defaults || {}).model || {}).primary || "";
+    process.exit(String(p).startsWith("openrouter/") ? 0 : 1);
+  ' 2>/dev/null; then
+    _or=1
+  fi
+  node /opt/identyclaw/patch-openclaw-cache-config.mjs \
+    /home/node/.openclaw/openclaw.json \
+    --session-id "${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}" \
+    --cache-trace "${OPENCLAW_CACHE_TRACE:-1}" \
+    --openrouter "$_or" \
+    || echo "[identyclaw] cache-config patch skipped" >&2
+fi
+
 # Leftover exec-approvals.json lives on the bind-mounted OpenClaw home, so it
 # survives image rebuilds. Newer OpenClaw stores approvals in SQLite and fails
 # closed with ExecApprovalsMigrationRequiredError while this file exists.
