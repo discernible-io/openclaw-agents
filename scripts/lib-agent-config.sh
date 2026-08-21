@@ -2179,6 +2179,7 @@ PY
 # Wipes: sessions, sqlite state, workspace memory, agent-created skills, SLC leftovers, skill-workshop
 factory_reset_agent() {
   local id="$1"
+  local yes="${2:-}"
   local config_dir container was_running=0
   local fleet_skills="himalaya calendar-reminders idcp-wallet a2a-reply-message identyclaw"
   load_env
@@ -2188,6 +2189,15 @@ factory_reset_agent() {
   if ! [[ -d "$config_dir" ]] && ! podman container exists "$container" 2>/dev/null; then
     echo "No agent home for ${id} — run ./identyclaw.sh init / deploy first" >&2
     return 1
+  fi
+
+  if [[ "$yes" != "1" ]]; then
+    echo "Factory-reset ${id}:"
+    echo "  Wipes sessions, MEMORY.md, sqlite, extra skills, SLC leftovers."
+    echo "  Keeps secrets, Passport, channel tokens, pairing/devices, plugins."
+    printf "Type %s to confirm: " "$id"
+    read -r reply
+    [[ "$reply" == "$id" ]] || { echo "aborted"; return 1; }
   fi
 
   echo "==> factory-reset ${id}"

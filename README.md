@@ -205,6 +205,27 @@ The **git checkout** holds scripts and image definitions only. **Config, TLS, an
 
 Override the app root: `export IDENTYCLAW_APP_DIR=/custom/path` (default: `../openclaw-agents-app` next to the clone).
 
+## Factory reset (brand-new agent brain)
+
+`init` / `restart` keep learned state (sessions, `MEMORY.md`, extra skills). To rebuild an agent **out of the box** while keeping credentials:
+
+```bash
+./identyclaw.sh factory-reset agent-e          # type agent-e to confirm
+./identyclaw.sh factory-reset all --yes        # every AGENT_IDS entry, no prompt
+```
+
+| Wiped | Kept |
+| --- | --- |
+| Chat sessions / transcripts | `secrets/` (API keys, mailbox, Discord/Telegram/X) |
+| `MEMORY.md` + `workspace/memory/` + dreaming notes | Passport `secrets/near-credentials/` |
+| Extra ClawHub / agent-created skills | Channel pairing (`devices/`) |
+| SLC leftovers + discernible API hosts in `.env` | Plugins, `openclaw.json` |
+| `state/openclaw.sqlite*` + cache / delivery-queue | Stock fleet skills (reinstalled on start) |
+
+After reset the gateway restarts and bootstrap restores fleet skills + LLM auth. Telegram/Discord keep working without re-pairing; the next DM starts a fresh session.
+
+SLC arming is retired. `./identyclaw.sh enable-slc-heartbeat <id>` only **purges** leftover SLC docs, heartbeat tasks, crons, and discernible hosts from the agent `.env`.
+
 ## Choosing agents on this host
 
 How many gateways run on a machine is controlled in `~/openclaw-agents-app/env.local`:
@@ -1169,6 +1190,8 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh enable-mail-responder [interval]` | Install user systemd timer running `respond-mail` (default 5min) |
 | `./identyclaw.sh cleanup-sessions [id\|all] [--dry-run]` | Unwedge sticky runs + truncate oversized sessions + store/cache maintenance |
 | `./identyclaw.sh enable-session-cleanup [interval\|OnCalendar]` | User systemd timer for `cleanup-sessions` (default every `1h`) |
+| `./identyclaw.sh factory-reset [id\|all] [--yes]` | Wipe sessions, memory, skills, sqlite; restore stock workspace (keeps secrets/Passport/tokens) |
+| `./identyclaw.sh enable-slc-heartbeat <id>` | Purge SLC leftovers (docs, heartbeat, crons, discernible API hosts) |
 | `./identyclaw.sh enable-inbox-check agent-a [interval]` | Enable LLM inbox heartbeat / concierge (default 1h) |
 | `./identyclaw.sh enable-calendar-check agent-a [interval]` | Enable calendar/reminder heartbeat (default 30m) |
 | `./identyclaw.sh respond-a2a-webhook-smoke [id\|all]` | Handle inbound A2A webhook smoke probes (constitution helper) |

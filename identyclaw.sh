@@ -34,7 +34,7 @@
 #   enable-inbox-check <id> [interval]  Enable LLM inbox heartbeat (default 1h)
 #   enable-calendar-check <id> [interval]  Enable calendar/reminder heartbeat (default 30m)
 #   enable-slc-heartbeat <id>  Purge SLC workspace docs / heartbeat / crons / discernible API hosts
-#   factory-reset <id|all>     Wipe memory, sessions, skills, sqlite — keep secrets; re-bootstrap
+#   factory-reset <id|all> [--yes]  Wipe memory, sessions, skills, sqlite — keep secrets; re-bootstrap
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
 #   cleanup-sessions [id|all] [--dry-run]  Unwedge sticky runs + truncate oversized sessions + store/cache maintenance
 #   enable-session-cleanup [interval|OnCalendar]  Install user systemd timer for cleanup-sessions (default 1h)
@@ -701,13 +701,26 @@ cmd_enable_slc_heartbeat() {
 }
 
 cmd_factory_reset() {
-  local target="${1:?Usage: $0 factory-reset <id|all>}"
-  local id failed=()
+  local target="" yes="" arg id failed=()
   require_podman
   load_env
+  for arg in "$@"; do
+    case "$arg" in
+      --yes|-y) yes=1 ;;
+      agent-[a-z]|all)
+        [[ -z "$target" ]] || { echo "Usage: $0 factory-reset <id|all> [--yes]" >&2; exit 1; }
+        target="$arg"
+        ;;
+      *)
+        echo "Usage: $0 factory-reset <id|all> [--yes]" >&2
+        exit 1
+        ;;
+    esac
+  done
+  [[ -n "$target" ]] || { echo "Usage: $0 factory-reset <id|all> [--yes]" >&2; exit 1; }
   if [[ "$target" == "all" ]]; then
     for id in $AGENT_IDS; do
-      factory_reset_agent "$id" || failed+=("$id")
+      factory_reset_agent "$id" "$yes" || failed+=("$id")
     done
     if ((${#failed[@]})); then
       echo "factory-reset failed for: ${failed[*]}" >&2
@@ -715,7 +728,7 @@ cmd_factory_reset() {
     fi
     return 0
   fi
-  factory_reset_agent "$target"
+  factory_reset_agent "$target" "$yes"
 }
 
 cmd_fix_session_images() {
