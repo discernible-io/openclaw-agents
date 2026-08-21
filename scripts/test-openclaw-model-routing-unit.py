@@ -52,12 +52,17 @@ class ModelRoutingTests(unittest.TestCase):
             data["models"]["providers"]["openrouter"]["baseUrl"],
             "https://openrouter.ai/api/v1",
         )
+        # Nested vendors are aliased onto OpenRouter (not disabled).
+        openai = data["models"]["providers"]["openai"]
+        self.assertEqual(openai["baseUrl"], "https://openrouter.ai/api/v1")
+        self.assertEqual(openai["api"], "openai-completions")
+        self.assertEqual(openai["models"][0]["id"], "openai/gpt-5.6-terra")
+        google = data["models"]["providers"]["google"]
+        self.assertEqual(google["baseUrl"], "https://openrouter.ai/api/v1")
         entries = data["plugins"]["entries"]
         self.assertTrue(entries["openrouter"]["enabled"])
-        self.assertFalse(entries["openai"]["enabled"])
-        self.assertFalse(entries["anthropic"]["enabled"])
-        self.assertFalse(entries["google"]["enabled"])
-        self.assertFalse(entries["deepseek"]["enabled"])
+        self.assertTrue(entries["openai"]["enabled"])
+        self.assertTrue(entries["google"]["enabled"])
         self.assertEqual(
             data["agents"]["defaults"]["model"]["primary"],
             "openrouter/openai/gpt-5.6-terra",
@@ -211,7 +216,11 @@ class ModelRoutingTests(unittest.TestCase):
                 for m in data["models"]["providers"]["openrouter"]["models"]
             ]
             self.assertEqual(ids[0], "openai/gpt-5.6-terra")
-            self.assertFalse(data["plugins"]["entries"]["openai"]["enabled"])
+            self.assertEqual(
+                data["models"]["providers"]["openai"]["baseUrl"],
+                "https://openrouter.ai/api/v1",
+            )
+            self.assertTrue(data["plugins"]["entries"]["openai"]["enabled"])
             self.assertEqual(counts["session_nodes"], 0)
 
 

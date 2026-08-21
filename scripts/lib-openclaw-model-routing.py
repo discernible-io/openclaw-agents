@@ -3,14 +3,18 @@
 
 OpenClaw 2026.7 rewrites nested OpenRouter refs such as
 ``openrouter/openai/gpt-5.6-terra`` onto native vendor catalogs (openai /
-anthropic / google / deepseek). That sends requests to api.openai.com (etc.)
-without those API keys → 401 "LLM request failed".
+anthropic / google / deepseek). That would send requests to api.openai.com
+(etc.) without those API keys → 401 "LLM request failed".
 
 This module:
   * registers each chain model on ``models.providers.openrouter.models[]``
-  * disables native vendor plugins that steal those ids
+  * aliases nested vendor providers (openai/anthropic/…) onto OpenRouter
+    ``baseUrl`` + ``openai-completions`` so reparsing still hits OpenRouter
   * clears sticky session pins that sit outside the configured chain
     (sessions.json *and* OpenClaw 2026.7 sqlite ``session_nodes``)
+
+The container entrypoint mirrors ``OPENROUTER_API_KEY`` into blank
+``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` / … so reparsed providers can auth.
 """
 
 from __future__ import annotations
@@ -214,6 +218,7 @@ def apply_openclaw_model_routing(
         openrouter["timeoutSeconds"] = int(provider_timeout)
         catalog = []
         seen = set()
+        vendor_models: dict[str, list[dict[str, Any]]] = {}
         for model in (primary, fallback_1, fallback_2):
             if not model.startswith("openrouter/"):
                 continue
@@ -221,20 +226,61 @@ def apply_openclaw_model_routing(
             if not cid or cid in seen:
                 continue
             seen.add(cid)
-            catalog.append(
-                {
-                    "id": cid,
-                    "name": cid,
-                    "api": "openai-completions",
-                    "input": ["text"],
-                    "contextWindow": 200000,
-                }
-            )
+            entry = {
+                "id": cid,
+                "name": cid,
+                "api": "openai-completions",
+                "input": ["text"],
+                "contextWindow": 200000,
+            }
+            catalog.append(entry)
+            # Nested OpenRouter ids reparse to vendor providers (openai/… → openai).
+            # Alias those vendors onto OpenRouter so auth/baseUrl stay correct.
+            vendor = cid.split("/", 1)[0].strip().lower()
+            if vendor and vendor != "openrouter":
+                vendor_models.setdefault(vendor, []).append(dict(entry))
         openrouter["models"] = catalog
-        for pid in NATIVE_LLM_PLUGINS:
-            if pid in provider_ids:
-                continue
-            plugins.setdefault(pid, {})["enabled"] = False
+        plugins.setdefault("openrouter", {})["enabled"] = True
+        for vendor, rows in vendor_models.items():
+            alias = providers.setdefault(vendor, {})
+            alias["baseUrl"] = "https://openrouter.ai/api/v1"
+            alias["api"] = "openai-completions"
+            alias["timeoutSeconds"] = int(provider_timeout)
+            # Prefer OpenRouter key from the process env when present (entrypoint
+            # mirrors OPENROUTER_API_KEY → OPENAI_API_KEY / … before gateway start).
+            # Do not write literal secrets into openclaw.json.
+            alias.pop("apiKey", None)
+            # Catalog ids keep the OpenRouter slug (openai/gpt-5.6-terra).
+            existing = alias.get("models") if isinstance(alias.get("models"), list) else []
+            by_id = {
+                str(m.get("id")): m
+                for m in existing
+                if isinstance(m, dict) and m.get("id")
+            }
+            for row in rows:
+                by_id[str(row["id"])] = row
+            alias["models"] = list(by_id.values())
+            plugins.setdefault(vendor, {})["enabled"] = True
+        # Drop leftover disable flags on vendors we now alias.
+        for vendor in vendor_models:
+            if vendor in plugins and plugins[vendor].get("enabled") is False:
+                plugins[vendor]["enabled"] = True
+        # Remove ghost disable-only entries for vendors we never aliased this run
+        # (avoids "plugin not found" warnings from earlier patches).
+        for pid in (
+            "google-gemini",
+            "google-gemini-cli",
+            "google-vertex",
+            "qwen",
+            "xai",
+            "mistral",
+            "groq",
+            "together",
+            "huggingface",
+            "nvidia",
+        ):
+            if pid in plugins and set(plugins[pid].keys()) <= {"enabled"}:
+                del plugins[pid]
 
     diagnostics = data.get("diagnostics")
     if isinstance(diagnostics, dict):

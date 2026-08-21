@@ -52,10 +52,18 @@ if [ -f /opt/identyclaw/patch-identyclaw-request-body.mjs ]; then
     || echo "[identyclaw] request-body patch skipped" >&2
 fi
 
-# Keep nested OpenRouter model ids (openrouter/openai/…) on OpenRouter.
+# Keep nested OpenRouter model ids (openrouter/openai/…) working when OpenClaw
+# reparses them onto native vendor providers. Mirror the OpenRouter key into the
+# vendor env vars the reparsed providers look for, then patch openclaw.json:
+# register OpenRouter catalog + alias openai/anthropic/google/… baseUrl → OpenRouter.
 # Reads primary/fallbacks from bind-mounted openclaw.json — no host env.local.
-# Re-applies catalog + disables native openai/anthropic/google plugins + clears
-# sticky sqlite session pins that would otherwise 401 at api.openai.com.
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  # Only fill blanks — never clobber a real native vendor key.
+  [ -n "${OPENAI_API_KEY:-}" ] || export OPENAI_API_KEY="$OPENROUTER_API_KEY"
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || export ANTHROPIC_API_KEY="$OPENROUTER_API_KEY"
+  [ -n "${GOOGLE_API_KEY:-}" ] || export GOOGLE_API_KEY="$OPENROUTER_API_KEY"
+  [ -n "${DEEPSEEK_API_KEY:-}" ] || export DEEPSEEK_API_KEY="$OPENROUTER_API_KEY"
+fi
 if [ -f /opt/identyclaw/patch-openclaw-model-routing.py ] \
   && [ -f /home/node/.openclaw/openclaw.json ]; then
   python3 /opt/identyclaw/patch-openclaw-model-routing.py \
