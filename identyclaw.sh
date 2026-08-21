@@ -33,7 +33,8 @@
 #   enable-mail-responder [interval]  Install user systemd timer to run respond-mail (default 5min)
 #   enable-inbox-check <id> [interval]  Enable LLM inbox heartbeat (default 1h)
 #   enable-calendar-check <id> [interval]  Enable calendar/reminder heartbeat (default 30m)
-#   enable-slc-heartbeat <id> [interval]  No-op purge: remove SLC workspace docs/heartbeat leftovers
+#   enable-slc-heartbeat <id>  Purge SLC workspace docs / heartbeat / crons / discernible API hosts
+#   factory-reset <id|all>     Wipe memory, sessions, skills, sqlite — keep secrets; re-bootstrap
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
 #   cleanup-sessions [id|all] [--dry-run]  Unwedge sticky runs + truncate oversized sessions + store/cache maintenance
 #   enable-session-cleanup [interval|OnCalendar]  Install user systemd timer for cleanup-sessions (default 1h)
@@ -75,7 +76,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,66p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -695,13 +696,26 @@ cmd_enable_calendar_check() {
 }
 
 cmd_enable_slc_heartbeat() {
-  local id="${1:?Usage: $0 enable-slc-heartbeat agent-a [interval]}"
-  local interval="${2:-10m}"
-  enable_slc_heartbeat "$id" "$interval"
-  echo "SLC heartbeat enabled (HEARTBEAT.md slc-game + agents.defaults.heartbeat.every=${interval})"
-  echo "Removed local SLC.md / cached synthetics-last-cradle skill; installed knowledge/references/slc-play-unattended.md (host skill.md is authoritative)"
-  echo "Persisted in secrets/slc-heartbeat.interval (re-applied on start/restart/bootstrap)"
-  echo "Restart to apply: $0 restart ${id}"
+  local id="${1:?Usage: $0 enable-slc-heartbeat agent-a}"
+  enable_slc_heartbeat "$id" "${2:-}"
+}
+
+cmd_factory_reset() {
+  local target="${1:?Usage: $0 factory-reset <id|all>}"
+  local id failed=()
+  require_podman
+  load_env
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      factory_reset_agent "$id" || failed+=("$id")
+    done
+    if ((${#failed[@]})); then
+      echo "factory-reset failed for: ${failed[*]}" >&2
+      return 1
+    fi
+    return 0
+  fi
+  factory_reset_agent "$target"
 }
 
 cmd_fix_session_images() {
@@ -1466,6 +1480,7 @@ main() {
     enable-inbox-check) cmd_enable_inbox_check "$@" ;;
     enable-calendar-check) cmd_enable_calendar_check "$@" ;;
     enable-slc-heartbeat) cmd_enable_slc_heartbeat "$@" ;;
+    factory-reset) cmd_factory_reset "$@" ;;
     fix-session-images) cmd_fix_session_images "$@" ;;
     cleanup-sessions) cmd_cleanup_sessions "$@" ;;
     enable-session-cleanup) cmd_enable_session_cleanup "$@" ;;

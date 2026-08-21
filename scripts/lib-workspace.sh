@@ -1529,6 +1529,97 @@ apply_workspace_heartbeat_task() {
 }
 
 
+# Remove a named task from HEARTBEAT.md (host or running container).
+_remove_heartbeat_task_python() {
+  local use_container="$1"
+  local container="$2"
+  local heartbeat_path="$3"
+  if [[ "$use_container" == "1" ]]; then
+    podman exec -i -e HEARTBEAT_TASK_NAME="$HEARTBEAT_TASK_NAME" "$container" python3 - "$heartbeat_path" <<'HBPY'
+import os, re, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+name = os.environ["HEARTBEAT_TASK_NAME"]
+if not path.is_file():
+    raise SystemExit(0)
+content = path.read_text(encoding="utf-8")
+task_re = re.compile(
+    r"^- name: (?P<name>\S+)\n  interval: (?P<interval>\S+)\n  prompt: \"(?P<prompt>(?:[^\"\\]|\\.)*)\"\n?",
+    re.M,
+)
+tasks: dict[str, tuple[str, str]] = {}
+for m in task_re.finditer(content):
+    if m.group("name") == name:
+        continue
+    tasks[m.group("name")] = (m.group("interval"), m.group("prompt"))
+footers: list[str] = []
+for line in content.splitlines():
+    if line.startswith("# ") and line not in footers:
+        # Drop SLC-only footers when removing slc-game.
+        if name == "slc-game" and re.search(r"\bSLC\b", line, re.I):
+            continue
+        footers.append(line)
+out = ["tasks:", ""]
+for tname, (tint, tprompt) in tasks.items():
+    out.append(f"- name: {tname}")
+    out.append(f"  interval: {tint}")
+    out.append(f'  prompt: "{tprompt}"')
+    out.append("")
+if footers:
+    out.extend(footers)
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+HBPY
+  else
+    HEARTBEAT_TASK_NAME="$HEARTBEAT_TASK_NAME" python3 - "$heartbeat_path" <<'HBPY'
+import os, re, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+name = os.environ["HEARTBEAT_TASK_NAME"]
+if not path.is_file():
+    raise SystemExit(0)
+content = path.read_text(encoding="utf-8")
+task_re = re.compile(
+    r"^- name: (?P<name>\S+)\n  interval: (?P<interval>\S+)\n  prompt: \"(?P<prompt>(?:[^\"\\]|\\.)*)\"\n?",
+    re.M,
+)
+tasks: dict[str, tuple[str, str]] = {}
+for m in task_re.finditer(content):
+    if m.group("name") == name:
+        continue
+    tasks[m.group("name")] = (m.group("interval"), m.group("prompt"))
+footers: list[str] = []
+for line in content.splitlines():
+    if line.startswith("# ") and line not in footers:
+        if name == "slc-game" and re.search(r"\bSLC\b", line, re.I):
+            continue
+        footers.append(line)
+out = ["tasks:", ""]
+for tname, (tint, tprompt) in tasks.items():
+    out.append(f"- name: {tname}")
+    out.append(f"  interval: {tint}")
+    out.append(f'  prompt: "{tprompt}"')
+    out.append("")
+if footers:
+    out.extend(footers)
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+HBPY
+  fi
+}
+
+
+remove_workspace_heartbeat_task() {
+  local config_dir="$1"
+  local container="$2"
+  local task_name="$3"
+  HEARTBEAT_TASK_NAME="$task_name"
+  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    _remove_heartbeat_task_python 0 "" "$config_dir/workspace/HEARTBEAT.md"
+  elif _agent_container_name_running "$container"; then
+    _remove_heartbeat_task_python 1 "$container" "/home/node/.openclaw/workspace/HEARTBEAT.md"
+  fi
+}
+
+
 
 ensure_heartbeat_config() {
   local config_dir="$1"
@@ -1830,303 +1921,137 @@ enable_calendar_heartbeat() {
 }
 
 
-_slc_kb_template_path() {
-  echo "${IDENTYCLAW_ROOT}/scripts/templates/knowledge/slc-play-unattended.md"
-}
+# ---------------------------------------------------------------------------
+# SLC leftovers purge (fleet arming retired — no hard-coded game API hosts).
+# ./identyclaw.sh enable-slc-heartbeat → purge_slc_agent_leftovers
+# ---------------------------------------------------------------------------
 
-
-write_slc_kb_doc() {
-  local config_dir="$1"
-  local kb_dir="$config_dir/workspace/knowledge/references"
-  local template dest
-  template="$(_slc_kb_template_path)"
-  dest="$kb_dir/slc-play-unattended.md"
-  [[ -f "$template" ]] || return 0
-  mkdir -p "$kb_dir"
-  cp -f "$template" "$dest"
-  chmod 644 "$dest"
-  _patch_slc_kb_scope "$config_dir/workspace/knowledge/SCOPE.md"
-}
-
-
-_patch_slc_kb_scope() {
-  local scope_file="$1"
-  [[ -f "$scope_file" ]] || return 0
-  python3 - "$scope_file" <<'PY'
-import sys
+_strip_agents_slc_sections_python() {
+  python3 - "$1" <<'PY'
 from pathlib import Path
-
+import re, sys
 path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(0)
 text = path.read_text(encoding="utf-8")
-needle = "- SLC unattended play (`./identyclaw.sh enable-slc-heartbeat`)"
-if needle in text:
-    sys.exit(0)
-for anchor in (
-    "- Concierge inbox heartbeat (`./identyclaw.sh enable-inbox-check`)",
-    "- Migadu email / Himalaya skill (when documented here)",
+orig = text
+for pat in (
+    r"\n## SLC standing orders \(fleet\)\n.*?(?=\n## |\Z)",
+    r"\n## SLC \(fleet\)\n.*?(?=\n## |\Z)",
+    r"\n## SLC active game \(operator pin\)\n.*?(?=\n## |\Z)",
 ):
-    if anchor in text:
-        text = text.replace(anchor, anchor + "\n" + needle, 1)
-        path.write_text(text, encoding="utf-8")
-        sys.exit(0)
+    text = re.sub(pat, "\n", text, flags=re.S)
+text = re.sub(
+    r"(?m)^- SLC unattended play \(.*?\)\n?",
+    "",
+    text,
+)
+if text != orig:
+    path.write_text(text, encoding="utf-8")
 PY
 }
 
+_strip_agents_slc_sections() {
+  local agents_file="$1"
+  [[ -f "$agents_file" ]] || return 0
+  _strip_agents_slc_sections_python "$agents_file"
+}
 
-_write_slc_kb_doc_in_container() {
+_strip_agents_slc_sections_in_container() {
   local container="$1"
-  local template tmp
-  template="$(_slc_kb_template_path)"
-  [[ -f "$template" ]] || return 1
-  tmp="$(mktemp)"
-  cp -f "$template" "$tmp"
-  podman exec "$container" mkdir -p /home/node/.openclaw/workspace/knowledge/references
-  podman cp "$tmp" "$container:/home/node/.openclaw/workspace/knowledge/references/slc-play-unattended.md"
-  rm -f "$tmp"
-  podman exec "$container" chmod 644 /home/node/.openclaw/workspace/knowledge/references/slc-play-unattended.md
   podman exec -i "$container" python3 - <<'PY'
-import os
-
-workspace = "/home/node/.openclaw/workspace"
-scope_path = os.path.join(workspace, "knowledge", "SCOPE.md")
-if not os.path.isfile(scope_path):
+from pathlib import Path
+import re
+path = Path("/home/node/.openclaw/workspace/AGENTS.md")
+if not path.is_file():
     raise SystemExit(0)
-with open(scope_path, encoding="utf-8") as f:
-    scope = f.read()
-needle = "- SLC unattended play (`./identyclaw.sh enable-slc-heartbeat`)"
-if needle in scope:
-    raise SystemExit(0)
-for anchor in (
-    "- Concierge inbox heartbeat (`./identyclaw.sh enable-inbox-check`)",
-    "- Migadu email / Himalaya skill (when documented here)",
+text = path.read_text(encoding="utf-8")
+orig = text
+for pat in (
+    r"\n## SLC standing orders \(fleet\)\n.*?(?=\n## |\Z)",
+    r"\n## SLC \(fleet\)\n.*?(?=\n## |\Z)",
+    r"\n## SLC active game \(operator pin\)\n.*?(?=\n## |\Z)",
 ):
-    if anchor in scope:
-        scope = scope.replace(anchor, anchor + "\n" + needle, 1)
-        with open(scope_path, "w", encoding="utf-8") as f:
-            f.write(scope)
-        break
+    text = re.sub(pat, "\n", text, flags=re.S)
+text = re.sub(r"(?m)^- SLC unattended play \(.*?\)\n?", "", text)
+if text != orig:
+    path.write_text(text, encoding="utf-8")
 PY
 }
 
-# Remove local SLC playbooks so agents use :9443 skill.md only (fleet ops stay in heartbeat + unattended KB).
-
-# Remove local SLC playbooks so agents use :9443 skill.md only (fleet ops stay in heartbeat + unattended KB).
+# Remove local SLC playbooks, KB pointers, heartbeat markers, and agent skills.
 purge_stale_slc_local_docs() {
   local config_dir="$1"
-  rm -f "$config_dir/workspace/SLC.md" \
-    "$config_dir/workspace/SLC-STANDING-ORDERS.md"
-  rm -rf "$config_dir/workspace/skills/synthetics-last-cradle"
-  write_slc_kb_doc "$config_dir"
-  _patch_agents_slc_host_pointer "$config_dir/workspace/AGENTS.md"
+  local ws="$config_dir/workspace"
+  rm -f "$ws/SLC.md" \
+    "$ws/SLC-STANDING-ORDERS.md" \
+    "$ws/SLC-STRATEGY.md" \
+    "$ws/SLC-WIN-STRATEGY.md" \
+    "$ws/slc-strategy.md" \
+    "$ws/knowledge/references/slc-play-unattended.md" \
+    "$config_dir/secrets/slc-heartbeat.interval"
+  rm -f "$ws"/slc-*.mjs "$ws"/slc-*.md "$ws"/slc-*.sh "$ws"/slc_*.py "$ws"/slc_*.sh 2>/dev/null || true
+  rm -rf "$ws/skills/synthetics-last-cradle" \
+    "$ws/skills/synthetics-last-cradle-survival" \
+    "$ws/skills/last-cradle-api-submission-fix" \
+    "$ws/skills/playing" \
+    "$ws/skills/turn-based-game-api-action-submit"
+  _strip_agents_slc_sections "$ws/AGENTS.md"
+  if [[ -f "$ws/knowledge/SCOPE.md" ]]; then
+    python3 - "$ws/knowledge/SCOPE.md" <<'PY'
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+new = re.sub(r"(?m)^- SLC unattended play \(.*?\)\n?", "", text)
+if new != text:
+    path.write_text(new, encoding="utf-8")
+PY
+  fi
 }
-
 
 _purge_stale_slc_local_docs_in_container() {
   local container="$1"
-  podman exec "$container" sh -c \
-    'rm -f /home/node/.openclaw/workspace/SLC.md \
-           /home/node/.openclaw/workspace/SLC-STANDING-ORDERS.md; \
-     rm -rf /home/node/.openclaw/workspace/skills/synthetics-last-cradle' || true
-  _write_slc_kb_doc_in_container "$container" || true
+  podman exec "$container" sh -c '
+    ws=/home/node/.openclaw/workspace
+    rm -f "$ws/SLC.md" \
+      "$ws/SLC-STANDING-ORDERS.md" \
+      "$ws/SLC-STRATEGY.md" \
+      "$ws/SLC-WIN-STRATEGY.md" \
+      "$ws/slc-strategy.md" \
+      "$ws/knowledge/references/slc-play-unattended.md" \
+      /home/node/.openclaw/secrets/slc-heartbeat.interval
+    rm -f "$ws"/slc-*.mjs "$ws"/slc-*.md "$ws"/slc-*.sh "$ws"/slc_*.py "$ws"/slc_*.sh 2>/dev/null || true
+    rm -rf "$ws/skills/synthetics-last-cradle" \
+      "$ws/skills/synthetics-last-cradle-survival" \
+      "$ws/skills/last-cradle-api-submission-fix" \
+      "$ws/skills/playing" \
+      "$ws/skills/turn-based-game-api-action-submit"
+  ' || true
+  _strip_agents_slc_sections_in_container "$container" || true
   podman exec -i "$container" python3 - <<'PY'
 from pathlib import Path
 import re
-
-agents = Path("/home/node/.openclaw/workspace/AGENTS.md")
-if not agents.is_file():
+path = Path("/home/node/.openclaw/workspace/knowledge/SCOPE.md")
+if not path.is_file():
     raise SystemExit(0)
-block = """## SLC (fleet)
-
-Playbook is only the live host skill: refresh `https://slcapi.discernible.io:9443/api/game/skill.md` (≥ 1.20.1) each session. Unattended loops never create lobbies — resume/join only; settle open deal-log transfers before bare invest. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
-"""
-text = agents.read_text(encoding="utf-8")
-text = re.sub(
-    r"\n## SLC standing orders \(fleet\)\n.*?(?=\n## |\Z)",
-    "\n",
-    text,
-    flags=re.S,
-)
-text = re.sub(
-    r"\n## SLC \(fleet\)\n.*?(?=\n## |\Z)",
-    "\n",
-    text,
-    flags=re.S,
-)
-if "## SLC active game (operator pin)" in text:
-    text = text.replace(
-        "## SLC active game (operator pin)",
-        block.rstrip() + "\n\n## SLC active game (operator pin)",
-        1,
-    )
-elif "## Heartbeats" in text:
-    text = text.replace("## Heartbeats", block.rstrip() + "\n\n## Heartbeats", 1)
-else:
-    text = text.rstrip() + "\n\n" + block
-agents.write_text(text, encoding="utf-8")
-PY
-}
-
-
-_patch_agents_slc_host_pointer() {
-  local agents_file="$1"
-  [[ -f "$agents_file" ]] || return 0
-  python3 - "$agents_file" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-path = Path(sys.argv[1])
-block = """## SLC (fleet)
-
-Playbook is only the live host skill: refresh `https://slcapi.discernible.io:9443/api/game/skill.md` (≥ 1.20.1) each session. Unattended loops never create lobbies — resume/join only; settle open deal-log transfers before bare invest. Fleet arming: `knowledge/references/slc-play-unattended.md` or `./identyclaw.sh enable-slc-heartbeat`.
-"""
 text = path.read_text(encoding="utf-8")
-text = re.sub(
-    r"\n## SLC standing orders \(fleet\)\n.*?(?=\n## |\Z)",
-    "\n",
-    text,
-    flags=re.S,
-)
-text = re.sub(
-    r"\n## SLC \(fleet\)\n.*?(?=\n## |\Z)",
-    "\n",
-    text,
-    flags=re.S,
-)
-if "## SLC active game (operator pin)" in text:
-    text = text.replace(
-        "## SLC active game (operator pin)",
-        block.rstrip() + "\n\n## SLC active game (operator pin)",
-        1,
-    )
-elif "## Heartbeats" in text:
-    text = text.replace("## Heartbeats", block.rstrip() + "\n\n## Heartbeats", 1)
-else:
-    text = text.rstrip() + "\n\n" + block
-path.write_text(text, encoding="utf-8")
+new = re.sub(r"(?m)^- SLC unattended play \(.*?\)\n?", "", text)
+if new != text:
+    path.write_text(new, encoding="utf-8")
 PY
 }
 
-# Back-compat aliases used by apply/enable paths.
-
-# Back-compat aliases used by apply/enable paths.
+# Back-compat aliases (no longer install KB / AGENTS pointers).
 write_slc_workspace_docs() {
   purge_stale_slc_local_docs "$1"
 }
-
 
 _write_slc_workspace_docs_in_container() {
   _purge_stale_slc_local_docs_in_container "$1"
 }
 
-
-_heartbeat_slc_game_prompt() {
-  # Single line: HEARTBEAT.md stores prompt in double quotes (no " inside).
-  _heartbeat_prompt_from_template slc-game
-}
-
-
-
-write_slc_heartbeat_doc() {
-  local config_dir="$1"
-  local interval="${2:-10m}"
-  local container="${3:-}"
-  local prompt
-  prompt="$(_heartbeat_slc_game_prompt)"
-  prompt="${prompt//$'\n'/ }"
-  apply_workspace_heartbeat_task "$config_dir" "$container" \
-    "slc-game" "$interval" "$prompt" \
-    "# SLC — never create lobbies; resume/join only; skill >=1.20.1; honor deal log."
-}
-
-
-
-_write_slc_heartbeat_doc_in_container() {
-  local container="$1"
-  local interval="${2:-10m}"
-  write_slc_heartbeat_doc "$(agent_home "${container#openclaw-}")" "$interval" "$container"
-}
-
-
-
-ensure_slc_heartbeat_config() {
-  ensure_heartbeat_config "$1" "${2:-10m}" "${3:-}"
-}
-
-
-_ensure_slc_heartbeat_config_in_container() {
-  _ensure_heartbeat_config_in_container "$1" "${2:-10m}"
-}
-
-
-slc_heartbeat_interval_for_agent() {
-  local id="$1"
-  local config_dir="$2"
-  local interval="" env_interval="" marker_file="$config_dir/secrets/slc-heartbeat.interval"
-  load_env
-  env_interval="$(agent_env_value "$id" SLC_HEARTBEAT_INTERVAL "")"
-  [[ -n "$env_interval" ]] && interval="$env_interval"
-  if [[ -z "$interval" ]]; then
-    case "$(agent_env_value "$id" ENABLE_SLC_HEARTBEAT "")" in
-      1|true|yes|on) interval="${IDENTYCLAW_SLC_HEARTBEAT_INTERVAL:-10m}" ;;
-    esac
-  fi
-  if [[ -z "$interval" ]]; then
-    case "${IDENTYCLAW_ENABLE_SLC_HEARTBEAT:-}" in
-      1|true|yes|on) interval="${IDENTYCLAW_SLC_HEARTBEAT_INTERVAL:-10m}" ;;
-    esac
-  fi
-  if [[ -z "$interval" && -f "$marker_file" ]]; then
-    interval="$(tr -d '[:space:]' <"$marker_file")"
-  fi
-  [[ -n "$interval" ]] && echo "$interval"
-}
-
-
-_read_slc_heartbeat_interval() {
-  local id="$1"
-  local config_dir="$2"
-  local interval container
-  interval="$(slc_heartbeat_interval_for_agent "$id" "$config_dir")"
-  [[ -n "$interval" ]] && { echo "$interval"; return 0; }
-  container="$(agent_container "$id")"
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    interval="$(podman exec "$container" cat /home/node/.openclaw/secrets/slc-heartbeat.interval 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ -n "$interval" ]] && echo "$interval"
-  fi
-  return 0
-}
-
-
-write_slc_heartbeat_marker() {
-  local config_dir="$1"
-  local interval="$2"
-  mkdir -p "$config_dir/secrets"
-  printf '%s\n' "$interval" >"$config_dir/secrets/slc-heartbeat.interval"
-  chmod 600 "$config_dir/secrets/slc-heartbeat.interval"
-}
-
-
-_write_slc_heartbeat_marker_in_container() {
-  local container="$1"
-  local interval="$2"
-  podman exec -i "$container" python3 - "$interval" <<'PY'
-import os, sys
-from pathlib import Path
-
-interval = sys.argv[1]
-path = Path("/home/node/.openclaw/secrets/slc-heartbeat.interval")
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(interval + "\n", encoding="utf-8")
-os.chmod(path, 0o600)
-PY
-}
-
-# Drop agent-created SLC isolated crons that overlap fleet HEARTBEAT.md slc-game.
-# Keeps heartbeat:main / memory-core / non-SLC jobs. Best-effort (gateway must be up).
-
-# Drop agent-created SLC isolated crons that overlap fleet HEARTBEAT.md slc-game.
-# Keeps heartbeat:main / memory-core / non-SLC jobs. Best-effort (gateway must be up).
+# Drop agent-created SLC isolated crons. Keeps heartbeat:main / memory-core / non-SLC jobs.
 prune_stale_slc_agent_crons() {
   local id="$1"
   local container
@@ -2170,65 +2095,91 @@ for j in jobs:
   done
 }
 
-# Apply OpenClaw tool-result image hotpatch into a running container's /app.
-# Returns 0 if already patched / nothing to do, 2 if files changed (caller should
-# podman-restart so Node reloads modules), 1 on hard failure.
+# Scrub retired discernible SLC hosts from agent .env (IDENTYCLAW_API_ENDPOINTS).
+_scrub_agent_env_discernible_slc() {
+  local config_dir="$1"
+  local container="$2"
+  local env_file="$config_dir/.env"
+  if [[ -w "$env_file" ]] 2>/dev/null; then
+    python3 - "$env_file" <<'PY'
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(0)
+lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+out = []
+changed = False
+for line in lines:
+    if line.startswith("IDENTYCLAW_API_ENDPOINTS="):
+        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+        parts = [p.strip() for p in val.split(",") if p.strip()]
+        kept = [p for p in parts if not re.search(r"(?i)(?:slc|slcapi)\.discernible\.io", p)]
+        if kept != parts:
+            changed = True
+            if kept:
+                out.append("IDENTYCLAW_API_ENDPOINTS=" + ",".join(kept) + "\n")
+            continue
+    out.append(line)
+if changed:
+    path.write_text("".join(out), encoding="utf-8")
+PY
+  elif _agent_container_name_running "$container"; then
+    podman exec -i "$container" python3 - <<'PY'
+from pathlib import Path
+import re
+path = Path("/home/node/.openclaw/.env")
+if not path.is_file():
+    raise SystemExit(0)
+lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+out = []
+changed = False
+for line in lines:
+    if line.startswith("IDENTYCLAW_API_ENDPOINTS="):
+        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+        parts = [p.strip() for p in val.split(",") if p.strip()]
+        kept = [p for p in parts if not re.search(r"(?i)(?:slc|slcapi)\.discernible\.io", p)]
+        if kept != parts:
+            changed = True
+            if kept:
+                out.append("IDENTYCLAW_API_ENDPOINTS=" + ",".join(kept) + "\n")
+            continue
+    out.append(line)
+if changed:
+    path.write_text("".join(out), encoding="utf-8")
+PY
+  fi
+}
 
-
-_apply_slc_heartbeat() {
+# Full SLC leftover purge for one agent (docs, heartbeat task, crons, env hosts).
+purge_slc_agent_leftovers() {
   local id="$1"
-  local config_dir="$2"
-  local interval="$3"
+  local config_dir="${2:-$(agent_home "$id")}"
   local container
   container="$(agent_container "$id")"
   if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
-    write_slc_workspace_docs "$config_dir"
+    purge_stale_slc_local_docs "$config_dir"
   elif _agent_container_name_running "$container"; then
-    _write_slc_workspace_docs_in_container "$container"
+    _purge_stale_slc_local_docs_in_container "$container"
   fi
-  write_slc_heartbeat_doc "$config_dir" "$interval" "$container"
-  ensure_slc_heartbeat_config "$config_dir" "$interval" "$container"
+  remove_workspace_heartbeat_task "$config_dir" "$container" "slc-game"
+  _scrub_agent_env_discernible_slc "$config_dir" "$container"
   if _agent_container_name_running "$container"; then
     prune_stale_slc_agent_crons "$id" || true
   fi
 }
 
-
-# Install SLC KB + AGENTS.md host pointer only when explicitly requested
-# (enable-slc-heartbeat / armed heartbeat). Idle fleets stay free of SLC docs.
-
-# Install SLC KB + AGENTS.md host pointer only when explicitly requested
-# (enable-slc-heartbeat / armed heartbeat). Idle fleets stay free of SLC docs.
-ensure_slc_workspace_docs() {
-  local id="$1"
-  local config_dir="$2"
-  local container
-  container="$(agent_container "$id")"
-  if [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
-    write_slc_workspace_docs "$config_dir" || true
-  elif _agent_container_name_running "$container"; then
-    _write_slc_workspace_docs_in_container "$container" || true
-  fi
-}
-
-
-
+# Bootstrap hook: never re-arm SLC; always clear leftovers so fleets stay clean.
 ensure_slc_heartbeat_from_env() {
   local id="$1"
   local config_dir="$2"
-  local interval
-  # Only install SLC KB / AGENTS.md pointers when heartbeat is armed.
-  # Idle fleets keep workspaces free of SLC docs across restart/rebuild.
-  interval="$(_read_slc_heartbeat_interval "$id" "$config_dir")"
-  [[ -n "$interval" ]] || return 0
-  ensure_slc_workspace_docs "$id" "$config_dir"
-  _apply_slc_heartbeat "$id" "$config_dir" "$interval"
+  purge_slc_agent_leftovers "$id" "$config_dir"
 }
 
-
+# CLI: purge only (fleet SLC arming retired).
 enable_slc_heartbeat() {
   local id="$1"
-  local interval="${2:-10m}"
+  local _interval="${2:-}"
   local config_dir container
   config_dir="$(agent_home "$id")"
   container="$(agent_container "$id")"
@@ -2236,17 +2187,9 @@ enable_slc_heartbeat() {
     echo "Run ./identyclaw.sh init first" >&2
     return 1
   fi
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
-    _write_slc_heartbeat_marker_in_container "$container" "$interval"
-    _apply_slc_heartbeat "$id" "$config_dir" "$interval"
-  elif [[ -d "$config_dir" ]]; then
-    write_slc_heartbeat_marker "$config_dir" "$interval"
-    write_slc_workspace_docs "$config_dir"
-    write_slc_heartbeat_doc "$config_dir" "$interval"
-    ensure_slc_heartbeat_config "$config_dir" "$interval"
-  fi
+  purge_slc_agent_leftovers "$id" "$config_dir"
+  echo "Purged SLC leftovers for ${id} (docs, heartbeat task, crons, discernible API hosts in .env)"
 }
-
 
 write_agent_browser_doc() {
   local config_dir="$1"

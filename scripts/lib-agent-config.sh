@@ -475,7 +475,7 @@ ensure_agent_bootstrap() {
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
-  ensure_openclaw_model_defaults "$config_dir" "$container"
+  ensure_openclaw_model_defaults "$config_dir" "$container" "$id"
   ensure_memory_config "$config_dir" "$container"
   ensure_session_maintenance_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
@@ -892,15 +892,28 @@ else:
 ensure_openclaw_model_defaults() {
   local config_dir="$1"
   local container="${2:-}"
-  local providers_csv openrouter_enabled=0
+  local id="${3:-}"
+  local providers_csv="" openrouter_enabled=0
+  local primary fb1 fb2 model pid
   load_env
+  if [[ -z "$id" ]]; then
+    id="$(basename "$config_dir")"
+  fi
+  # Optional per-agent overrides: AGENT_<LETTER>_MODEL_PRIMARY / _FALLBACK_1 / _FALLBACK_2
+  primary="$(agent_env_value "$id" MODEL_PRIMARY "$OPENCLAW_MODEL_PRIMARY")"
+  fb1="$(agent_env_value "$id" MODEL_FALLBACK_1 "$OPENCLAW_MODEL_FALLBACK_1")"
+  fb2="$(agent_env_value "$id" MODEL_FALLBACK_2 "$OPENCLAW_MODEL_FALLBACK_2")"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
-  providers_csv="$(openclaw_model_chain_providers_csv)"
+  for model in "$primary" "$fb1" "$fb2"; do
+    pid="$(openclaw_model_runtime_provider "$model")"
+    [[ -n "$pid" ]] || continue
+    [[ ",${providers_csv}," == *",${pid},"* ]] || providers_csv="${providers_csv:+$providers_csv,}${pid}"
+  done
   case ",${providers_csv}," in
     *,openrouter,*) openrouter_enabled=1 ;;
   esac
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "$OPENCLAW_MODEL_PRIMARY" "$OPENCLAW_MODEL_FALLBACK_1" "$OPENCLAW_MODEL_FALLBACK_2" \
+    "$primary" "$fb1" "$fb2" \
     "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" \
     "$providers_csv" \
     "$OPENCLAW_STUCK_SESSION_WARN_MS" "$OPENCLAW_STUCK_SESSION_ABORT_MS" \
@@ -1229,7 +1242,7 @@ sync_agent_openclaw_json_when_container_running() {
   wait_for_running_agent_container "$container" || return 1
   ensure_agent_security_hardening "$id" "$dir" "$container"
   ensure_main_ingress_config "$id" "$dir" "$container"
-  ensure_openclaw_model_defaults "$dir" "$container"
+  ensure_openclaw_model_defaults "$dir" "$container" "$id"
   ensure_memory_config "$dir" "$container"
   ensure_session_maintenance_config "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
@@ -2160,3 +2173,144 @@ PY
   fi
   echo "Next: ./identyclaw.sh build-image && ./identyclaw.sh start ${id}"
 }
+
+# Factory-reset one agent: wipe learned state, keep secrets/identity/plugins, re-bootstrap.
+# Keeps: secrets/, identity/, credentials/, extensions/, .config/, openclaw.json, .env (scrubbed)
+# Wipes: sessions, sqlite state, workspace memory, agent-created skills, SLC leftovers, skill-workshop
+factory_reset_agent() {
+  local id="$1"
+  local config_dir container was_running=0
+  local fleet_skills="himalaya calendar-reminders idcp-wallet a2a-reply-message identyclaw"
+  load_env
+  is_valid_agent_id "$id" || { echo "Invalid agent id: ${id}" >&2; return 1; }
+  config_dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  if ! [[ -d "$config_dir" ]] && ! podman container exists "$container" 2>/dev/null; then
+    echo "No agent home for ${id} — run ./identyclaw.sh init / deploy first" >&2
+    return 1
+  fi
+
+  echo "==> factory-reset ${id}"
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    was_running=1
+  fi
+
+  # Soft wipe while container can still exec (pod UID owns files).
+  if [[ "$was_running" == "1" ]]; then
+    purge_slc_agent_leftovers "$id" "$config_dir"
+    podman exec "$container" sh -c '
+      set -e
+      oc=/home/node/.openclaw
+      rm -rf "$oc/agents/main/sessions" "$oc/agents/agent/sessions" "$oc/agents/openclaw/sessions" 2>/dev/null || true
+      mkdir -p "$oc/agents/main/sessions"
+      rm -rf "$oc/workspace/memory" "$oc/skill-workshop" 2>/dev/null || true
+      mkdir -p "$oc/workspace/memory"
+      rm -f "$oc/workspace/MEMORY.md" "$oc/workspace/DREAMS.md" 2>/dev/null || true
+      # Drop non-fleet workspace skills
+      if [ -d "$oc/workspace/skills" ]; then
+        for d in "$oc/workspace/skills"/*; do
+          [ -e "$d" ] || continue
+          base=$(basename "$d")
+          case " himalaya calendar-reminders idcp-wallet a2a-reply-message identyclaw " in
+            *" $base "*) ;;
+            *) rm -rf "$d" ;;
+          esac
+        done
+      fi
+      # Drop agent junk scripts / decode helpers often left from SLC debugging
+      rm -f "$oc/workspace"/check_*.py "$oc/workspace"/decode_jwt.py 2>/dev/null || true
+      # Logs / caches that encode prior turns
+      rm -f "$oc/logs/cache-trace.jsonl" "$oc/logs/cache-trace.jsonl.1" 2>/dev/null || true
+      rm -rf "$oc/cache" "$oc/delivery-queue" "$oc/tasks" 2>/dev/null || true
+    ' || true
+    echo "    (soft wipe via ${container})"
+    echo "    stopping ${container} to clear sqlite…"
+    podman stop "$container" >/dev/null || true
+  elif [[ -w "$config_dir/workspace" ]] 2>/dev/null; then
+    purge_slc_agent_leftovers "$id" "$config_dir"
+    rm -rf "$config_dir/agents/main/sessions" \
+      "$config_dir/agents/agent/sessions" \
+      "$config_dir/agents/openclaw/sessions" \
+      "$config_dir/workspace/memory" \
+      "$config_dir/skill-workshop" \
+      "$config_dir/cache" \
+      "$config_dir/delivery-queue" \
+      "$config_dir/tasks" 2>/dev/null || true
+    mkdir -p "$config_dir/agents/main/sessions" "$config_dir/workspace/memory"
+    rm -f "$config_dir/workspace/MEMORY.md" "$config_dir/workspace/DREAMS.md" \
+      "$config_dir/logs/cache-trace.jsonl" "$config_dir/logs/cache-trace.jsonl.1" \
+      "$config_dir/workspace"/check_*.py "$config_dir/workspace"/decode_jwt.py 2>/dev/null || true
+    if [[ -d "$config_dir/workspace/skills" ]]; then
+      local d base
+      for d in "$config_dir/workspace/skills"/*; do
+        [[ -e "$d" ]] || continue
+        base="$(basename "$d")"
+        case " ${fleet_skills} " in
+          *" ${base} "*) ;;
+          *) rm -rf "$d" ;;
+        esac
+      done
+    fi
+  else
+    # Pod volume owned by container uid — use unshare after ensuring container is stopped.
+    if podman container exists "$container" 2>/dev/null; then
+      podman stop "$container" >/dev/null 2>&1 || true
+      podman rm -f "$container" >/dev/null 2>&1 || true
+    fi
+    purge_slc_agent_leftovers "$id" "$config_dir" || true
+    podman unshare sh -c '
+      id_dir="$1"
+      rm -rf "$id_dir/agents/main/sessions" \
+        "$id_dir/agents/agent/sessions" \
+        "$id_dir/agents/openclaw/sessions" \
+        "$id_dir/workspace/memory" \
+        "$id_dir/skill-workshop" \
+        "$id_dir/cache" \
+        "$id_dir/delivery-queue" \
+        "$id_dir/tasks"
+      mkdir -p "$id_dir/agents/main/sessions" "$id_dir/workspace/memory"
+      rm -f "$id_dir/workspace/MEMORY.md" "$id_dir/workspace/DREAMS.md" \
+        "$id_dir/logs/cache-trace.jsonl" "$id_dir/logs/cache-trace.jsonl.1" \
+        "$id_dir/workspace"/check_*.py "$id_dir/workspace"/decode_jwt.py
+      if [ -d "$id_dir/workspace/skills" ]; then
+        for d in "$id_dir/workspace/skills"/*; do
+          [ -e "$d" ] || continue
+          base=$(basename "$d")
+          case " himalaya calendar-reminders idcp-wallet a2a-reply-message identyclaw " in
+            *" $base "*) ;;
+            *) rm -rf "$d" ;;
+          esac
+        done
+      fi
+    ' _ "$config_dir" || true
+  fi
+
+  # Sqlite must be cleared while gateway is down.
+  if [[ -w "$config_dir/state" ]] 2>/dev/null; then
+    rm -f "$config_dir/state/openclaw.sqlite" \
+      "$config_dir/state/openclaw.sqlite-shm" \
+      "$config_dir/state/openclaw.sqlite-wal" 2>/dev/null || true
+  else
+    podman unshare rm -f \
+      "$config_dir/state/openclaw.sqlite" \
+      "$config_dir/state/openclaw.sqlite-shm" \
+      "$config_dir/state/openclaw.sqlite-wal" 2>/dev/null || true
+  fi
+
+  # Scrub discernible hosts from fleet env so start does not re-inject them.
+  _scrub_agent_env_discernible_slc "$config_dir" ""
+
+  echo "    re-starting ${id} (bootstrap restores fleet skills + LLM auth)…"
+  if [[ "${IDENTYCLAW_DEPLOY_MODE:-standalone}" == "pod" ]]; then
+    # Container may have been stopped above; start recreates + bootstraps.
+    if podman container exists "$container" 2>/dev/null \
+      && ! podman ps --format '{{.Names}}' | grep -qx "$container"; then
+      podman rm -f "$container" >/dev/null 2>&1 || true
+    fi
+    start_pod_agent "$id" start || return 1
+  else
+    start_one "$id" || return 1
+  fi
+  echo "==> ${id}: factory-reset complete (secrets/identity kept; memory/sessions/skills/sqlite wiped)"
+}
+
