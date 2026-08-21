@@ -157,6 +157,65 @@ class ModelRoutingTests(unittest.TestCase):
             )
 
 
+def test_read_chain_from_existing_config(self):
+        data = {
+            "agents": {
+                "defaults": {
+                    "model": {
+                        "primary": "openrouter/openai/gpt-5.6-terra",
+                        "fallbacks": [
+                            "openrouter/google/gemini-2.5-flash",
+                            "openrouter/qwen/qwen3-coder",
+                        ],
+                    },
+                    "timeoutSeconds": 600,
+                    "thinkingDefault": "off",
+                }
+            },
+            "models": {
+                "providers": {"openrouter": {"timeoutSeconds": 240}}
+            },
+        }
+        chain = LIB.read_model_chain_from_config(data)
+        self.assertEqual(chain["primary"], "openrouter/openai/gpt-5.6-terra")
+        self.assertEqual(chain["fallback_1"], "openrouter/google/gemini-2.5-flash")
+        self.assertEqual(chain["fallback_2"], "openrouter/qwen/qwen3-coder")
+
+    def test_patch_file_reads_chain_when_args_omitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "openclaw.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {
+                                    "primary": "openrouter/openai/gpt-5.6-terra",
+                                    "fallbacks": [
+                                        "openrouter/google/gemini-2.5-flash",
+                                        "openrouter/qwen/qwen3-coder",
+                                    ],
+                                }
+                            }
+                        },
+                        "models": {"providers": {}},
+                        "plugins": {"entries": {}},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            counts = LIB.patch_openclaw_json_file(path)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            ids = [
+                m["id"]
+                for m in data["models"]["providers"]["openrouter"]["models"]
+            ]
+            self.assertEqual(ids[0], "openai/gpt-5.6-terra")
+            self.assertFalse(data["plugins"]["entries"]["openai"]["enabled"])
+            self.assertEqual(counts["session_nodes"], 0)
+
+
 if __name__ == "__main__":
     result = unittest.main(verbosity=2, exit=False)
     sys.exit(0 if result.result.wasSuccessful() else 1)

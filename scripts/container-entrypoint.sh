@@ -52,6 +52,17 @@ if [ -f /opt/identyclaw/patch-identyclaw-request-body.mjs ]; then
     || echo "[identyclaw] request-body patch skipped" >&2
 fi
 
+# Keep nested OpenRouter model ids (openrouter/openai/…) on OpenRouter.
+# Reads primary/fallbacks from bind-mounted openclaw.json — no host env.local.
+# Re-applies catalog + disables native openai/anthropic/google plugins + clears
+# sticky sqlite session pins that would otherwise 401 at api.openai.com.
+if [ -f /opt/identyclaw/patch-openclaw-model-routing.py ] \
+  && [ -f /home/node/.openclaw/openclaw.json ]; then
+  python3 /opt/identyclaw/patch-openclaw-model-routing.py \
+    /home/node/.openclaw/openclaw.json \
+    || echo "[identyclaw] model-routing patch skipped" >&2
+fi
+
 # Leftover exec-approvals.json lives on the bind-mounted OpenClaw home, so it
 # survives image rebuilds. Newer OpenClaw stores approvals in SQLite and fails
 # closed with ExecApprovalsMigrationRequiredError while this file exists.

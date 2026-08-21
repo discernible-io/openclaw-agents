@@ -312,6 +312,21 @@ runCase("container-entrypoint retires leftover exec-approvals.json before the ga
   assert.equal(image.includes("scripts/container-entrypoint.sh"), true);
 });
 
+runCase("container-entrypoint re-applies model routing from openclaw.json", () => {
+  const src = readFileSync(join(repoRoot, "scripts/container-entrypoint.sh"), "utf8");
+  const image = readFileSync(join(repoRoot, "Containerfile.agent"), "utf8");
+  assert.equal(src.includes("/opt/identyclaw/patch-openclaw-model-routing.py"), true);
+  assert.equal(src.includes("/home/node/.openclaw/openclaw.json"), true);
+  assert.ok(
+    src.indexOf("patch-openclaw-model-routing.py") < src.indexOf('exec tini -s -- "$@"'),
+    "entrypoint must apply model routing before exec tini",
+  );
+  assert.equal(image.includes("scripts/lib-openclaw-model-routing.py"), true);
+  assert.equal(image.includes("scripts/patch-openclaw-model-routing.py"), true);
+  assert.equal(image.includes("/opt/identyclaw/lib-openclaw-model-routing.py"), true);
+  assert.equal(image.includes("/opt/identyclaw/patch-openclaw-model-routing.py"), true);
+});
+
 runCase("ensure_exec_allowlist retires leftover JSON inside the container even when the host cannot see it", () => {
   const src = readFileSync(join(repoRoot, "scripts/lib-agent-config.sh"), "utf8");
   const start = src.indexOf("ensure_exec_allowlist_harmless_bins()");

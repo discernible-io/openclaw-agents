@@ -359,25 +359,93 @@ def repair_session_stores(
     return {"sessions_json": json_n, "session_nodes": sqlite_n}
 
 
+def read_model_chain_from_config(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Read primary/fallbacks/timeouts/thinking from an existing openclaw.json tree."""
+    defaults = {}
+    agents = data.get("agents")
+    if isinstance(agents, dict):
+        raw_defaults = agents.get("defaults")
+        if isinstance(raw_defaults, dict):
+            defaults = raw_defaults
+    model = defaults.get("model")
+    primary = ""
+    fallbacks: list[str] = []
+    if isinstance(model, str):
+        primary = model.strip()
+    elif isinstance(model, dict):
+        primary = str(model.get("primary") or "").strip()
+        raw_fb = model.get("fallbacks")
+        if isinstance(raw_fb, list):
+            fallbacks = [str(x).strip() for x in raw_fb if str(x).strip()]
+    while len(fallbacks) < 2:
+        fallbacks.append("")
+    thinking = str(defaults.get("thinkingDefault") or "off").strip() or "off"
+    agent_timeout = defaults.get("timeoutSeconds")
+    try:
+        agent_timeout_i = int(agent_timeout) if agent_timeout is not None else 600
+    except (TypeError, ValueError):
+        agent_timeout_i = 600
+    provider_timeout_i = 240
+    providers = {}
+    models = data.get("models")
+    if isinstance(models, dict):
+        providers = models.get("providers") if isinstance(models.get("providers"), dict) else {}
+    for pid in ("openrouter", "opencode", "opencode-go"):
+        slot = providers.get(pid)
+        if isinstance(slot, dict) and slot.get("timeoutSeconds") is not None:
+            try:
+                provider_timeout_i = int(slot["timeoutSeconds"])
+                break
+            except (TypeError, ValueError):
+                pass
+    return {
+        "primary": primary,
+        "fallback_1": fallbacks[0],
+        "fallback_2": fallbacks[1],
+        "agent_timeout": agent_timeout_i,
+        "provider_timeout": provider_timeout_i,
+        "thinking_default": thinking,
+    }
+
+
 def patch_openclaw_json_file(
     json_path: Path,
     *,
-    primary: str,
-    fallback_1: str,
-    fallback_2: str,
-    agent_timeout: int = 600,
-    provider_timeout: int = 240,
-    thinking_default: str = "off",
+    primary: str = "",
+    fallback_1: str = "",
+    fallback_2: str = "",
+    agent_timeout: int | None = None,
+    provider_timeout: int | None = None,
+    thinking_default: str = "",
 ) -> dict[str, int]:
     data = json.loads(json_path.read_text(encoding="utf-8"))
+    chain = read_model_chain_from_config(data)
+    primary = (primary or chain["primary"]).strip()
+    fallback_1 = (fallback_1 or chain["fallback_1"]).strip()
+    fallback_2 = (fallback_2 or chain["fallback_2"]).strip()
+    if not primary:
+        raise ValueError(f"no agents.defaults.model.primary in {json_path}")
+    if not fallback_1:
+        fallback_1 = primary
+    if not fallback_2:
+        fallback_2 = fallback_1
+    agent_timeout_i = (
+        int(agent_timeout) if agent_timeout is not None else int(chain["agent_timeout"])
+    )
+    provider_timeout_i = (
+        int(provider_timeout)
+        if provider_timeout is not None
+        else int(chain["provider_timeout"])
+    )
+    thinking = (thinking_default or chain["thinking_default"] or "off").strip() or "off"
     apply_openclaw_model_routing(
         data,
         primary=primary,
         fallback_1=fallback_1,
         fallback_2=fallback_2,
-        agent_timeout=agent_timeout,
-        provider_timeout=provider_timeout,
-        thinking_default=thinking_default,
+        agent_timeout=agent_timeout_i,
+        provider_timeout=provider_timeout_i,
+        thinking_default=thinking,
     )
     json_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     try:

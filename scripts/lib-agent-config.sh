@@ -37,13 +37,22 @@ _agent_openclaw_model_routing_patch() {
     return 0
   fi
   if agent_config_use_container "$config_dir" "$container"; then
-    podman cp "$lib_py" "${container}:/tmp/lib-openclaw-model-routing.py" >/dev/null || return 1
-    podman cp "$patch_py" "${container}:/tmp/patch-openclaw-model-routing.py" >/dev/null || return 1
-    out="$(podman exec "$container" python3 /tmp/patch-openclaw-model-routing.py \
-      /home/node/.openclaw/openclaw.json \
-      --primary "$primary" --fallback-1 "$fb1" --fallback-2 "$fb2" \
-      --agent-timeout "$agent_timeout" --provider-timeout "$provider_timeout" \
-      --thinking "$thinking")" || return 1
+    # Prefer image-baked scripts (Containerfile.agent → /opt/identyclaw/).
+    if podman exec "$container" test -f /opt/identyclaw/patch-openclaw-model-routing.py 2>/dev/null; then
+      out="$(podman exec "$container" python3 /opt/identyclaw/patch-openclaw-model-routing.py \
+        /home/node/.openclaw/openclaw.json \
+        --primary "$primary" --fallback-1 "$fb1" --fallback-2 "$fb2" \
+        --agent-timeout "$agent_timeout" --provider-timeout "$provider_timeout" \
+        --thinking "$thinking")" || return 1
+    else
+      podman cp "$lib_py" "${container}:/tmp/lib-openclaw-model-routing.py" >/dev/null || return 1
+      podman cp "$patch_py" "${container}:/tmp/patch-openclaw-model-routing.py" >/dev/null || return 1
+      out="$(podman exec "$container" python3 /tmp/patch-openclaw-model-routing.py \
+        /home/node/.openclaw/openclaw.json \
+        --primary "$primary" --fallback-1 "$fb1" --fallback-2 "$fb2" \
+        --agent-timeout "$agent_timeout" --provider-timeout "$provider_timeout" \
+        --thinking "$thinking")" || return 1
+    fi
     echo "    (model routing ${out})"
     return 0
   fi
