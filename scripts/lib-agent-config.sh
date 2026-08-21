@@ -62,6 +62,8 @@ _agent_openclaw_model_routing_patch() {
 
 
 # Apply sticky OpenRouter session_id + diagnostics.cacheTrace (host or in-container).
+# Prefer image-baked /opt/identyclaw scripts when present (same pattern as model-routing);
+# otherwise copy from the git checkout so host sync picks up unreleased fixes without rebuild.
 _agent_openclaw_cache_config_patch() {
   local config_dir="$1"
   local container="${2:-}"
@@ -90,13 +92,22 @@ _agent_openclaw_cache_config_patch() {
     return 0
   fi
   if agent_config_use_container "$config_dir" "$container"; then
-    podman cp "$lib_js" "${container}:/tmp/lib-openclaw-cache-config.mjs" >/dev/null || return 1
-    podman cp "$patch_js" "${container}:/tmp/patch-openclaw-cache-config.mjs" >/dev/null || return 1
-    podman exec "$container" node /tmp/patch-openclaw-cache-config.mjs \
-      /home/node/.openclaw/openclaw.json \
-      --session-id "$session_id" \
-      --cache-trace "$cache_trace" \
-      --openrouter "$openrouter_enabled" || return 1
+    # Prefer image-baked scripts (Containerfile.agent → /opt/identyclaw/).
+    if podman exec "$container" test -f /opt/identyclaw/patch-openclaw-cache-config.mjs 2>/dev/null; then
+      podman exec "$container" node /opt/identyclaw/patch-openclaw-cache-config.mjs \
+        /home/node/.openclaw/openclaw.json \
+        --session-id "$session_id" \
+        --cache-trace "$cache_trace" \
+        --openrouter "$openrouter_enabled" || return 1
+    else
+      podman cp "$lib_js" "${container}:/tmp/lib-openclaw-cache-config.mjs" >/dev/null || return 1
+      podman cp "$patch_js" "${container}:/tmp/patch-openclaw-cache-config.mjs" >/dev/null || return 1
+      podman exec "$container" node /tmp/patch-openclaw-cache-config.mjs \
+        /home/node/.openclaw/openclaw.json \
+        --session-id "$session_id" \
+        --cache-trace "$cache_trace" \
+        --openrouter "$openrouter_enabled" || return 1
+    fi
     return 0
   fi
   echo "    (cannot patch cache config — openclaw.json not writable and container ${container:-<none>} unavailable)" >&2
@@ -1042,18 +1053,28 @@ if thinking_default not in allowed_thinking:
     thinking_default = "off"
 provider_ids = [p.strip() for p in providers_csv.split(",") if p.strip()]
 fallbacks = [fb1, fb2]
-allowlist = {primary: {}, fb1: {}, fb2: {}}
 known_llm_plugins = {"openrouter", "opencode", "opencode-go"}
 
 def model_tail(model_id: str) -> str:
     return model_id.split("/", 1)[1] if "/" in model_id else model_id
+
+def build_allowlist(prev):
+    # Preserve params (e.g. OpenRouter sticky session_id) across chain sync.
+    out = {}
+    for mid in (primary, fb1, fb2):
+        if not mid:
+            continue
+        old = prev.get(mid) if isinstance(prev, dict) else None
+        out[mid] = dict(old) if isinstance(old, dict) else {}
+    return out
 
 paid_fallback = model_tail(fb2)
 
 data = json.loads(path.read_text(encoding="utf-8"))
 defaults = data.setdefault("agents", {}).setdefault("defaults", {})
 defaults.setdefault("workspace", "/home/node/.openclaw/workspace")
-defaults["models"] = allowlist
+prev_models = defaults.get("models") if isinstance(defaults.get("models"), dict) else {}
+defaults["models"] = build_allowlist(prev_models)
 defaults["model"] = {"primary": primary, "fallbacks": fallbacks}
 defaults["timeoutSeconds"] = agent_timeout
 defaults["thinkingDefault"] = thinking_default
@@ -1158,17 +1179,20 @@ if changed:
     sessions_path.write_text(json.dumps(sessions, indent=2) + "\n", encoding="utf-8")
     sessions_path.chmod(0o600)
 PY
-  # Sticky OpenRouter session_id (body + x-session-id) + diagnostics.cacheTrace.
-  _agent_openclaw_cache_config_patch "$config_dir" "$container" \
-    "${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}" \
-    "${OPENCLAW_CACHE_TRACE:-1}" \
-    "$openrouter_enabled" || true
   # Nested OpenRouter ids (openrouter/openai/…) must stay on OpenRouter — native
   # openai/anthropic/google catalogs steal them and 401 without those API keys.
+  # Run BEFORE cache config: model-routing rebuilds agents.defaults.models and
+  # used to wipe sticky session_id params when it reset entries to {}.
   _agent_openclaw_model_routing_patch "$config_dir" "$container" \
     "$primary" "$fb1" "$fb2" \
     "$OPENCLAW_AGENT_TIMEOUT_SECONDS" "$OPENCLAW_MODEL_PROVIDER_TIMEOUT_SECONDS" \
     "$OPENCLAW_THINKING_DEFAULT" || true
+  # Sticky OpenRouter session_id (body + x-session-id) + diagnostics.cacheTrace.
+  # Must run after model-routing so extra_body.session_id lands on the final allowlist.
+  _agent_openclaw_cache_config_patch "$config_dir" "$container" \
+    "${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}" \
+    "${OPENCLAW_CACHE_TRACE:-1}" \
+    "$openrouter_enabled" || true
 }
 
 

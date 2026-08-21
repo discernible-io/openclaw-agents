@@ -156,6 +156,28 @@ def repair_session_entry(
     return changed
 
 
+def build_model_allowlist(
+    primary: str,
+    fallback_1: str,
+    fallback_2: str,
+    previous: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rebuild agents.defaults.models for the chain, preserving per-model params.
+
+    OpenRouter sticky ``session_id`` (and any other ``params``) live on these
+    entries. A blank ``{}`` rewrite was wiping prompt-cache sticky routing on
+    every model-routing pass (host sync + container entrypoint).
+    """
+    prev = previous if isinstance(previous, Mapping) else {}
+    out: dict[str, Any] = {}
+    for mid in (primary, fallback_1, fallback_2):
+        if not mid:
+            continue
+        old = prev.get(mid)
+        out[mid] = dict(old) if isinstance(old, dict) else {}
+    return out
+
+
 def apply_openclaw_model_routing(
     data: MutableMapping[str, Any],
     *,
@@ -182,7 +204,6 @@ def apply_openclaw_model_routing(
         thinking = "off"
 
     fallbacks = [fallback_1, fallback_2]
-    allowlist = {primary: {}, fallback_1: {}, fallback_2: {}}
     provider_ids: list[str] = []
     for model in (primary, fallback_1, fallback_2):
         pid = runtime_provider(model)
@@ -193,7 +214,10 @@ def apply_openclaw_model_routing(
 
     defaults = data.setdefault("agents", {}).setdefault("defaults", {})
     defaults.setdefault("workspace", "/home/node/.openclaw/workspace")
-    defaults["models"] = allowlist
+    prev_models = defaults.get("models") if isinstance(defaults.get("models"), dict) else {}
+    defaults["models"] = build_model_allowlist(
+        primary, fallback_1, fallback_2, prev_models
+    )
     defaults["model"] = {"primary": primary, "fallbacks": fallbacks}
     defaults["timeoutSeconds"] = int(agent_timeout)
     defaults["thinkingDefault"] = thinking
