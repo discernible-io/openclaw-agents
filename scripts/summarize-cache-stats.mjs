@@ -8,7 +8,7 @@
  * Reads under DIR: openclaw.json, agents/.../sessions/sessions.json,
  * agents/.../sessions/*.jsonl, logs/cache-trace.jsonl
  */
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import {
   formatCacheStatsLine,
@@ -32,6 +32,27 @@ function parseArgs(argv) {
 function safeRead(path) {
   try {
     return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** Read only the trailing bytes of huge cache-trace.jsonl files. */
+function safeReadTail(path, maxBytes = 8_000_000) {
+  try {
+    const st = statSync(path);
+    if (!st.isFile() || st.size <= 0) return "";
+    if (st.size <= maxBytes) return readFileSync(path, "utf8");
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(maxBytes);
+      readSync(fd, buf, 0, maxBytes, st.size - maxBytes);
+      const text = buf.toString("utf8");
+      const nl = text.indexOf("\n");
+      return nl >= 0 ? text.slice(nl + 1) : text;
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return "";
   }
@@ -117,7 +138,7 @@ const summary = summarizeAgentCacheStats({
   cacheTraceEnabled,
   sessionsJson: findSessionsJson(opts.stateDir),
   jsonlTexts: listSessionJsonl(opts.stateDir),
-  cacheTraceText: safeRead(join(opts.stateDir, "logs", "cache-trace.jsonl")),
+  cacheTraceText: safeReadTail(join(opts.stateDir, "logs", "cache-trace.jsonl")),
 });
 
 if (opts.json) {

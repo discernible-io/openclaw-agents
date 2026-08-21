@@ -133,6 +133,39 @@ runCase("extractUsageFromJsonlLine + summarize hit rate", () => {
   assert.ok(Math.abs(s.hitRate - 0.45) < 1e-9);
 });
 
+runCase("extractUsageFromJsonlLine reads cache-trace session:after messages[].usage", () => {
+  const nested = extractUsageFromJsonlLine(
+    JSON.stringify({
+      stage: "session:after",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          usage: { input: 1500, output: 20, cacheRead: 40000, cacheWrite: 0 },
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(nested, {
+    input: 1500,
+    output: 20,
+    cacheRead: 40000,
+    cacheWrite: 0,
+  });
+  const skipped = extractUsageFromJsonlLine(
+    JSON.stringify({
+      stage: "prompt:before",
+      messages: [
+        {
+          role: "assistant",
+          usage: { input: 1500, output: 20, cacheRead: 40000, cacheWrite: 0 },
+        },
+      ],
+    }),
+  );
+  assert.equal(skipped, null);
+});
+
 runCase("summarizeAgentCacheStats + format line", () => {
   const sessionsJson = JSON.stringify({
     main: { inputTokens: 500, outputTokens: 20, cacheRead: 400, cacheWrite: 0 },

@@ -68,6 +68,36 @@ class ModelRoutingTests(unittest.TestCase):
             "openrouter/openai/gpt-5.6-terra",
         )
 
+    def test_preserves_sticky_session_params_on_allowlist(self):
+        data = {
+            "agents": {
+                "defaults": {
+                    "models": {
+                        "openrouter/openai/gpt-5.6-terra": {
+                            "params": {"extra_body": {"session_id": "identyclaw"}}
+                        },
+                        "openrouter/google/gemini-2.5-flash": {
+                            "params": {"extra_body": {"session_id": "identyclaw"}}
+                        },
+                    }
+                }
+            },
+            "plugins": {"entries": {"openrouter": {"enabled": True}}},
+            "models": {"providers": {}},
+        }
+        LIB.apply_openclaw_model_routing(
+            data,
+            primary="openrouter/openai/gpt-5.6-terra",
+            fallback_1="openrouter/google/gemini-2.5-flash",
+            fallback_2="openrouter/qwen/qwen3-coder",
+        )
+        terra = data["agents"]["defaults"]["models"]["openrouter/openai/gpt-5.6-terra"]
+        gemini = data["agents"]["defaults"]["models"]["openrouter/google/gemini-2.5-flash"]
+        qwen = data["agents"]["defaults"]["models"]["openrouter/qwen/qwen3-coder"]
+        self.assertEqual(terra["params"]["extra_body"]["session_id"], "identyclaw")
+        self.assertEqual(gemini["params"]["extra_body"]["session_id"], "identyclaw")
+        self.assertEqual(qwen, {})
+
     def test_stale_native_hijack_and_off_chain_deepseek(self):
         allow = [
             "openrouter/openai/gpt-5.6-terra",

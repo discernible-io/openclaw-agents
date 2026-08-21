@@ -327,6 +327,25 @@ runCase("container-entrypoint re-applies model routing from openclaw.json", () =
   assert.equal(image.includes("/opt/identyclaw/patch-openclaw-model-routing.py"), true);
 });
 
+runCase("container-entrypoint re-applies OpenRouter cache config after model routing", () => {
+  const src = readFileSync(join(repoRoot, "scripts/container-entrypoint.sh"), "utf8");
+  const image = readFileSync(join(repoRoot, "Containerfile.agent"), "utf8");
+  assert.equal(src.includes("/opt/identyclaw/patch-openclaw-cache-config.mjs"), true);
+  assert.ok(
+    src.indexOf("patch-openclaw-model-routing.py") <
+      src.indexOf("patch-openclaw-cache-config.mjs"),
+    "cache config must run after model-routing so sticky session_id survives",
+  );
+  assert.ok(
+    src.indexOf("patch-openclaw-cache-config.mjs") < src.indexOf('exec tini -s -- "$@"'),
+    "entrypoint must apply cache config before exec tini",
+  );
+  assert.equal(image.includes("scripts/lib-openclaw-cache-config.mjs"), true);
+  assert.equal(image.includes("scripts/patch-openclaw-cache-config.mjs"), true);
+  assert.equal(image.includes("/opt/identyclaw/lib-openclaw-cache-config.mjs"), true);
+  assert.equal(image.includes("/opt/identyclaw/patch-openclaw-cache-config.mjs"), true);
+});
+
 runCase("ensure_exec_allowlist retires leftover JSON inside the container even when the host cannot see it", () => {
   const src = readFileSync(join(repoRoot, "scripts/lib-agent-config.sh"), "utf8");
   const start = src.indexOf("ensure_exec_allowlist_harmless_bins()");

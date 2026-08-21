@@ -130,7 +130,7 @@ export function normalizeUsage(raw) {
 }
 
 /**
- * Extract usage from one OpenClaw session JSONL line (best-effort).
+ * Extract usage from one OpenClaw session JSONL / cache-trace line (best-effort).
  * @param {string} line
  */
 export function extractUsageFromJsonlLine(line) {
@@ -143,6 +143,14 @@ export function extractUsageFromJsonlLine(line) {
     return null;
   }
   if (!obj || typeof obj !== "object") return null;
+
+  const stage = typeof obj.stage === "string" ? obj.stage : "";
+  // cache-trace repeats the same assistant usage across many stages
+  // (prompt:before, stream:context, …). Count once via session:after.
+  if (stage && stage !== "session:after") {
+    return normalizeUsage(obj.usage);
+  }
+
   const candidates = [
     obj.usage,
     obj.message?.usage,
@@ -154,6 +162,14 @@ export function extractUsageFromJsonlLine(line) {
     const n = normalizeUsage(c);
     if (n) return n;
   }
+  // cache-trace / session rows: usage often lives on messages[].usage
+  const messages = Array.isArray(obj.messages) ? obj.messages : [];
+  let fromMessages = null;
+  for (const m of messages) {
+    const n = normalizeUsage(asObject(m)?.usage);
+    if (n) fromMessages = n;
+  }
+  if (fromMessages) return fromMessages;
   // Some transcript rows embed cache counters at the top level (session store shape).
   return normalizeUsage(obj);
 }
