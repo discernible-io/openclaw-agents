@@ -156,8 +156,7 @@ class ModelRoutingTests(unittest.TestCase):
                 rows["agent:main:cron:keep"]["model"], "anthropic/claude-sonnet-5"
             )
 
-
-def test_read_chain_from_existing_config(self):
+    def test_read_chain_from_existing_config(self):
         data = {
             "agents": {
                 "defaults": {
