@@ -194,10 +194,16 @@ export function summarizeUsageRows(rows) {
     cacheWrite += row.cacheWrite || 0;
     if ((row.cacheRead || 0) > 0) turnsWithCacheRead += 1;
   }
-  // Hit rate vs prompt input tokens (OpenRouter/DeepSeek style).
-  const denom = input > 0 ? input : cacheRead + Math.max(input - cacheRead, 0);
+  // Two common shapes:
+  // - OpenRouter/DeepSeek: cacheRead ⊆ input → hit = cacheRead/input
+  // - Anthropic-style: input is uncached-only → hit = cacheRead/(input+cacheRead)
+  let denom = 0;
+  if (input > 0 && cacheRead > 0 && cacheRead <= input) {
+    denom = input;
+  } else if (input > 0 || cacheRead > 0) {
+    denom = input + cacheRead;
+  }
   const hitRate = denom > 0 ? cacheRead / denom : null;
-  // Clamp when providers report cacheRead without matching input.
   const hitRateClamped =
     hitRate == null ? null : Math.max(0, Math.min(1, hitRate));
   return {

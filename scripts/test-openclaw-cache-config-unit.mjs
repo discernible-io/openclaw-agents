@@ -130,7 +130,15 @@ runCase("extractUsageFromJsonlLine + summarize hit rate", () => {
   assert.equal(s.turns, 2);
   assert.equal(s.cacheRead, 900);
   assert.equal(s.input, 2000);
+  // cacheRead ⊆ input → OpenRouter-style hit = 900/2000
   assert.ok(Math.abs(s.hitRate - 0.45) < 1e-9);
+});
+
+runCase("summarizeUsageRows uses anthropic-style denom when cacheRead > input", () => {
+  const s = summarizeUsageRows([
+    { input: 1500, output: 20, cacheRead: 40000, cacheWrite: 0 },
+  ]);
+  assert.ok(Math.abs(s.hitRate - 40000 / (1500 + 40000)) < 1e-9);
 });
 
 runCase("extractUsageFromJsonlLine reads cache-trace session:after messages[].usage", () => {
