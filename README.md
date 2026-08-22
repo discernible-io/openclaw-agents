@@ -1,6 +1,20 @@
 # Identyclaw OpenClaw (Podman)
 
-Deploy isolated [OpenClaw](https://docs.openclaw.ai) AI agent gateways with Podman — email (Himalaya), Telegram, Discord, calendar/reminders, IdentyClaw identity tools and agent-to-agent (A2A) messaging.
+**This is [Discernible](https://www.discernible.io/)'s deployment template for [OpenClaw](https://docs.openclaw.ai) agent gateways.** Upstream OpenClaw remains the gateway runtime (Control UI, channels, skills, plugins). This checkout adds a rootless **Podman** operator, **IdentyClaw Passport** identity, agent-to-agent (A2A) messaging, and optional nginx TLS ingress so agents can onboard at [api.identyclaw.com](https://api.identyclaw.com) and then log in to **any federated peer API** built from [discernible-io/api-idc](https://github.com/discernible-io/api-idc) — for example [api.lastcradle.io](https://api.lastcradle.io) — **with no API key and no extra credentials**. The Passport *is* the credential.
+
+| | [OpenClaw](https://docs.openclaw.ai) (upstream runtime) | This repo ([discernible-io/openclaw-agents](https://github.com/discernible-io/openclaw-agents)) |
+| --- | --- | --- |
+| Gateway image | `ghcr.io/openclaw/openclaw` (install docs) | Pinned slim image + Himalaya, near-cli-rs, Discord plugin (`Containerfile.agent`) |
+| Host install | `openclaw onboard`, Docker, npm | Rootless **Podman** via `./identyclaw.sh` |
+| Runtime state | `~/.openclaw/` | Sibling `../openclaw-agents-app/` (`./identyclaw.sh init`) |
+| Agent identity | Not included | IdentyClaw Passport + `identyclaw-tools` plugin (HOLA, JWT session, discovery) |
+| Calling peer APIs | Vendor API keys in config | Prove Passport key possession; peer mints a JWT. No API keys. |
+| Multi-agent / A2A | Bring your own | `identyclaw-a2a` plugin, RODiT JWT, optional peer discovery via API |
+| Email / TLS ingress | Bring your own | Himalaya (Migadu) + optional nginx sidecar (main tier) |
+
+Product overview: [discernible.io](https://www.discernible.io/). Enrollment contract: [`.well-known/enrollment`](https://api.identyclaw.com/.well-known/enrollment). Purchase: [purchase.identyclaw.com](https://purchase.identyclaw.com). Parallel Hermes template: [discernible-io/hermes-agent](https://github.com/discernible-io/hermes-agent).
+
+If you only want stock OpenClaw without IdentyClaw identity, use [OpenClaw docs](https://docs.openclaw.ai). The rest of this README describes this deployment template; skip to [IdentyClaw Passport (Discernible)](#identyclaw-passport-discernible) for onboarding and federated API login.
 
 ## Overview
 
@@ -10,6 +24,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 
 - **Email-capable agents** — customer support or triage via Migadu/IMAP (Himalaya skill)
 - **IdentyClaw integrations** — HOLA/Passport verification, A2A peer messaging, RODiT-signed webhooks
+- **Federated service APIs** — same Passport logs into [api-idc](https://github.com/discernible-io/api-idc) peers (e.g. [api.lastcradle.io](https://api.lastcradle.io)) with no vendor API keys
 - **Multi-agent deployments** — one or more agents per host, with optional cross-host A2A
 - **Main-tier ingress** — nginx TLS sidecar, GitHub Actions deploy, health checks
 
@@ -26,6 +41,9 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | [Verify before execute](https://dev.to/discernible-io/verify-before-execute-hola-recipes-for-agent-verifiers-4a0d) | HOLA / task trust on inbound work |
 | [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0) | Decide whether to mint |
 | [Passport threat model](https://dev.to/discernible-io/passport-threat-model-triangle-of-trust-threats-and-how-the-architecture-counters-them-3mo6) | Triangle of Trust / threat → control |
+| [Federated API template (api-idc)](https://github.com/discernible-io/api-idc) | Build a peer API that accepts Passport login |
+| [Example federated peer (Last Cradle)](https://api.lastcradle.io) | Live game + CRUDA API; same Rodit login, no API key |
+| [Hermes Agent fork (parallel template)](https://github.com/discernible-io/hermes-agent) | Same Passport / federated model for Nous Hermes |
 
 ## Features & capabilities
 
@@ -45,29 +63,6 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **Security** | Gateway token auth, rate limiting, tool/knowledge scope in workspace docs, RODiT JWT boundaries for A2A vs webhooks vs Control UI |
 | **Testing** | Repo-local unit tests (CI); constitution gateway suites with per-agent **preflight**; multi-agent and multi-peer sweeps |
 | **Ops** | Boot persistence (`enable-boot`), GitHub Actions deploy, self-signed TLS generation, agent export/import, `restore-host-access` for credential edits |
-
-## Federated APIs
-
-Set `IDENTYCLAW_API_ENDPOINTS` (comma-separated) so the IdentyClaw plugin knows federated peers. Native vs federated login is the same Rodit challenge — only the login URL changes (`identyclaw_ensure_session({ apiEndpoint })`).
-
-1. Open a federated session: `identyclaw_ensure_session({ apiEndpoint: "<peer>" })`.
-2. Discover that peer’s surface (skill.md / OpenAPI / `identyclaw_list_resources`).
-3. Call product routes with `identyclaw_request({ method, path, apiEndpoint })`.
-
-The IdentyClaw plugin stays **generic** (home API + federated login + `identyclaw_request`). Product routes live in the peer skill, not as plugin-specific tools.
-
-**Important:** federation shares **Rodit login only**. Do not expect home IdentyClaw routes (`/api/me/identity`, HOLA, DID, …) on a federated peer. After `ensure_session`, discover that peer’s surface and call its paths via `identyclaw_request`. Keep Passport/HOLA tools on `api.identyclaw.com` (omit `apiEndpoint`).
-
-### OpenClaw limitation: remote MCP and federated JWT
-
-OpenClaw’s `mcp.servers.*.headers` are **static** at connect time. They do **not** call into the IdentyClaw plugin’s per-URL JWT cache. Wiring a remote MCP server that needs a federated Bearer therefore leaves tools unauthenticated (`AUTH_REQUIRED`) even after a successful `ensure_session`.
-
-This fleet therefore **does not wire** remote MCP for federated peers by default. Re-enable remote MCP for OpenClaw only after:
-
-- an OpenClaw hook that injects dynamic auth from the plugin session, or  
-- a local stdio MCP proxy that uses RoditClient / the same federated session.
-
-Until then, use **skill paths + `identyclaw_request`** (and typed helpers such as `identyclaw_game_tick` only when the peer skill documents them).
 
 ## Standards
 
@@ -89,14 +84,40 @@ This repo follows shared RODiT standards vendored at [`../docs/docs/`](../docs/d
 | **Sibling app directory** | Default `../openclaw-agents-app` — created by `./identyclaw.sh init` |
 | **Migadu mailboxes** | One per agent you enable in `AGENT_IDS`; set `AGENT_*_EMAIL` in `env.local` |
 | **OpenRouter or OpenCode key** | Before onboard/chat: `./identyclaw.sh set-api-key` or `set-opencode-key` |
-| **NEAR Passport credentials** | Required for A2A, webhooks, and HOLA — see [IdentyClaw Passport enrollment](#identyclaw-passport-enrollment) (`secrets/near-credentials/*.json`, `.active`; wallet helpers: `workspace/scripts/idcp-*.sh`) |
+| **NEAR Passport credentials** | Required for A2A, webhooks, and HOLA — see [IdentyClaw Passport (Discernible)](#identyclaw-passport-discernible) (`secrets/near-credentials/*.json`, `.active`; wallet helpers: `workspace/scripts/idcp-*.sh`) |
 | **Optional host CLI** | `openclaw` on the host for advanced management outside containers |
 
 Mailbox passwords are **not** required for `init`, `build-image`, or `start` — add them later (see [Set email passwords later](#set-email-passwords-later)).
 
 For main-tier **pod** deploy, also prepare TLS material under `~/openclaw-agents-app/certs/` (`./identyclaw.sh generate-certs`) and set `IDENTYCLAW_DEPLOY_MODE=pod` with per-agent `AGENT_*_PUBLIC_HOST`.
 
-## IdentyClaw Passport enrollment
+## IdentyClaw Passport (Discernible)
+
+This template wires OpenClaw to [IdentyClaw](https://www.discernible.io/) — portable, cryptographically verifiable agent identity on NEAR (RODiT / HOLA).
+
+You mint a Passport **once** at IdentyClaw home. Peers resolve you by a stable 12-letter `tokenId` across hosts and redeploys. The same Passport then logs the agent into **any federated peer** that implements the IdentyClaw login contract — without creating an account there, without an API key, and without extra credentials.
+
+| Role | Host | What it does |
+| --- | --- | --- |
+| **Home** | [api.identyclaw.com](https://api.identyclaw.com) | Issues Passport / HOLA identity, agent discovery, DID. Does **not** authorize third-party APIs. |
+| **Peer** | e.g. [api.lastcradle.io](https://api.lastcradle.io), or any API from [api-idc](https://github.com/discernible-io/api-idc) | Same login challenge (`GET /api/login/timestamp` → `POST /api/login`). Mints a JWT valid **only** for that peer. |
+
+Clients remint a JWT **per peer**. A home JWT is not accepted at lastcradle (or any other peer), and peer tokens are not portable across peers. The `identyclaw-tools` plugin caches each host’s JWT per agent and never exposes raw tokens to the model.
+
+```text
+┌─────────────────────┐         ┌──────────────────────────┐
+│ IdentyClaw home     │         │ Federated peer           │
+│ api.identyclaw.com  │         │ e.g. api.lastcradle.io   │
+│ mint Passport once  │         │ POST /api/login → JWT    │
+└─────────┬───────────┘         └────────────┬─────────────┘
+          │ Passport keys                    │
+          └──────────────┬───────────────────┘
+                         ▼
+         identyclaw_ensure_session({ apiEndpoint: "<peer>" })
+              (prove key possession; no API key)
+```
+
+Checkout is a **human** step. Keep NEAR private keys on disk only — never paste them into chat. LLM providers (OpenRouter, OpenCode, …) are a separate concern; Passport replaces **service API keys** for federated peers, not model keys.
 
 A2A messaging, RODiT-signed webhooks, and HOLA identity tools need a minted [IdentyClaw Passport](https://www.discernible.io/#get-started) on NEAR. You do **not** register with IdentyClaw to exist — you create a NEAR account, fund it, and mint at the purchase portal. Canonical overview: [discernible.io Get Started](https://www.discernible.io/#get-started) · [Developers](https://www.discernible.io/developers.html) · enrollment API: [`.well-known/enrollment`](https://api.identyclaw.com/.well-known/enrollment).
 
@@ -177,7 +198,9 @@ Human checkout step ([Get Started](https://www.discernible.io/#get-started)):
 
 FAQ: [purchase.identyclaw.com/faq](https://purchase.identyclaw.com/faq). Support: support@identyclaw.com.
 
-### 5. Wire credentials into the gateway and verify
+### 5. Activate on OpenClaw (home session)
+
+This logs into **IdentyClaw home** (`https://api.identyclaw.com`) — identity, HOLA, discovery. It does **not** log you into other APIs.
 
 Credentials from step 2 should already be on disk. Restart so bootstrap syncs `IDENTYCLAW_*` / plugin config:
 
@@ -186,9 +209,92 @@ Credentials from step 2 should already be on disk. Restart so bootstrap syncs `I
 ./identyclaw.sh restart agent-a
 ```
 
-Confirm Passport binding (via Control UI / `./identyclaw.sh chat agent-a`, or the `identyclaw_get_my_identity` tool). Then register or update Passport `metadata.webhook_url` if you skipped it at mint time.
+Confirm Passport binding (via Control UI / `./identyclaw.sh chat agent-a`, or the `identyclaw_get_my_identity` tool). The plugin signs the peer’s login challenge with the Passport Ed25519 key (`GET /api/login/timestamp` → `POST /api/login`). No password, no API key, no extra account.
+
+Then register or update Passport `metadata.webhook_url` if you skipped it at mint time.
+
+Day-to-day on home: `identyclaw_create_hola` / `identyclaw_verify_hola` / `identyclaw_request` (omit `apiEndpoint`). Optional docs MCP (home JWT only):
+
+```bash
+# Inside the agent workspace — home API MCP, not federated peers
+openclaw mcp add IdentyClawDocs --url https://api.identyclaw.com/mcp
+```
+
+| Path | Role |
+| --- | --- |
+| `identyclaw-agents/` | Podman scripts + `Containerfile.agent` |
+| `../openclaw-agents-app/agents/<id>/secrets/near-credentials/` | NEAR key JSON + `.active` |
+| `../openclaw-agents-app/agents/<id>/workspace/` | `IDENTYCLAW.md`, `idcp-wallet` skill, federated peer skill.md copies |
+| Plugin JWT cache | Per API host inside `identyclaw-tools` (not printed to chat) |
 
 Skip minting only when peers stay inside one closed trust boundary. Deeper walkthrough: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Wallet helpers after enrollment: `workspace/scripts/idcp-*.sh` and the `idcp-wallet` skill.
+
+### 6. Log in to any federated peer (no API key)
+
+After the Passport exists, the same keypair logs into every peer that ships the IdentyClaw challenge-response contract. Set known peers in `env.local` so bootstrap seeds the plugin:
+
+```bash
+# ../openclaw-agents-app/env.local
+IDENTYCLAW_API_ENDPOINTS=https://api.lastcradle.io
+```
+
+Restart the agent, then use the **identyclaw-tools** plugin (via Control UI chat or `./identyclaw.sh chat`):
+
+1. `identyclaw_ensure_session({ apiEndpoint: "https://api.lastcradle.io" })` — remint a JWT **for that host only**
+2. Discover that peer’s surface: `identyclaw_list_resources` / peer `skill.md` / OpenAPI
+3. Call product routes: `identyclaw_request({ method, path, apiEndpoint })`
+
+You do not register at the peer, you do not collect a vendor key, and you must **not** send the home JWT to the peer.
+
+Auth contract (same on home and every [api-idc](https://github.com/discernible-io/api-idc) peer):
+
+| Step | Endpoint | Notes |
+| --- | --- | --- |
+| 1 | `GET /api/login/timestamp` | Fresh timestamp from **this** peer |
+| 2 | Sign locally | UTF-8 `account_id` + `timestamp_iso` (Ed25519 → base64url) |
+| 3 | `POST /api/login` | Signature → peer-minted `jwt_token` |
+| 4 | Protected calls | `Authorization: Bearer <jwt_token>` via `identyclaw_request` |
+
+The plugin performs those four steps for you.
+
+#### Example: Synthetics' Last Cradle
+
+[api.lastcradle.io](https://api.lastcradle.io) is a live federated peer (game + sample CRUDA). A home JWT does **not** authorize `/api/game/*` there — remint against lastcradle:
+
+```bash
+# Operator smoke (from repo checkout, agent credentials mounted):
+OPENCLAW_HOME=~/openclaw-agents-app/agents/agent-a \
+  COMPARE_LOGIN_PEER=https://api.lastcradle.io \
+  node scripts/compare-login-endpoints.mjs
+```
+
+In chat, ask the agent to ensure a session against `https://api.lastcradle.io`, then call routes documented in that peer’s skill.md (for example `GET /api/token/claims`). Public playbook (no JWT): peer `skill.md` · `peer-auth.md` · OpenAPI on the peer host.
+
+#### Run your own peer
+
+Fork or clone **[discernible-io/api-idc](https://github.com/discernible-io/api-idc)** — keep the login spine (`authenticate` / `authorize`), replace the sample CRUDA resource with your domain, set `SERVICE_NAME` and OpenAPI `servers` to your hostname. Passport holders then log in the same way:
+
+1. Add your base to `IDENTYCLAW_API_ENDPOINTS` in `env.local`
+2. `./identyclaw.sh restart agent-a`
+3. `identyclaw_ensure_session({ apiEndpoint: "https://your-peer.example" })`
+4. `identyclaw_request({ method: "GET", path: "/api/token/claims", apiEndpoint: "https://your-peer.example" })`
+
+Tell clients: login against **your** `apiEndpoint`; never send a home JWT there.
+
+#### Federation rules and OpenClaw MCP limitation
+
+Federation shares **Rodit login only**. Do not expect home IdentyClaw routes (`/api/me/identity`, HOLA, DID, …) on a federated peer. After `ensure_session`, discover that peer’s surface and call its paths via `identyclaw_request`. Keep Passport/HOLA tools on `api.identyclaw.com` (omit `apiEndpoint`).
+
+The IdentyClaw plugin stays **generic** (home API + federated login + `identyclaw_request`). Product routes live in the peer skill, not as plugin-specific tools.
+
+OpenClaw’s `mcp.servers.*.headers` are **static** at connect time. They do **not** call into the IdentyClaw plugin’s per-URL JWT cache. Wiring a remote MCP server that needs a federated Bearer therefore leaves tools unauthenticated (`AUTH_REQUIRED`) even after a successful `ensure_session`.
+
+This fleet therefore **does not wire** remote MCP for federated peers by default. Re-enable remote MCP for OpenClaw only after:
+
+- an OpenClaw hook that injects dynamic auth from the plugin session, or
+- a local stdio MCP proxy that uses RoditClient / the same federated session.
+
+Until then, use **skill paths + `identyclaw_request`** (and typed helpers such as `identyclaw_game_tick` only when the peer skill documents them).
 
 ## Repository vs app directory
 
@@ -609,7 +715,7 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 
 Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). The active signing account is recorded in `secrets/near-credentials/.active`.
 
-**Enrollment (Passport per agent):** follow [IdentyClaw Passport enrollment](#identyclaw-passport-enrollment) — install this repo, create a NEAR implicit account, fund/swap NEAR via [HOT Wallet](https://hot-labs.org/wallet/) (or an exchange), mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then `near-activate` / restart and confirm with `identyclaw_get_my_identity`. Official steps: [discernible.io Get Started](https://www.discernible.io/#get-started). Longer narrative: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Skip minting only when peers stay inside one closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0).
+**Enrollment (Passport per agent):** follow [IdentyClaw Passport (Discernible)](#identyclaw-passport-discernible) — install this repo, create a NEAR implicit account, fund/swap NEAR via [HOT Wallet](https://hot-labs.org/wallet/) (or an exchange), mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then `near-activate` / restart and confirm with `identyclaw_get_my_identity`. For federated peers (e.g. [api.lastcradle.io](https://api.lastcradle.io)), see step 6 in that section — no vendor API keys. Official steps: [discernible.io Get Started](https://www.discernible.io/#get-started). Longer narrative: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Skip minting only when peers stay inside one closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0).
 
 **NEAR wallet / Passport rotation:** after `build-image` (near-cli-rs) and bootstrap, agents get `workspace/scripts/idcp-wallet.sh`, `idcp-rotate-passport.sh`, and `idcp-activate-account.sh` plus the `idcp-wallet` skill. Rotate transfers the Passport on-chain and re-points `.active` / `.env` / plugin config; the agent then asks for `./identyclaw.sh restart <id>` (or operators run `./identyclaw.sh near-activate <id>`). Prefer new implicit accounts; do not reuse retired wallets.
 
