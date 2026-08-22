@@ -1,0 +1,1 @@
+Check X/Twitter mentions and notifications. Read workspace/TWITTER.md, run workspace/node_modules/.bin/bird check then bird mentions. Summarize anything needing a response. Draft replies in workspace/twitter/drafts/ when appropriate.

@@ -17,14 +17,14 @@ env:
   SSH_USER: ${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}
   SSH_PRIVATE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SSH_PRIVATE_KEY_MAIN || secrets.SSH_PRIVATE_KEY_DEVELOPMENT }}
   SSH_KNOWN_HOSTS: ${{ github.ref == 'refs/heads/main' && secrets.SSH_KNOWN_HOSTS_MAIN || secrets.SSH_KNOWN_HOSTS_DEVELOPMENT }}
-  APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/identyclaw-agents-app
+  APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/openclaw-agents-app
   # Primary health-check host — must match nginx server_name for agent-a.
   # Development tier uses main config until dev-specific hosts/ports are provisioned.
   DOMAIN: agent-a.identyclaw.com
-  APP_PORT: '7443'
+  APP_PORT: '8443'
   NGINX_BUILD_ENV: main
   POD_NAME: identyclaw-agents-pod
-  NGINX_CONTAINER_NAME: identyclaw-nginx
+  NGINX_CONTAINER_NAME: openclaw-nginx
   REGISTRY: ghcr.io
   OPENCLAW_IMAGE_NAME: ${{ github.repository }}/openclaw-agent
   NGINX_IMAGE_NAME: ${{ github.repository }}/identyclaw-nginx
@@ -67,9 +67,9 @@ jobs:
           file: ./Containerfile.agent
           push: true
           build-args: |
-            OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.11-slim
-            OPENCLAW_GATEWAY_VERSION=2026.6.11
-            OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.6.11
+            OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.7.1-2-slim
+            OPENCLAW_GATEWAY_VERSION=2026.7.1-2
+            OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.7.1
             HIMALAYA_VERSION=v1.2.0
             HIMALAYA_ARCH=x86_64-linux
             NEAR_CLI_RS_VERSION=v0.29.0
@@ -114,11 +114,12 @@ jobs:
         with:
           ref: ${{ env.DEPLOY_SHA }}
           sparse-checkout: |
-            scripts/deploy-pod.sh
-            scripts/ensure-podman-linger.sh
-            scripts/lib.sh
+            scripts
             identyclaw.sh
             env.example
+            nginx
+            Containerfile.agent
+            nginx.Dockerfile
 
       - name: Install SSH key
         uses: shimataro/ssh-key-action@v2
@@ -184,7 +185,7 @@ jobs:
 
       - name: Sync deploy scripts to host
         run: |
-          tar -czf - scripts identyclaw.sh env.example | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
+          tar -czf - scripts identyclaw.sh env.example nginx Containerfile.agent nginx.Dockerfile | ssh ${{ env.SSH_USER }}@${{ env.SSH_HOST }} "
             set -euo pipefail
             mkdir -p ${{ env.APP_DIR }}/repo
             tar -xzf - -C ${{ env.APP_DIR }}/repo

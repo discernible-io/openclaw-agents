@@ -213,7 +213,7 @@ Options:
   $0 <accountID> keys             Displays account id + private key (operator only — never paste into chat)
   $0 <accountID> <RODiT Id>       Displays the indicated RODiT
   $0 <funding> <uninit> init      Initializes account with 0.01 NEAR from funding account
-  $0 <origin> <dest> <rotid>      Sends RODiT / Passport from origin to destination
+  $0 <origin> <dest> <rotid>      Sends RODiT / Passport (attached-deposit 0.01 NEAR; not ~0.04)
   $0 <origin> <dest> <amount>     Sends NEAR from origin to destination
   $0 <origin> <dest> near <amt>   Sends NEAR from origin to destination
   $0 genaccount                   Creates a new uninitialized implicit account
@@ -289,7 +289,10 @@ if [ -n "${3:-}" ] && [ "$3" != "init" ]; then
   require_network_config || exit 1
   require_rodit_contract || exit 1
   sync_keychain_from_secrets
-  echo "Sending RODiT $3 from $1 to $2..."
+  # Contract requires exactly 0.01 NEAR deposit. Do not treat prepaid-gas reservation
+  # as an extra ~0.03 NEAR "required balance" — unused gas is refunded; mainnet gas for
+  # 30 TGas is ~0.003 NEAR at 100 gwei gas price.
+  echo "Sending RODiT $3 from $1 to $2 (attached-deposit 0.01 NEAR)..."
   "$NEAR_CLI_BIN" contract call-function as-transaction "$RODITCONTRACTID" rodit_transfer \
     json-args "{\"receiver_id\": \"$2\", \"token_id\": \"$3\"}" \
     prepaid-gas '30 TeraGas' attached-deposit '0.01 NEAR' \

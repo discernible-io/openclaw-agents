@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Side-by-side login diff: api.identyclaw.com vs slc.discernible.io:8443
+ * Login smoke against api.identyclaw.com (optional peer via COMPARE_LOGIN_PEER).
  * Usage: OPENCLAW_HOME=/path node compare-login-endpoints.mjs
+ * Optional: COMPARE_LOGIN_PEER=https://peer.example.com:9443
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -14,13 +15,16 @@ const TARGETS = [
     base: "https://api.identyclaw.com",
     fetchOpts: {},
   },
-  {
-    name: "slc.discernible.io:8443",
-    base: "https://178.105.128.230:8443",
-    fetchOpts: { headers: { Host: "slc.discernible.io" } },
-    displayBase: "https://slc.discernible.io:8443",
-  },
 ];
+const peer = (process.env.COMPARE_LOGIN_PEER || "").replace(/\/$/, "");
+if (peer) {
+  TARGETS.push({
+    name: peer.replace(/^https?:\/\//, ""),
+    base: peer,
+    fetchOpts: {},
+    displayBase: peer,
+  });
+}
 
 const ocDir = process.env.OPENCLAW_HOME || "/home/node/.openclaw";
 const credDir = join(ocDir, "secrets/near-credentials");
@@ -340,24 +344,26 @@ for (const t of TARGETS) {
   report.targets[t.name] = entry;
 }
 
-// Cross-target: api JWT on slc
-try {
-  const med = await client.login_server();
-  if (med?.jwt_token) {
-    const payload = decodeJwtPayload(med.jwt_token);
-    const slcClaims = await fetchJson("https://178.105.128.230:8443/api/token/claims", {
-      headers: { Host: "slc.discernible.io", Authorization: `Bearer ${med.jwt_token}` },
-    });
-    report.crossTarget = {
-      description: "api.identyclaw.com JWT used against slc.discernible.io",
-      apiJwtIss: payload.iss,
-      apiJwtAud: payload.aud,
-      slcClaimsStatus: slcClaims.status,
-      slcClaimsBody: slcClaims.json || slcClaims.text,
-    };
+// Optional cross-target: api JWT against COMPARE_LOGIN_PEER
+if (peer) {
+  try {
+    const med = await client.login_server();
+    if (med?.jwt_token) {
+      const payload = decodeJwtPayload(med.jwt_token);
+      const peerClaims = await fetchJson(`${peer}/api/token/claims`, {
+        headers: { Authorization: `Bearer ${med.jwt_token}` },
+      });
+      report.crossTarget = {
+        description: `api.identyclaw.com JWT used against ${peer}`,
+        apiJwtIss: payload.iss,
+        apiJwtAud: payload.aud,
+        peerClaimsStatus: peerClaims.status,
+        peerClaimsBody: peerClaims.json || peerClaims.text,
+      };
+    }
+  } catch (e) {
+    report.crossTarget = { error: e instanceof Error ? e.message : String(e) };
   }
-} catch (e) {
-  report.crossTarget = { error: e instanceof Error ? e.message : String(e) };
 }
 
 console.log(JSON.stringify(report, null, 2));

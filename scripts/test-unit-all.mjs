@@ -19,6 +19,10 @@ const suites = [
   "test-agent-card-validate-unit.mjs",
   "test-mail-responder-format-unit.mjs",
   "test-openclaw-cache-config-unit.mjs",
+  "test-openclaw-model-routing-unit.py",
+  "test-nginx-sidecar-unit.mjs",
+  "test-pod-restart-image-unit.mjs",
+  "test-channels-calendar-unit.mjs",
 ];
 
 process.stdout.write("Unit test orchestrator\n\n");
@@ -27,7 +31,8 @@ let failed = 0;
 for (const suite of suites) {
   const path = join(root, suite);
   process.stdout.write(`======== ${suite} ========\n`);
-  const result = spawnSync(process.execPath, [path], { stdio: "inherit" });
+  const cmd = suite.endsWith(".py") ? "python3" : process.execPath;
+  const result = spawnSync(cmd, [path], { stdio: "inherit" });
   if (result.status !== 0) {
     failed += 1;
   }

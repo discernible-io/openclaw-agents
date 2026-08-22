@@ -22,7 +22,7 @@ load_env
 
 tier_default_ingress_port() {
   case "$tier" in
-    development|main) echo "7443" ;;
+    development|main) echo "8443" ;;
   esac
 }
 
@@ -36,6 +36,7 @@ mkdir -p "$(dirname "$out")"
 # TLS sidecar for OpenClaw gateways — primary surfaces:
 #   A2A: POST /a2a, GET /.well-known/agent-card.json (RODiT JWT on POST)
 #   Webhooks: POST /hooks/wake, POST /hooks/agent, POST /hooks/<name> (RODiT x-signature + x-timestamp)
+#   Telegram: POST /telegram-webhook (Bot API; public port must be 80, 88, 443, or 8443)
 #   Plugin API: POST /api/login, GET /api/login/timestamp (P2P JWT for A2A)
 # nginx terminates TLS and reverse-proxies public API paths only; Control UI stays off the public hostname.
 # Gateway token auth still applies on loopback/operator paths inside the pod.
@@ -65,10 +66,16 @@ HEADER
       continue
     }
     gw_port="$(agent_internal_gateway_port "$id")"
+    tg_port="$(agent_telegram_webhook_port "$id")"
     upstream_name="openclaw_${id//-/_}"
+    telegram_upstream="${upstream_name}_telegram"
     cat <<UPSTREAM
     upstream ${upstream_name} {
         server 127.0.0.1:${gw_port};
+    }
+
+    upstream ${telegram_upstream} {
+        server 127.0.0.1:${tg_port};
     }
 
 UPSTREAM
@@ -81,6 +88,7 @@ UPSTREAM
     ingress_port="$(agent_ingress_port "$id")"
     [[ -n "$ingress_port" ]] || ingress_port="$tier_port"
     upstream_name="openclaw_${id//-/_}"
+    telegram_upstream="${upstream_name}_telegram"
     cat <<SERVER
     # ${id} — A2A + webhooks @ ${host}:${ingress_port}
     server {
@@ -122,6 +130,13 @@ UPSTREAM
             limit_req zone=openclaw_public burst=120 nodelay;
             include /etc/nginx/inc/openclaw-proxy.inc;
             proxy_pass http://${upstream_name};
+        }
+
+        location = /telegram-webhook {
+            limit_req zone=openclaw_ingress burst=240 nodelay;
+            limit_req zone=openclaw_public burst=120 nodelay;
+            include /etc/nginx/inc/openclaw-proxy.inc;
+            proxy_pass http://${telegram_upstream};
         }
 
         location ^~ /api/ {

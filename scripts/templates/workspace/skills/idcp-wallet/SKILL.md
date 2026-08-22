@@ -19,6 +19,7 @@ bash scripts/idcp-wallet.sh
 bash scripts/idcp-wallet.sh genaccount
 
 # Fund / initialize destination with 0.01 NEAR from funding account
+# (separate from RODiT transfer — only for new/uninitialized accounts)
 bash scripts/idcp-wallet.sh <funding_account> <new_account> init
 
 # Send NEAR
@@ -26,6 +27,7 @@ bash scripts/idcp-wallet.sh <origin> <dest> near 0.05
 # or: bash scripts/idcp-wallet.sh <origin> <dest> 0.05
 
 # Transfer Passport / RODiT (token_id is the 12-letter Passport id)
+# Attaches exactly 0.01 NEAR deposit — that is the full transfer deposit, not ~0.04
 bash scripts/idcp-wallet.sh <origin> <dest> <passport_token_id>
 
 # Account summary (RODiTs + balance)
@@ -53,6 +55,17 @@ Tell the operator to run:
 (or `./identyclaw.sh near-activate <agent-id> [account_id]` which activates then restarts).
 
 Passport **token_id** is unchanged; only the NEAR owner account changes.
+
+## Costs (do not invent higher balances)
+
+| Action | NEAR amount | Notes |
+|--------|-------------|--------|
+| `init` (fund new account) | **0.01 NEAR** sent to destination | Only to create/initialize an empty implicit account |
+| Passport / RODiT `rodit_transfer` | **0.01 NEAR** attached deposit | Contract requirement. This is the transfer cost — **not** ~0.041 NEAR |
+| Gas | prepaid in the script; unused gas is refunded | Tiny vs deposit (order of ~0.001–0.003 NEAR at mainnet prices). Do **not** refuse a transfer because balance is “only ~0.02 NEAR” |
+
+Wrong: claiming the sender needs ~0.041 NEAR (0.01 deposit + inflated gas) before transferring.  
+Right: if the sender already holds ≥ ~0.02 NEAR and the Passport, run the transfer command with the **0.01 NEAR** deposit the script attaches.
 
 ## Policy
 

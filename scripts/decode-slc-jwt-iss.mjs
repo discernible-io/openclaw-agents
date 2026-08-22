@@ -4,10 +4,19 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
-const apiBase = (process.argv[2] || "https://slc.discernible.io:8443").replace(/\/$/, "");
+const apiBase = (process.argv[2] || "").replace(/\/$/, "");
+if (!apiBase) {
+  console.error("Usage: node decode-slc-jwt-iss.mjs <apiBaseUrl>");
+  console.error("Example: node decode-slc-jwt-iss.mjs https://api.identyclaw.com");
+  process.exit(2);
+}
 const ocDir = process.env.OPENCLAW_HOME || "/home/node/.openclaw";
 const credDir = join(ocDir, "secrets/near-credentials");
 const credFile = readdirSync(credDir).find((f) => f.endsWith(".json"));
+if (!credFile) {
+  console.error("No NEAR credentials in", credDir);
+  process.exit(2);
+}
 const credPath = join(credDir, credFile);
 const creds = JSON.parse(readFileSync(credPath, "utf8"));
 process.env.RODIT_NEAR_CREDENTIALS_SOURCE = "file";

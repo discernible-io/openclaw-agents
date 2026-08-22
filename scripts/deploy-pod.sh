@@ -3,15 +3,16 @@
 # Mirrors .github/workflows/deploy.yml host steps. Run on the deployment host.
 #
 # Required env:
-#   APP_DIR              Host app root (default: ../identyclaw-agents-app sibling of repo)
+#   APP_DIR              Host app root (default: ../openclaw-agents-app sibling of repo)
 #   OPENCLAW_IMAGE       Full image ref (ghcr.io/.../openclaw-agent:SHA)
 #   NGINX_IMAGE          Full image ref (ghcr.io/.../identyclaw-nginx:SHA)
 #
 # Optional env (defaults match deploy.yml):
 #   DEPLOY_TIER / TARGET   main or development (default: image tag, else git branch)
-#   APP_PORT=7443 (all tiers) — defaults via deploy_tier_app_port
+#   APP_PORT — listen+publish port (Telegram-compatible: 80, 88, 443, 8443).
+#              Default: IDENTYCLAW_INGRESS_PORT from env.local after load_env, else deploy_tier_app_port (8443).
 #   POD_NAME=identyclaw-agents-pod
-#   NGINX_CONTAINER_NAME=identyclaw-nginx
+#   NGINX_CONTAINER_NAME=openclaw-nginx
 #   IDENTYCLAW_AGENT_STATE_ROOT  (default: ${APP_DIR}/agents)
 #   REPO_ROOT            Git checkout path (for identyclaw.sh init/bootstrap)
 #   AGENT_IDS            Space-separated list (default: agent-a agent-c agent-e)
@@ -26,7 +27,7 @@ OPENCLAW_IMAGE="${OPENCLAW_IMAGE:?OPENCLAW_IMAGE is required}"
 NGINX_IMAGE="${NGINX_IMAGE:?NGINX_IMAGE is required}"
 
 POD_NAME="${POD_NAME:-identyclaw-agents-pod}"
-NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-identyclaw-nginx}"
+NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-openclaw-nginx}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 export IDENTYCLAW_APP_DIR="${IDENTYCLAW_APP_DIR:-$APP_DIR}"
@@ -44,12 +45,21 @@ case "$DEPLOY_TIER" in
     exit 1
     ;;
 esac
-APP_PORT="${APP_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
-POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
-POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
-
+# APP_PORT may be preset by CI / deploy-local-podman.sh. If unset, prefer
+# IDENTYCLAW_INGRESS_PORT from env.local over the tier default (8443).
+_app_port_preset="${APP_PORT:-}"
 ensure_app_layout
 load_env
+if [[ -n "$_app_port_preset" ]]; then
+  APP_PORT="$_app_port_preset"
+else
+  APP_PORT="${IDENTYCLAW_INGRESS_PORT:-$(deploy_tier_app_port "$DEPLOY_TIER")}"
+fi
+POD_LISTEN_PORT="${POD_LISTEN_PORT:-$APP_PORT}"
+POD_HOST_PORT="${POD_HOST_PORT:-$APP_PORT}"
+# Publish/listen source of truth for this deploy (keeps nginx conf + pod -p in sync).
+IDENTYCLAW_INGRESS_PORT="$APP_PORT"
+export IDENTYCLAW_INGRESS_PORT
 AGENT_IDS="${AGENT_IDS:-agent-a agent-c agent-e}"
 
 require_podman() {
@@ -121,6 +131,7 @@ ensure_agent_runtime() {
   ensure_agent_security_hardening "$id" "$dir"
   ensure_agent_bootstrap "$id" "$dir"
   sync_discord_env "$dir"
+  sync_telegram_env "$dir"
   ensure_discord_allow_bots_mentions "$dir"
 }
 
@@ -178,40 +189,19 @@ else
   podman pull "$NGINX_IMAGE"
 fi
 
-echo "==> Recreate pod ${POD_NAME}"
+# Host-side bootstrap/plugin work must finish BEFORE recreating the pod.
+# Old order (rm pod → long plugin upgrade → start) left an empty pod for minutes;
+# any interrupt/PermissionError then permanently orphaned agents with no nginx.
+echo "==> Stop pod containers for host-owned bootstrap"
 for c in $AGENT_IDS "$NGINX_CONTAINER_NAME"; do
   podman container exists "$c" 2>/dev/null && podman rm -f "$c" || true
 done
-podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || true
 
 prepare_pod_deploy_host_paths
 
-pod_publish_ports=("$POD_LISTEN_PORT")
 for id in $AGENT_IDS; do
-  agent_port="$(agent_ingress_port "$id")"
-  [[ -n "$agent_port" ]] || continue
-  found=0
-  for p in "${pod_publish_ports[@]}"; do
-    [[ "$p" == "$agent_port" ]] && { found=1; break; }
-  done
-  [[ "$found" -eq 0 ]] && pod_publish_ports+=("$agent_port")
-done
-
-pod_create_args=(--name "$POD_NAME")
-for p in "${pod_publish_ports[@]}"; do
-  pod_create_args+=(-p "${p}:${p}")
-done
-for id in $AGENT_IDS; do
-  while IFS= read -r host_arg; do
-    [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
-  done < <(pod_agent_ingress_host_args "$id")
-done
-while IFS= read -r host_arg; do
-  [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
-done < <(pod_migadu_smtp_host_args)
-podman pod create "${pod_create_args[@]}"
-
-for id in $AGENT_IDS; do
+  echo "==> Bootstrap ${id} (host)"
+  ensure_agent_host_config_access "$(agent_home "$id")" || exit 1
   ensure_agent_runtime "$id"
 done
 
@@ -225,6 +215,43 @@ else
   echo "==> Skip plugin update (SKIP_PLUGIN_UPDATE=1)"
 fi
 
+echo "==> Recreate pod ${POD_NAME}"
+podman pod exists "$POD_NAME" 2>/dev/null && podman pod rm -f "$POD_NAME" || true
+
+pod_publish_ports=("$POD_LISTEN_PORT")
+if [[ "$POD_HOST_PORT" != "$POD_LISTEN_PORT" ]]; then
+  pod_publish_ports+=("$POD_HOST_PORT")
+fi
+for id in $AGENT_IDS; do
+  # Explicit AGENT_*_INGRESS_PORT only — do not publish a stale Passport webhook port
+  # (e.g. :7443) beside Telegram :8443; that steals clienttest's 7443 on this host.
+  agent_port="$(agent_env_value "$id" INGRESS_PORT "")"
+  [[ -n "$agent_port" ]] || continue
+  found=0
+  for p in "${pod_publish_ports[@]}"; do
+    [[ "$p" == "$agent_port" ]] && { found=1; break; }
+  done
+  [[ "$found" -eq 0 ]] && pod_publish_ports+=("$agent_port")
+done
+
+pod_create_args=(--name "$POD_NAME")
+for p in "${pod_publish_ports[@]}"; do
+  # Only needed when publishing privileged ports (<1024); 8443 does not require it.
+  if [[ "$p" =~ ^[0-9]+$ ]] && (( p < 1024 )); then
+    pod_create_args+=(--sysctl "net.ipv4.ip_unprivileged_port_start=${p}")
+  fi
+  pod_create_args+=(-p "${p}:${p}")
+done
+for id in $AGENT_IDS; do
+  while IFS= read -r host_arg; do
+    [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
+  done < <(pod_agent_ingress_host_args "$id")
+done
+while IFS= read -r host_arg; do
+  [[ -n "$host_arg" ]] && pod_create_args+=("$host_arg")
+done < <(pod_migadu_smtp_host_args)
+podman pod create "${pod_create_args[@]}"
+
 for id in $AGENT_IDS; do
   echo "==> Start ${id} in pod"
   start_agent_in_pod "$id"
@@ -236,21 +263,9 @@ ensure_pod_logs_for_container "$APP_DIR/logs/nginx"
 ensure_tls_certs
 normalize_tls_certs
 
-ensure_pod_nginx_ingress_config || true
-NGINX_CONF="${APP_DIR}/nginx/nginx.conf"
-
-z="$(selinux_mount_suffix)"
+# Recreate nginx with APP_DIR binds only (inc is copied off the clone path).
 echo "==> Start nginx sidecar"
-podman run -d \
-  --pod "$POD_NAME" \
-  --name "$NGINX_CONTAINER_NAME" \
-  --replace \
-  --restart unless-stopped \
-  -v "$APP_DIR/certs:/app/certs:ro${z}" \
-  -v "$APP_DIR/logs/nginx:/var/log/nginx${z}" \
-  -v "$REPO_ROOT/nginx/inc:/etc/nginx/inc:ro${z}" \
-  -v "$NGINX_CONF:/etc/nginx/nginx.conf:ro${z}" \
-  "$NGINX_IMAGE"
+recreate_pod_nginx_sidecar
 
 podman ps -a --filter "pod=${POD_NAME}"
 if [[ "$POD_HOST_PORT" == "$POD_LISTEN_PORT" ]]; then

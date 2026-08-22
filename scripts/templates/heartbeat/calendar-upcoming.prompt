@@ -1,0 +1,1 @@
+Read CALENDAR.md and skills/calendar-reminders/SKILL.md. Run sh scripts/calendar.sh upcoming 24. Summarize unacked events starting soon. If none, reply HEARTBEAT_OK.

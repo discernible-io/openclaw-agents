@@ -7,7 +7,7 @@
  *   node scripts/test-webhooks-testhola.mjs \
  *     --ext-dir /home/node/.openclaw/extensions/identyclaw-a2a \
  *     --creds /path/to/near-credentials.json \
- *     --agent-base https://agent-c.dev.identyclaw.com:7443 \
+ *     --agent-base https://agent-c.dev.identyclaw.com:8443 \
  *     [--api-base <url>]  # default: Passport subjectuniqueidentifier_url via RoditClient
  */
 import { createRequire } from "node:module";

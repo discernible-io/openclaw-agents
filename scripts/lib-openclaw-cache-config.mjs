@@ -64,10 +64,10 @@ export function applyOpenclawCacheConfig(data, opts = {}) {
   const diagnostics = asObject(data.diagnostics) || (data.diagnostics = {});
   const ct = asObject(diagnostics.cacheTrace) || (diagnostics.cacheTrace = {});
   ct.enabled = cacheTrace;
-  // Keep traces small: usage/shape only, not full prompts.
-  ct.includeMessages = false;
-  ct.includePrompt = false;
-  ct.includeSystem = false;
+  // OpenClaw 2026.7.2+ rejects these keys — strip leftovers from older syncs.
+  delete ct.includeMessages;
+  delete ct.includePrompt;
+  delete ct.includeSystem;
 
   return data;
 }
@@ -130,7 +130,7 @@ export function normalizeUsage(raw) {
 }
 
 /**
- * Extract usage from one OpenClaw session JSONL line (best-effort).
+ * Extract usage from one OpenClaw session JSONL / cache-trace line (best-effort).
  * @param {string} line
  */
 export function extractUsageFromJsonlLine(line) {
@@ -143,6 +143,14 @@ export function extractUsageFromJsonlLine(line) {
     return null;
   }
   if (!obj || typeof obj !== "object") return null;
+
+  const stage = typeof obj.stage === "string" ? obj.stage : "";
+  // cache-trace repeats the same assistant usage across many stages
+  // (prompt:before, stream:context, …). Count once via session:after.
+  if (stage && stage !== "session:after") {
+    return normalizeUsage(obj.usage);
+  }
+
   const candidates = [
     obj.usage,
     obj.message?.usage,
@@ -154,6 +162,14 @@ export function extractUsageFromJsonlLine(line) {
     const n = normalizeUsage(c);
     if (n) return n;
   }
+  // cache-trace / session rows: usage often lives on messages[].usage
+  const messages = Array.isArray(obj.messages) ? obj.messages : [];
+  let fromMessages = null;
+  for (const m of messages) {
+    const n = normalizeUsage(asObject(m)?.usage);
+    if (n) fromMessages = n;
+  }
+  if (fromMessages) return fromMessages;
   // Some transcript rows embed cache counters at the top level (session store shape).
   return normalizeUsage(obj);
 }
@@ -178,10 +194,16 @@ export function summarizeUsageRows(rows) {
     cacheWrite += row.cacheWrite || 0;
     if ((row.cacheRead || 0) > 0) turnsWithCacheRead += 1;
   }
-  // Hit rate vs prompt input tokens (OpenRouter/DeepSeek style).
-  const denom = input > 0 ? input : cacheRead + Math.max(input - cacheRead, 0);
+  // Two common shapes:
+  // - OpenRouter/DeepSeek: cacheRead ⊆ input → hit = cacheRead/input
+  // - Anthropic-style: input is uncached-only → hit = cacheRead/(input+cacheRead)
+  let denom = 0;
+  if (input > 0 && cacheRead > 0 && cacheRead <= input) {
+    denom = input;
+  } else if (input > 0 || cacheRead > 0) {
+    denom = input + cacheRead;
+  }
   const hitRate = denom > 0 ? cacheRead / denom : null;
-  // Clamp when providers report cacheRead without matching input.
   const hitRateClamped =
     hitRate == null ? null : Math.max(0, Math.min(1, hitRate));
   return {

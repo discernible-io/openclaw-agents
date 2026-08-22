@@ -3,18 +3,15 @@
 # Args: --build-arg OPENCLAW_BASE_IMAGE=... --build-arg HIMALAYA_ARCH=x86_64-linux
 #       --build-arg NEAR_CLI_RS_VERSION=v0.29.0 --build-arg NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.11-slim
-ARG OPENCLAW_GATEWAY_VERSION=2026.6.11
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.7.1-2-slim
+ARG OPENCLAW_GATEWAY_VERSION=2026.7.1-2
 ARG HIMALAYA_VERSION=v1.2.0
 ARG HIMALAYA_ARCH=x86_64-linux
 ARG NEAR_CLI_RS_VERSION=v0.29.0
 ARG NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
-# QMD memory sidecar (memory.backend=qmd). Without this, OpenClaw falls back to
-# builtin embeddings and fails when no OpenAI key is configured.
-ARG QMD_NPM_SPEC="@tobilu/qmd@2.5.3"
 # Space-separated npm specs installed into the image (seeded into agent homes at start).
-# Pin @openclaw/discord to OPENCLAW_GATEWAY_VERSION — mismatches crash the channel provider.
-ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.6.11"
+# Discord npm often has no correction tag (2026.7.1-2); pin the published plugin on the same line.
+ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.7.1"
 
 FROM ${OPENCLAW_BASE_IMAGE}
 
@@ -25,7 +22,6 @@ ARG NEAR_CLI_RS_VERSION
 ARG NEAR_CLI_RS_TARGET
 ARG OPENCLAW_GATEWAY_VERSION
 ARG OPENCLAW_BUNDLED_PLUGINS
-ARG QMD_NPM_SPEC
 
 USER root
 RUN apt-get update \
@@ -41,8 +37,6 @@ RUN apt-get update \
  && tar -xzf /tmp/near-cli-rs.tgz -C /tmp \
  && install -m 755 "/tmp/near-cli-rs-${NEAR_CLI_RS_TARGET}/near" /usr/local/bin/near \
  && near --version \
- && npm install -g "${QMD_NPM_SPEC}" \
- && qmd --version \
  && chromium --version \
  && jq --version \
  && rm -rf /tmp/himalaya.tgz /tmp/near-cli-rs.tgz "/tmp/near-cli-rs-${NEAR_CLI_RS_TARGET}" \
@@ -61,7 +55,19 @@ RUN mkdir -p /opt/identyclaw/plugin-seed \
  && chown -R node:node /opt/identyclaw
 
 COPY scripts/container-entrypoint.sh /opt/identyclaw/entrypoint.sh
-RUN chmod 755 /opt/identyclaw/entrypoint.sh
+COPY scripts/patch-openclaw-tool-result-images.mjs /opt/identyclaw/patch-openclaw-tool-result-images.mjs
+COPY scripts/patch-identyclaw-request-body.mjs /opt/identyclaw/patch-identyclaw-request-body.mjs
+COPY scripts/lib-openclaw-model-routing.py /opt/identyclaw/lib-openclaw-model-routing.py
+COPY scripts/patch-openclaw-model-routing.py /opt/identyclaw/patch-openclaw-model-routing.py
+COPY scripts/lib-openclaw-cache-config.mjs /opt/identyclaw/lib-openclaw-cache-config.mjs
+COPY scripts/patch-openclaw-cache-config.mjs /opt/identyclaw/patch-openclaw-cache-config.mjs
+RUN chmod 755 /opt/identyclaw/entrypoint.sh \
+      /opt/identyclaw/patch-openclaw-tool-result-images.mjs \
+      /opt/identyclaw/patch-identyclaw-request-body.mjs \
+      /opt/identyclaw/patch-openclaw-model-routing.py \
+      /opt/identyclaw/patch-openclaw-cache-config.mjs \
+ && chmod 644 /opt/identyclaw/lib-openclaw-model-routing.py \
+      /opt/identyclaw/lib-openclaw-cache-config.mjs
 
 USER node
 ENTRYPOINT ["/opt/identyclaw/entrypoint.sh"]

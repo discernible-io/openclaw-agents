@@ -1,0 +1,1 @@
+SLC fleet heartbeat is retired. Reply HEARTBEAT_OK. Do not call game APIs, create lobbies, or refresh skill.md from this loop. Ask the operator to run ./identyclaw.sh enable-slc-heartbeat (purge leftovers) or ./identyclaw.sh factory-reset if SLC state should be cleared.
