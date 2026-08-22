@@ -585,7 +585,6 @@ ensure_agent_bootstrap() {
   ensure_telegram_secrets_from_env "$id" "$config_dir"
   ensure_inbox_heartbeat_from_env "$id" "$config_dir"
   ensure_slc_heartbeat_from_env "$id" "$config_dir"
-  ensure_linkedin_clawlink_skill "$id" "$config_dir"
   ensure_near_credentials_layout "$config_dir"
   ensure_idcp_wallet_tooling "$id" "$config_dir" "$container"
   ensure_calendar_reminders "$id" "$config_dir" "$container"
@@ -821,9 +820,6 @@ DANGEROUS_TOOLS = {
     "a2a_send_message",
     "send_rodit_webhook",
     "sessions_send",
-    "clawlink_call_tool",
-    "clawlink_preview_tool",
-    "clawlink_start_connection",
 }
 
 channels = data.get("channels", {})

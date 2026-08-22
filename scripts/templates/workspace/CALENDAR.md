@@ -21,5 +21,3 @@ Precise alerts use OpenClaw **automations** (`cron` tool). Heartbeat only sweeps
 5. On heartbeat task `calendar-upcoming`: `sh scripts/calendar.sh upcoming 24`. Empty → `HEARTBEAT_OK`.
 
 Do not use `sleep` or polling loops as a reminder clock.
-
-Optional Google Calendar: only if ClawLink `googlecalendar_*` tools are installed and paired.

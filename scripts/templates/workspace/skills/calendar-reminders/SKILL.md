@@ -44,7 +44,3 @@ Never emulate reminders with `sleep`, polling loops, or heartbeat-only timing.
 ## Heartbeat
 
 If `HEARTBEAT.md` has `calendar-upcoming`, list the next 24h with `calendar.sh upcoming 24`. Mention anything starting soon that is still unacked. If the store is empty or nothing is due, reply `HEARTBEAT_OK`.
-
-## Google Calendar (optional)
-
-Do **not** invent a Google integration. Only use ClawLink `googlecalendar_*` tools if that plugin is installed and paired. Local `calendar.sh` remains the default.

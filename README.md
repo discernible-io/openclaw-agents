@@ -38,8 +38,8 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | **A2A** | **identyclaw-a2a** @0.4.12 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
 | **Webhooks** | **identyclaw-webhooks** @0.1.10 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); optional `GET /api/agents` seeding (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` or `./identyclaw.sh discover-a2a-peers`) |
-| **Channels** | Discord (`@openclaw/discord`, bundled); Telegram (OpenClaw core channel). Tokens via `set-discord-token` / `set-telegram-token`. Optional Instagram, X/Twitter (bird-twitter), LinkedIn (ClawLink + linkedin-social) via ClawHub |
-| **Calendar** | Local `calendar-reminders` skill + `scripts/calendar.sh` (workspace JSON). Precise alerts use OpenClaw **automations** (`cron`); heartbeat sweeps upcoming events. Optional Google Calendar via ClawLink |
+| **Channels** | Discord (`@openclaw/discord`, bundled); Telegram (OpenClaw core channel). Tokens via `set-discord-token` / `set-telegram-token`. Optional Instagram, X/Twitter (bird-twitter) via ClawHub |
+| **Calendar** | Local `calendar-reminders` skill + `scripts/calendar.sh` (workspace JSON). Precise alerts use OpenClaw **automations** (`cron`); heartbeat sweeps upcoming events |
 | **LLM** | **OpenRouter** (default) or **OpenCode** Zen/Go; model chain + failover timeouts synced from `env.local`; OpenRouter sticky `session_id` + prompt-cache stats (`cache-stats`) |
 | **Memory** | OpenClaw builtin SQLite engine + session-memory hook; memory-core dreaming (nightly → `MEMORY.md`); Active Memory left off by default |
 | **Security** | Gateway token auth, rate limiting, tool/knowledge scope in workspace docs, RODiT JWT boundaries for A2A vs webhooks vs Control UI |
@@ -776,7 +776,6 @@ Rotating one credential does not automatically revoke the others. See trust-boun
 | **Discord** | `./identyclaw.sh set-discord-token agent-a` | Bundled plugin; guild channel bootstrap on start. Optional `AGENT_*_DISCORD_BOT_TOKEN` in `env.local` |
 | **X / Twitter** | `set-twitter` or `set-twitter-cookies` | bird-twitter skill (session cookies, not paid API) |
 | **Instagram** | `./identyclaw.sh set-instagram agent-a` | Browser-based; reCAPTCHA may require manual login |
-| **LinkedIn** | ClawLink plugin + linkedin-social skill | OAuth via ClawLink — no API keys in chat |
 
 Create a Telegram bot with [@BotFather](https://t.me/BotFather), then `set-telegram-token` and `restart`. In pod mode nginx proxies `/telegram-webhook` to a **per-agent webhook listener** (gateway port + 2), not the Control UI port.
 
@@ -790,7 +789,7 @@ Default stack is first-party OpenClaw **automations** plus a workspace skill —
 | OpenClaw automations (`cron` tool) | One-shot and recurring reminder delivery to Telegram/Discord/email |
 | Heartbeat `calendar-upcoming` | 30m sweep of the next 24h (`./identyclaw.sh enable-calendar-check agent-a 30m`) |
 
-Optional Google Calendar: pair [ClawLink](https://clawhub.ai/hith3sh/google-calendar-scheduling) (`IDENTYCLAW_CLAWHUB_CLAWLINK_PLUGIN`) if you need Gmail/Google Calendar OAuth. Do not install third-party ClawHub reminder skills that bypass native automations.
+Do not install third-party ClawHub reminder skills that bypass native automations.
 
 See `env.example` for ClawHub pin variables (`IDENTYCLAW_CLAWHUB_TWITTER_SKILL`, etc.).
 

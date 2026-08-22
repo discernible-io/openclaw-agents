@@ -2902,12 +2902,6 @@ KNOWN_SKILLS = {
         "description": "Email concierge — receive and reply to inbound mail via Himalaya (Migadu IMAP/SMTP)",
         "tags": ["email", "smtp", "imap", "concierge"],
     },
-    "linkedin-social": {
-        "id": "linkedin-social",
-        "name": "LinkedIn",
-        "description": "LinkedIn post and audience workflows via ClawLink",
-        "tags": ["linkedin", "social"],
-    },
     "bird-twitter": {
         "id": "bird-twitter",
         "name": "Twitter / X",
