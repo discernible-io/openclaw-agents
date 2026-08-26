@@ -394,49 +394,54 @@ else:
         print("    (none)")
     need_restart = 1 if (cleared or locks_removed) else 0
 
-# OpenClaw 2026.7 stores live session status in sqlite session_nodes.
+# OpenClaw 2026.7+ may store live session status in sqlite session_nodes.
+# Older/slim DBs only have memory/auth tables — skip when the table is absent.
 sqlite_path = Path("/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite")
 if sqlite_path.is_file():
     import sqlite3
     conn = sqlite3.connect(str(sqlite_path), timeout=15)
     try:
-        rows = conn.execute(
-            "SELECT session_key, status, entry_json, updated_at FROM session_nodes"
-        ).fetchall()
-        sqlite_cleared = []
-        for key, status, raw, updated_at in rows:
-            if status != "running":
-                continue
-            try:
-                updated_ms = int(updated_at) if updated_at is not None else None
-            except (TypeError, ValueError):
-                updated_ms = None
-            age = (now_ms - updated_ms) if updated_ms is not None else stuck_age_ms
-            if age < stuck_age_ms:
-                continue
-            sqlite_cleared.append("%s age=%sms status=%s" % (key, age, status))
-            if dry_run:
-                continue
-            try:
-                entry = json.loads(raw or "{}")
-            except json.JSONDecodeError:
-                entry = {}
-            if isinstance(entry, dict):
-                entry["status"] = "done"
-                for k in ("activeRunId", "startedAt"):
-                    entry.pop(k, None)
-                raw = json.dumps(entry, separators=(",", ":"))
-            conn.execute(
-                "UPDATE session_nodes SET status=?, entry_json=?, updated_at=? WHERE session_key=?",
-                ("done", raw, now_ms, key),
-            )
-        if sqlite_cleared and not dry_run:
-            conn.commit()
-        for line in sqlite_cleared:
-            prefix = "would clear sqlite " if dry_run else "cleared sqlite "
-            print("    %s%s" % (prefix, line))
-        if sqlite_cleared:
-            need_restart = 1
+        has_nodes = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_nodes'"
+        ).fetchone()
+        if has_nodes:
+            rows = conn.execute(
+                "SELECT session_key, status, entry_json, updated_at FROM session_nodes"
+            ).fetchall()
+            sqlite_cleared = []
+            for key, status, raw, updated_at in rows:
+                if status != "running":
+                    continue
+                try:
+                    updated_ms = int(updated_at) if updated_at is not None else None
+                except (TypeError, ValueError):
+                    updated_ms = None
+                age = (now_ms - updated_ms) if updated_ms is not None else stuck_age_ms
+                if age < stuck_age_ms:
+                    continue
+                sqlite_cleared.append("%s age=%sms status=%s" % (key, age, status))
+                if dry_run:
+                    continue
+                try:
+                    entry = json.loads(raw or "{}")
+                except json.JSONDecodeError:
+                    entry = {}
+                if isinstance(entry, dict):
+                    entry["status"] = "done"
+                    for k in ("activeRunId", "startedAt"):
+                        entry.pop(k, None)
+                    raw = json.dumps(entry, separators=(",", ":"))
+                conn.execute(
+                    "UPDATE session_nodes SET status=?, entry_json=?, updated_at=? WHERE session_key=?",
+                    ("done", raw, now_ms, key),
+                )
+            if sqlite_cleared and not dry_run:
+                conn.commit()
+            for line in sqlite_cleared:
+                prefix = "would clear sqlite " if dry_run else "cleared sqlite "
+                print("    %s%s" % (prefix, line))
+            if sqlite_cleared:
+                need_restart = 1
     finally:
         conn.close()
 
@@ -1114,7 +1119,7 @@ for entry in sessions.values():
             changed = True
     # Drop sticky model pins that are outside the configured chain (e.g. former
     # openrouter/auto primary that 400s on tool schemas), plus paid-fallback pins.
-    allow_ids = set(allowlist.keys())
+    allow_ids = set(defaults["models"].keys())
     allow_tails = {model_tail(m) for m in allow_ids}
     model = entry.get("model")
     model_s = str(model) if model else ""
