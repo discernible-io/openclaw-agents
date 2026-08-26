@@ -37,7 +37,7 @@
 #   factory-reset <id|all> [--yes]  Wipe memory, sessions, skills, sqlite — keep secrets; re-bootstrap
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
 #   cleanup-sessions [id|all] [--dry-run]  Unwedge sticky runs + truncate oversized sessions + store/cache maintenance
-#   enable-session-cleanup [interval|OnCalendar]  Install user systemd timer for cleanup-sessions (default 1h)
+#   enable-session-cleanup [interval|OnCalendar]  Install user systemd timer for cleanup-sessions (default 30m)
 #   respond-a2a-hola-smoke [id|all]  Deterministic inbound A2A HOLA probe email sender (smoke tests)
 #   enable-a2a-hola-smoke-responder [interval]  Timer for respond-a2a-hola-smoke (default 1min)
 #   generate-certs [--force]  Issue self-signed TLS PEMs for pod ingress (RODiT handles mutual auth)
@@ -763,9 +763,10 @@ cmd_cleanup_sessions() {
         echo "  IDENTYCLAW_SESSION_CLEANUP_STUCK_AGE_MS (default: agent timeout + 5m),"
         echo "  restarting the gateway when needed so Telegram/A2A can accept new turns."
         echo "  Truncates sessions at/above IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR (default 50k)"
-        echo "  to the last IDENTYCLAW_SESSION_CLEANUP_MAX_LINES lines (default 120)."
+        echo "  or IDENTYCLAW_SESSION_CLEANUP_BYTE_FLOOR (default 100KB transcript)"
+        echo "  to the last IDENTYCLAW_SESSION_CLEANUP_MAX_LINES lines (default 25)."
         echo "  Also runs sessions cleanup --enforce and rotates oversized cache-trace.jsonl."
-        echo "  Schedule hourly: $0 enable-session-cleanup"
+        echo "  Schedule: $0 enable-session-cleanup   (default every 30m)"
         exit 0
         ;;
       all|agent-[a-z]) target="$arg" ;;

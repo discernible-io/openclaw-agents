@@ -166,47 +166,82 @@ ensure_openclaw_tool_result_image_patch() {
 
 # List oversized session keys as "tokens<TAB>key" on stdout.
 # mode=legacy → main/tui/heartbeat only (skips cron); mode=all → every session key.
+# List sessions over the token floor OR with a fat active transcript on disk.
+# After --max-lines truncate, OpenClaw often zeros totalTokens while the JSONL
+# stays large — byte-floor catches those so cleanup can re-truncate.
 _openclaw_list_oversized_sessions() {
   local container="$1"
   local token_floor="$2"
   local mode="${3:-all}"
-  podman exec "$container" node dist/index.js sessions list --json --limit all 2>/dev/null | python3 -c '
-import json, re, sys
-raw = sys.stdin.read()
-m = re.search(r"\{[\s\S]*\}\s*$", raw) or re.search(r"\[[\s\S]*\]\s*$", raw)
-if not m:
-    raise SystemExit(0)
-data = json.loads(m.group(0))
-sessions = data if isinstance(data, list) else (
-    data.get("sessions") or data.get("items") or []
-)
-if isinstance(data, dict) and not sessions:
-    for v in data.values():
-        if isinstance(v, list):
-            sessions = v
-            break
-floor = int(sys.argv[1])
+  local byte_floor="${4:-${IDENTYCLAW_SESSION_CLEANUP_BYTE_FLOOR:-100000}}"
+  podman exec -i "$container" python3 - "$token_floor" "$mode" "$byte_floor" <<'PY'
+import json, sys
+from pathlib import Path
+
+token_floor = int(sys.argv[1])
 mode = sys.argv[2]
-for s in sessions:
-    key = s.get("key") or s.get("sessionKey") or ""
-    if not key:
+byte_floor = int(sys.argv[3])
+base = Path("/home/node/.openclaw/agents/main/sessions")
+store_path = base / "sessions.json"
+if not store_path.is_file():
+    raise SystemExit(0)
+store = json.loads(store_path.read_text(encoding="utf-8"))
+if not isinstance(store, dict):
+    raise SystemExit(0)
+
+rows = []
+for key, entry in store.items():
+    if not key or not isinstance(entry, dict):
         continue
     if mode == "legacy":
         if ":cron:" in key:
             continue
         if not (key.endswith(":main") or ":tui-" in key or ":main:heartbeat" in key):
             continue
-    toks = s.get("totalTokens") or s.get("inputTokens") or 0
-    usage = s.get("usage") or {}
+    toks = entry.get("totalTokens") or entry.get("inputTokens") or 0
+    usage = entry.get("usage") or {}
     if not toks:
         toks = usage.get("totalTokens") or usage.get("input") or 0
     try:
         toks = int(toks or 0)
     except (TypeError, ValueError):
         toks = 0
-    if toks >= floor:
-        print(f"{toks}\t{key}")
-' "$token_floor" "$mode"
+
+    size = 0
+    session_file = entry.get("sessionFile") or ""
+    candidates = []
+    if session_file:
+        p = Path(session_file)
+        candidates.append(p if p.is_absolute() else base / p)
+    sid = entry.get("sessionId") or ""
+    if sid:
+        candidates.append(base / f"{sid}.jsonl")
+        candidates.extend(sorted(base.glob(f"{sid}*.jsonl")))
+    seen = set()
+    for cand in candidates:
+        try:
+            rp = cand.resolve()
+        except OSError:
+            continue
+        if str(rp) in seen or not rp.is_file():
+            continue
+        name = rp.name
+        if ".bak." in name or name.endswith(".trajectory.jsonl"):
+            continue
+        seen.add(str(rp))
+        try:
+            size = max(size, rp.stat().st_size)
+        except OSError:
+            pass
+
+    # Approximate tokens from transcript bytes when metadata was cleared.
+    effective = max(toks, (size // 4) if size else 0)
+    if toks >= token_floor or size >= byte_floor:
+        rows.append((effective, key))
+
+for effective, key in sorted(rows, reverse=True):
+    print(f"{effective}\t{key}")
+PY
 }
 
 _openclaw_compact_session_keys() {
@@ -465,8 +500,9 @@ cleanup_openclaw_sessions() {
   local container max_lines token_floor store_cleanup cache_mb out size_bytes limit_bytes
   local unwedge_out need_restart=0
   container="$(agent_container "$id")"
-  max_lines="${IDENTYCLAW_SESSION_CLEANUP_MAX_LINES:-${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-120}}"
+  max_lines="${IDENTYCLAW_SESSION_CLEANUP_MAX_LINES:-${IDENTYCLAW_SESSION_COMPACT_MAX_LINES:-25}}"
   token_floor="${IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR:-${IDENTYCLAW_SESSION_COMPACT_TOKEN_FLOOR:-50000}}"
+  byte_floor="${IDENTYCLAW_SESSION_CLEANUP_BYTE_FLOOR:-100000}"
   store_cleanup="${IDENTYCLAW_SESSION_CLEANUP_STORE:-1}"
   cache_mb="${IDENTYCLAW_SESSION_CLEANUP_CACHE_TRACE_MB:-200}"
 
@@ -497,8 +533,8 @@ cleanup_openclaw_sessions() {
     fi
   fi
 
-  echo "==> ${id}: session cleanup (floor=${token_floor} tokens → last ${max_lines} lines; dry_run=${dry_run})"
-  _openclaw_list_oversized_sessions "$container" "$token_floor" all \
+  echo "==> ${id}: session cleanup (floor=${token_floor} tokens / ${byte_floor}B → last ${max_lines} lines; dry_run=${dry_run})"
+  _openclaw_list_oversized_sessions "$container" "$token_floor" all "$byte_floor" \
     | _openclaw_compact_session_keys "$id" "$container" "$max_lines" "$dry_run"
 
   if [[ "$store_cleanup" == "1" || "$store_cleanup" == "true" ]]; then
@@ -1370,26 +1406,50 @@ if changed:
 PY
 }
 
-# agents.defaults.compaction.reserveTokensFloor — headroom so auto-compaction can recover
-# oversized turns. OpenClaw default is 20000; Identyclaw ships 50000 (error message hint).
+# agents.defaults.compaction — headroom + proactive transcript rotation so
+# auto-compaction can recover oversized turns (ox-alpha ~200k context).
+# OpenClaw default reserveTokensFloor is 20000; Identyclaw ships 50000+.
 ensure_compaction_config() {
   local config_dir="$1"
   local container="${2:-}"
   load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "${IDENTYCLAW_COMPACTION_RESERVE_TOKENS_FLOOR:-50000}" <<'PY'
+    "${IDENTYCLAW_COMPACTION_RESERVE_TOKENS_FLOOR:-50000}" \
+    "${IDENTYCLAW_COMPACTION_KEEP_RECENT_TOKENS:-8000}" \
+    "${IDENTYCLAW_COMPACTION_MAX_HISTORY_SHARE:-0.45}" \
+    "${IDENTYCLAW_COMPACTION_MAX_ACTIVE_TRANSCRIPT_BYTES:-400kb}" \
+    "${IDENTYCLAW_COMPACTION_TRUNCATE_AFTER:-1}" \
+    "${IDENTYCLAW_COMPACTION_MID_TURN_PRECHECK:-1}" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-raw = (sys.argv[2] or "50000").strip()
-try:
-    floor = int(raw)
-except ValueError:
-    floor = 50000
-if floor < 0:
-    floor = 50000
+
+def to_int(raw, default):
+    try:
+        v = int(str(raw).strip())
+    except ValueError:
+        return default
+    return v if v >= 0 else default
+
+def to_float(raw, default):
+    try:
+        v = float(str(raw).strip())
+    except ValueError:
+        return default
+    return v
+
+floor = to_int(sys.argv[2], 50000)
+keep_recent = to_int(sys.argv[3], 8000)
+if keep_recent < 1:
+    keep_recent = 8000
+share = to_float(sys.argv[4], 0.45)
+if share < 0.1 or share > 0.9:
+    share = 0.45
+max_bytes = (sys.argv[5] or "400kb").strip() or "400kb"
+truncate_after = str(sys.argv[6]).strip().lower() in ("1", "true", "yes", "on")
+mid_turn = str(sys.argv[7]).strip().lower() in ("1", "true", "yes", "on")
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -1397,8 +1457,26 @@ changed = False
 agents = data.setdefault("agents", {})
 defaults = agents.setdefault("defaults", {})
 compaction = defaults.setdefault("compaction", {})
-if compaction.get("reserveTokensFloor") != floor:
-    compaction["reserveTokensFloor"] = floor
+desired = {
+    "reserveTokensFloor": floor,
+    "reserveTokens": floor,
+    "keepRecentTokens": keep_recent,
+    "maxHistoryShare": share,
+    "truncateAfterCompaction": truncate_after,
+    "maxActiveTranscriptBytes": max_bytes,
+}
+for key, val in desired.items():
+    if compaction.get(key) != val:
+        compaction[key] = val
+        changed = True
+
+precheck = compaction.setdefault("midTurnPrecheck", {})
+if not isinstance(precheck, dict):
+    precheck = {}
+    compaction["midTurnPrecheck"] = precheck
+    changed = True
+if precheck.get("enabled") is not mid_turn:
+    precheck["enabled"] = mid_turn
     changed = True
 
 if changed:
