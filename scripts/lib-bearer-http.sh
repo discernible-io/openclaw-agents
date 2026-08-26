@@ -11,7 +11,8 @@ bearer_http_plugin_id() {
 }
 
 bearer_http_default_git_url() {
-  echo "https://github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin.git"
+  # OpenClaw accepts git:github.com/owner/repo — not raw https://…git URLs.
+  echo "git:github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin"
 }
 
 # Resolution order:
