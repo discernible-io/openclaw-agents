@@ -1235,3 +1235,5 @@ source "${IDENTYCLAW_ROOT}/scripts/lib-workspace.sh"
 source "${IDENTYCLAW_ROOT}/scripts/lib-agent-config.sh"
 # shellcheck source=lib-test.sh
 source "${IDENTYCLAW_ROOT}/scripts/lib-test.sh"
+# shellcheck source=lib-bearer-http.sh
+source "${IDENTYCLAW_ROOT}/scripts/lib-bearer-http.sh"

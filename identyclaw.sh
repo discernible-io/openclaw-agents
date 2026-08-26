@@ -58,6 +58,7 @@
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
 #   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins (pinned in env.local)
+#   install-bearer-http <id|all>  Install guest bearer-http from ClawHub (or sibling ../openclaw-httpbearer-plugin)
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents
 #   near-activate <id> [account_id]  Set active NEAR creds (.active + .env + plugin) then restart
@@ -1310,6 +1311,25 @@ cmd_configure() {
   podman exec -it "$container" node dist/index.js configure "$@"
 }
 
+cmd_install_bearer_http() {
+  require_podman
+  require_rootless_user
+  load_env
+  local target="${1:-all}"
+  local id
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      install_bearer_http_for_agent "$id" 1 || return 1
+    done
+    echo ""
+    echo "Restart gateways to load plugin: $0 restart all"
+  else
+    install_bearer_http_for_agent "$target" 1 || return 1
+    echo ""
+    echo "Restart gateway to load plugin: $0 restart ${target}"
+  fi
+}
+
 cmd_upgrade_plugins() {
   require_podman
   require_rootless_user
@@ -1517,6 +1537,7 @@ main() {
     ask) cmd_ask "$@" ;;
     onboard) cmd_onboard "$@" ;;
     upgrade-plugins) cmd_upgrade_plugins "$@" ;;
+    install-bearer-http) cmd_install_bearer_http "$@" ;;
     sync-a2a-peers) cmd_sync_a2a_peers "$@" ;;
     discover-a2a-peers) cmd_discover_a2a_peers "$@" ;;
     -h|--help|help|"") usage ;;
