@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
-# Fleet install + config for @openclaw/httpbearer (guest bearer storage + http_request).
-# Prefer ClawHub pin (BEARER_HTTP_CLAWHUB_PLUGIN). Optional local path for pre-publish dev.
+# Fleet install + config for @identyclaw/openclaw-identyclaw-httpbearer-plugin
+# (guest bearer storage + http_request).
+#
+# Default source until ClawHub publish: GitHub
+#   https://github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin
+# Then switch BEARER_HTTP_CLAWHUB_PLUGIN to clawhub:@identyclaw/...@x.y.z
 
 bearer_http_plugin_id() {
   echo "bearer-http"
 }
 
-# Default ClawHub pin once published. Override in env.local.
+bearer_http_default_git_url() {
+  echo "https://github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin.git"
+}
+
+# Resolution order:
+#   1. BEARER_HTTP_PLUGIN_PATH (local checkout)
+#   2. BEARER_HTTP_CLAWHUB_PLUGIN (clawhub: / git: / https://…git)
+#   3. GitHub default (until ClawHub is the fleet pin)
 bearer_http_plugin_spec() {
   load_env
-  # Local path wins for development against ../openclaw-httpbearer-plugin.
   if [[ -n "${BEARER_HTTP_PLUGIN_PATH:-}" ]]; then
     printf '%s\n' "$BEARER_HTTP_PLUGIN_PATH"
     return 0
   fi
-  local sibling
-  sibling="$(cd "${IDENTYCLAW_ROOT}/.." && pwd)/openclaw-httpbearer-plugin"
-  if [[ -z "${BEARER_HTTP_CLAWHUB_PLUGIN:-}" && -f "${sibling}/openclaw.plugin.json" ]]; then
-    printf '%s\n' "$sibling"
+  if [[ -n "${BEARER_HTTP_CLAWHUB_PLUGIN:-}" ]]; then
+    printf '%s\n' "$BEARER_HTTP_CLAWHUB_PLUGIN"
     return 0
   fi
-  printf '%s\n' "${BEARER_HTTP_CLAWHUB_PLUGIN:-clawhub:@openclaw/httpbearer@0.1.0}"
+  bearer_http_default_git_url
+}
+
+bearer_http_spec_is_remote() {
+  local spec="$1"
+  case "$spec" in
+    clawhub:*|npm:*|git:*|https://*|http://*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 agent_bearer_http_ext_dir() {
@@ -140,7 +156,7 @@ if changed:
 PY
 }
 
-# Install from ClawHub pin or local path (sibling checkout / BEARER_HTTP_PLUGIN_PATH).
+# Install from GitHub / ClawHub / local path.
 install_bearer_http_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
@@ -153,11 +169,12 @@ install_bearer_http_plugin() {
   [[ -n "$id" ]] && container="$(agent_container "$id")" || container=""
 
   desired_ver=""
-  if [[ "$plugin_spec" == clawhub:* || "$plugin_spec" == *@* ]]; then
+  if [[ "$plugin_spec" == clawhub:* || "$plugin_spec" == npm:* ]]; then
     desired_ver="$(clawhub_plugin_pinned_version "$plugin_spec" || true)"
   fi
   installed_ver="$(bearer_http_plugin_installed_version "$config_dir" "$container")"
 
+  # Git / https tips: reinstall when forced; otherwise keep a ready tree.
   if [[ "$force" != "1" ]] && bearer_http_ext_ready "$config_dir" "$container"; then
     if [[ -z "$desired_ver" || "$installed_ver" == "$desired_ver" ]]; then
       ensure_bearer_http_plugin_config "$config_dir" "$container" || return 1
@@ -180,11 +197,11 @@ install_bearer_http_plugin() {
 
   echo "    (installing bearer-http plugin from ${plugin_spec}…)" >&2
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
-  if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
+  if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) || "$plugin_spec" == git:* || "$plugin_spec" == https://* || "$plugin_spec" == http://* ]]; then
     install_args+=(--force)
   fi
 
-  if [[ "$plugin_spec" == clawhub:* || "$plugin_spec" == npm:* ]]; then
+  if bearer_http_spec_is_remote "$plugin_spec"; then
     if ! openclaw_agent_exec "$config_dir" "$container" plugins install "${install_args[@]}" "$plugin_spec" >&2; then
       return 1
     fi

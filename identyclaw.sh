@@ -58,7 +58,7 @@
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
 #   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins (pinned in env.local)
-#   install-bearer-http <id|all>  Install guest bearer-http from ClawHub (or sibling ../openclaw-httpbearer-plugin)
+#   install-bearer-http <id|all>  Install guest bearer-http from GitHub (or ClawHub pin / local path)
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents
 #   near-activate <id> [account_id]  Set active NEAR creds (.active + .env + plugin) then restart
