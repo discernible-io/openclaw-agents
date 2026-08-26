@@ -217,6 +217,7 @@ sync_agent_plugin_configs() {
   local container
   container="$(agent_container "$id")"
   ensure_identyclaw_config "$config_dir" "$container" || return 1
+  ensure_bearer_http_plugin_config "$config_dir" "$container" || return 1
   if agent_has_near_credentials "$config_dir" "$container"; then
     ensure_a2a_config "$id" "$config_dir" "$container" || return 1
     ensure_webhooks_plugin_config "$config_dir" "$container" || return 1
@@ -2644,10 +2645,27 @@ ensure_a2a_plugin_build() {
 }
 
 
+ensure_bearer_http_packages() {
+  local id="$1"
+  local config_dir container
+  load_env
+  config_dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  if ! install_bearer_http_plugin "$config_dir" 0 "$id"; then
+    echo "    (${id}: bearer-http plugin install skipped — see errors above)" >&2
+    return 0
+  fi
+  if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
+    link_bearer_http_plugin_deps_in_container "$container"
+  fi
+}
+
+
 ensure_agent_packages() {
   local id="$1"
   ensure_identyclaw_packages "$id"
   ensure_a2a_packages "$id"
+  ensure_bearer_http_packages "$id"
 }
 
 
@@ -3607,10 +3625,17 @@ upgrade_agent_plugins() {
   }
   ensure_webhooks_plugin_config "$config_dir" "$container" || return 1
 
+  echo "    (bearer-http: ${BEARER_HTTP_CLAWHUB_PLUGIN:-$(bearer_http_default_git_url)})"
+  install_bearer_http_plugin "$config_dir" 1 "$id" || {
+    echo "bearer-http plugin install failed for ${id}" >&2
+    return 1
+  }
+
   upgrade_agent_skill "$id"
 
   if _agent_container_name_running "$container"; then
     link_identyclaw_plugin_deps_in_container "$container"
+    link_bearer_http_plugin_deps_in_container "$container"
     ensure_openclaw_cli_link "$container"
     podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
   fi

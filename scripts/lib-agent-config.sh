@@ -596,6 +596,7 @@ ensure_agent_bootstrap() {
   ensure_discord_guild_channels "$config_dir" "$container"
   ensure_discord_ready "$id" "$config_dir"
   ensure_identyclaw_config "$config_dir" "$container"
+  ensure_bearer_http_plugin_config "$config_dir" "$container"
   ensure_openclaw_model_defaults "$config_dir" "$container" "$id"
   ensure_memory_config "$config_dir" "$container"
   ensure_session_maintenance_config "$config_dir" "$container"
@@ -604,6 +605,8 @@ ensure_agent_bootstrap() {
   fi
   ensure_a2a_config "$id" "$config_dir" "$container"
   ensure_agent_identyclaw_tooling "$id" "$config_dir"
+  # Guest bearer HTTP (no Passport required) — install when packages run; config always.
+  # Actual plugin bits: ensure_agent_packages / upgrade_agent_plugins / install-bearer-http.
   if podman ps --format '{{.Names}}' | grep -qx "$container"; then
     ensure_llm_sqlite_auth "$id"
   fi

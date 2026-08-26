@@ -129,6 +129,9 @@ load_env() {
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
   IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.12}"
   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.10}"
+  # Guest bearer HTTP — GitHub until ClawHub publish; no Passport required.
+  BEARER_HTTP_CLAWHUB_PLUGIN="${BEARER_HTTP_CLAWHUB_PLUGIN:-https://github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin.git}"
+  BEARER_HTTP_ALLOWED_HOSTNAMES="${BEARER_HTTP_ALLOWED_HOSTNAMES:-api.lastcradle.io}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
   IDENTYCLAW_NEAR_CONTRACT_ID="${IDENTYCLAW_NEAR_CONTRACT_ID:-genaaaa-identyclaw-com.near}"

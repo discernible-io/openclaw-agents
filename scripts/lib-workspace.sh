@@ -1333,12 +1333,23 @@ write_agent_identyclaw_doc() {
   cat >"$config_dir/workspace/IDENTYCLAW.md" <<EOF
 # IdentyClaw identity + A2A peer messaging
 
-This agent uses **two** published integrations. Use the right one for the job:
+This agent uses published integrations. Use the right one for the job:
 
 | Need | Use | Source |
 |------|-----|--------|
 | HOLA verify, Passport lookup, DID, API cheat sheet | **identyclaw** skill + \`identyclaw_*\` tools | [ClawHub: identyclaw/identyclaw](https://clawhub.ai/identyclaw/identyclaw) |
 | Message another OpenClaw agent (tasks, files, multi-turn) | **a2a_*** tools | [ClawHub: @identyclaw/openclaw-a2a-plugin](https://clawhub.ai/plugins/@identyclaw/openclaw-a2a-plugin) |
+| Guest / no-passport HTTPS (opaque JWT) | **http_request** + \`bearer_*\` | [GitHub: openclaw-identyclaw-httpbearer-plugin](https://github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin) |
+
+## Guest bearer HTTP (no Passport)
+
+- **Plugin id:** \`bearer-http\` — installed on bootstrap for all agents (no NEAR credentials required).
+- **Tools:** \`http_request\`, \`bearer_list_sessions\`, \`bearer_clear_session\`.
+- **Rule:** never curl login JWTs or copy tokens from tool output (OpenClaw masks them). Use \`storeAuth\` on join/login responses, then \`auth: "bearer:<namespace>"\` on later calls.
+- **Example (Last Cradle guest join):**
+  1. \`http_request\` POST \`…/join-by-url\` with \`storeAuth: { namespace: "lastcradle", fromResponse: { path: "jwt_token" } }\`
+  2. Confirm \`auth.stored\` and \`auth.tokenLen >= 400\`
+  3. \`http_request\` GET \`…/state\` with \`auth: "bearer:lastcradle"\` — continue only when \`body.you\` is non-null
 
 ## IdentyClaw (ClawHub skill + plugin)
 

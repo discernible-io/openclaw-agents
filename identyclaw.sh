@@ -57,7 +57,7 @@
 #   export-agent <id> [file]  Pack agent secrets + config for migration (optional: --with-browser)
 #   import-agent <id> <file>  Restore agent from export-agent archive
 #   onboard <id>         Run OpenClaw onboarding (interactive; skips hatch TUI by default)
-#   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks plugins (pinned in env.local)
+#   upgrade-plugins [id|all]  Refresh A2A + IdentyClaw + webhooks + bearer-http plugins
 #   install-bearer-http <id|all>  Install guest bearer-http from GitHub (or ClawHub pin / local path)
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents

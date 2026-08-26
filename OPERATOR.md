@@ -1089,7 +1089,8 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh test-a2a-auth [peer-token-id]` | P2P JWT on `/a2a` (peer via API/registry, then local inbound) |
 | `./identyclaw.sh test-a2a-messaging [from] [peer]` | `message/send` → `tasks/get` E2E (requires live peer) |
 | `./identyclaw.sh test-auth-boundaries [peer-token-id]` | Channel isolation + mutual P2P JWT binding |
-| `./identyclaw.sh upgrade-plugins [id\|all]` | Refresh A2A + IdentyClaw + webhooks plugins from ClawHub pins |
+| `./identyclaw.sh upgrade-plugins [id\|all]` | Refresh A2A + IdentyClaw + webhooks + bearer-http plugins |
+| `./identyclaw.sh install-bearer-http [id\|all]` | Install/refresh guest bearer-http only (GitHub or ClawHub pin) |
 | `./identyclaw.sh discover-a2a-peers [id\|all]` | Discover live peers via `GET /api/agents` and refresh `outbound.agents` |
 | `./identyclaw.sh sync-a2a-peers [id\|all]` | Backfill `env.local` from discovered peers (optional ops) |
 | `./identyclaw.sh test-webhook [id]` | Webhook ingress (unsigned, invalid sig, signed, optional `/api/testhola`) |
