@@ -2656,7 +2656,7 @@ ensure_bearer_http_packages() {
     return 0
   fi
   if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
-    link_bearer_http_plugin_deps_in_container "$container"
+    link_bearer_http_plugin_deps_in_container "$container" "$config_dir"
   fi
 }
 
@@ -3635,7 +3635,7 @@ upgrade_agent_plugins() {
 
   if _agent_container_name_running "$container"; then
     link_identyclaw_plugin_deps_in_container "$container"
-    link_bearer_http_plugin_deps_in_container "$container"
+    link_bearer_http_plugin_deps_in_container "$container" "$config_dir"
     ensure_openclaw_cli_link "$container"
     podman exec "$container" node /app/openclaw.mjs plugins registry --refresh >&2 || true
   fi

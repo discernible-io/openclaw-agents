@@ -48,18 +48,56 @@ agent_bearer_http_ext_dir_container() {
   echo "/home/node/.openclaw/extensions/$(bearer_http_plugin_id)"
 }
 
+# Resolve install root: extensions/bearer-http (path) or ~/.openclaw/git/*/repo (git:).
+bearer_http_resolve_install_dir() {
+  local config_dir="$1"
+  local container="${2:-}"
+  local ext_dir candidate id_line
+  ext_dir="$(agent_bearer_http_ext_dir "$config_dir")"
+  if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
+    if podman exec "$container" test -f "$(agent_bearer_http_ext_dir_container)/openclaw.plugin.json" 2>/dev/null; then
+      printf '%s\n' "$(agent_bearer_http_ext_dir_container)"
+      return 0
+    fi
+    candidate="$(podman exec "$container" sh -c '
+      for d in /home/node/.openclaw/git/*/repo; do
+        [ -f "$d/openclaw.plugin.json" ] || continue
+        grep -q "\"id\"[[:space:]]*:[[:space:]]*\"bearer-http\"" "$d/openclaw.plugin.json" 2>/dev/null || continue
+        echo "$d"
+        exit 0
+      done
+      exit 1
+    ' 2>/dev/null || true)"
+    [[ -n "$candidate" ]] || return 1
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  if [[ -f "$ext_dir/openclaw.plugin.json" ]]; then
+    printf '%s\n' "$ext_dir"
+    return 0
+  fi
+  for candidate in "$config_dir"/git/*/repo; do
+    [[ -f "$candidate/openclaw.plugin.json" ]] || continue
+    if grep -q '"id"[[:space:]]*:[[:space:]]*"bearer-http"' "$candidate/openclaw.plugin.json" 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 bearer_http_plugin_installed_version() {
   local config_dir="$1"
   local container="${2:-}"
-  local pkg pkg_json
+  local root pkg pkg_json
+  root="$(bearer_http_resolve_install_dir "$config_dir" "$container")" || return 0
   if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
-    pkg="$(agent_bearer_http_ext_dir_container)/package.json"
-    pkg_json="$(podman exec "$container" cat "$pkg" 2>/dev/null || true)"
+    pkg_json="$(podman exec "$container" cat "${root}/package.json" 2>/dev/null || true)"
     [[ -n "$pkg_json" ]] || return 0
     python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("version",""))' "$pkg_json" 2>/dev/null || true
     return 0
   fi
-  pkg="$(agent_bearer_http_ext_dir "$config_dir")/package.json"
+  pkg="${root}/package.json"
   [[ -f "$pkg" ]] || return 0
   python3 - "$pkg" <<'PY' 2>/dev/null || true
 import json, sys
@@ -72,20 +110,21 @@ PY
 bearer_http_ext_ready() {
   local config_dir="$1"
   local container="${2:-}"
+  local root
+  root="$(bearer_http_resolve_install_dir "$config_dir" "$container")" || return 1
   if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
     podman exec "$container" test \
-      -f "$(agent_bearer_http_ext_dir_container)/openclaw.plugin.json" \
-      -a \( -f "$(agent_bearer_http_ext_dir_container)/index.mjs" -o -f "$(agent_bearer_http_ext_dir_container)/dist/index.js" \)
+      -f "${root}/openclaw.plugin.json" \
+      -a \( -f "${root}/index.mjs" -o -f "${root}/dist/index.js" \)
     return $?
   fi
-  local ext_dir
-  ext_dir="$(agent_bearer_http_ext_dir "$config_dir")"
-  [[ -f "$ext_dir/openclaw.plugin.json" ]] || return 1
-  [[ -f "$ext_dir/index.mjs" || -f "$ext_dir/dist/index.js" ]]
+  [[ -f "$root/openclaw.plugin.json" ]] || return 1
+  [[ -f "$root/index.mjs" || -f "$root/dist/index.js" ]]
 }
 
 link_bearer_http_plugin_deps() {
   local target="$1"
+  [[ -d "$target" ]] || return 0
   mkdir -p "${target}/node_modules"
   rm -rf "${target}/node_modules/openclaw"
   ln -sf /app "${target}/node_modules/openclaw"
@@ -93,14 +132,18 @@ link_bearer_http_plugin_deps() {
 
 link_bearer_http_plugin_deps_in_container() {
   local container="$1"
-  podman exec "$container" bash -c '
+  local config_dir="${2:-}"
+  local root
+  [[ -n "$container" ]] || return 0
+  root="$(bearer_http_resolve_install_dir "${config_dir:-}" "$container")" || return 0
+  podman exec "$container" bash -c "
     set -euo pipefail
-    ext="/home/node/.openclaw/extensions/bearer-http"
-    [[ -d "$ext" ]] || exit 0
-    mkdir -p "$ext/node_modules"
-    rm -rf "$ext/node_modules/openclaw"
-    ln -sf /app "$ext/node_modules/openclaw"
-  ' 2>/dev/null || true
+    ext=$(printf '%q' "$root")
+    [[ -d \"\$ext\" ]] || exit 0
+    mkdir -p \"\$ext/node_modules\"
+    rm -rf \"\$ext/node_modules/openclaw\"
+    ln -sf /app \"\$ext/node_modules/openclaw\"
+  " 2>/dev/null || true
 }
 
 ensure_bearer_http_plugin_config() {
@@ -180,9 +223,9 @@ install_bearer_http_plugin() {
     if [[ -z "$desired_ver" || "$installed_ver" == "$desired_ver" ]]; then
       ensure_bearer_http_plugin_config "$config_dir" "$container" || return 1
       if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
-        link_bearer_http_plugin_deps_in_container "$container"
+        link_bearer_http_plugin_deps_in_container "$container" "$config_dir"
       else
-        link_bearer_http_plugin_deps "$(agent_bearer_http_ext_dir "$config_dir")"
+        link_bearer_http_plugin_deps "$(bearer_http_resolve_install_dir "$config_dir" || true)"
       fi
       return 0
     fi
@@ -239,9 +282,9 @@ install_bearer_http_plugin() {
   }
 
   if [[ -n "$container" ]] && _agent_container_name_running "$container"; then
-    link_bearer_http_plugin_deps_in_container "$container"
+    link_bearer_http_plugin_deps_in_container "$container" "$config_dir"
   else
-    link_bearer_http_plugin_deps "$(agent_bearer_http_ext_dir "$config_dir")"
+    link_bearer_http_plugin_deps "$(bearer_http_resolve_install_dir "$config_dir" || true)"
   fi
   ensure_bearer_http_plugin_config "$config_dir" "$container" || return 1
 }
