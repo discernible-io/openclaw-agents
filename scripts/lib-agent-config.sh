@@ -600,6 +600,7 @@ ensure_agent_bootstrap() {
   ensure_openclaw_model_defaults "$config_dir" "$container" "$id"
   ensure_memory_config "$config_dir" "$container"
   ensure_session_maintenance_config "$config_dir" "$container"
+  ensure_compaction_config "$config_dir" "$container"
   if agent_has_near_credentials "$config_dir"; then
     ensure_a2a_plugin_build "$id"
   fi
@@ -1369,6 +1370,43 @@ if changed:
 PY
 }
 
+# agents.defaults.compaction.reserveTokensFloor — headroom so auto-compaction can recover
+# oversized turns. OpenClaw default is 20000; Identyclaw ships 50000 (error message hint).
+ensure_compaction_config() {
+  local config_dir="$1"
+  local container="${2:-}"
+  load_env
+  agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  _agent_openclaw_json_python "$config_dir" "$container" \
+    "${IDENTYCLAW_COMPACTION_RESERVE_TOKENS_FLOOR:-50000}" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+raw = (sys.argv[2] or "50000").strip()
+try:
+    floor = int(raw)
+except ValueError:
+    floor = 50000
+if floor < 0:
+    floor = 50000
+
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+agents = data.setdefault("agents", {})
+defaults = agents.setdefault("defaults", {})
+compaction = defaults.setdefault("compaction", {})
+if compaction.get("reserveTokensFloor") != floor:
+    compaction["reserveTokensFloor"] = floor
+    changed = True
+
+if changed:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+}
+
 # Pod agents may own openclaw.json on the host — sync repo-managed settings after the gateway is up.
 
 # Pod agents may own openclaw.json on the host — sync repo-managed settings after the gateway is up.
@@ -1385,6 +1423,7 @@ sync_agent_openclaw_json_when_container_running() {
   ensure_openclaw_model_defaults "$dir" "$container" "$id"
   ensure_memory_config "$dir" "$container"
   ensure_session_maintenance_config "$dir" "$container"
+  ensure_compaction_config "$dir" "$container"
   sync_quiet_plugin_env "$dir" "$container"
   if [[ "$restart" == "1" ]]; then
     podman restart "$container" >/dev/null
@@ -1511,6 +1550,7 @@ EOF
   ensure_openclaw_model_defaults "$config_dir" ""
   ensure_memory_config "$config_dir" ""
   ensure_session_maintenance_config "$config_dir" ""
+  ensure_compaction_config "$config_dir" ""
 }
 
 

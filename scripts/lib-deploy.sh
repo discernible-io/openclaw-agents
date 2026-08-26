@@ -616,6 +616,7 @@ start_pod_agent() {
     ensure_openclaw_model_defaults "$dir" "$container" "$id" || true
     ensure_memory_config "$dir" "$container" || true
     ensure_session_maintenance_config "$dir" "$container" || true
+    ensure_compaction_config "$dir" "$container" || true
     sync_quiet_plugin_env "$dir" "$container" || true
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id" || true
@@ -636,6 +637,7 @@ start_pod_agent() {
     ensure_openclaw_model_defaults "$dir" "$container" "$id"
     ensure_memory_config "$dir" "$container"
     ensure_session_maintenance_config "$dir" "$container"
+    ensure_compaction_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"
@@ -664,6 +666,7 @@ start_pod_agent() {
     ensure_openclaw_model_defaults "$dir" "$container" "$id"
     ensure_memory_config "$dir" "$container"
     ensure_session_maintenance_config "$dir" "$container"
+    ensure_compaction_config "$dir" "$container"
     sync_agent_plugin_configs "$id" "$dir" || true
     ensure_llm_sqlite_auth "$id"
     sync_agent_openclaw_json_when_container_running "$id"

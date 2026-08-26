@@ -109,6 +109,9 @@ load_env() {
   IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER="${IDENTYCLAW_SESSION_MAINTENANCE_PRUNE_AFTER:-36500d}"
   IDENTYCLAW_SESSION_MAINTENANCE_MAX_ENTRIES="${IDENTYCLAW_SESSION_MAINTENANCE_MAX_ENTRIES:-100000}"
   IDENTYCLAW_SESSION_MAINTENANCE_MAX_DISK_BYTES="${IDENTYCLAW_SESSION_MAINTENANCE_MAX_DISK_BYTES:-false}"
+  # Auto-compaction headroom (agents.defaults.compaction.reserveTokensFloor).
+  # OpenClaw default is 20000; 50000+ avoids "Auto-compaction could not recover this turn".
+  IDENTYCLAW_COMPACTION_RESERVE_TOKENS_FLOOR="${IDENTYCLAW_COMPACTION_RESERVE_TOKENS_FLOOR:-50000}"
   # Periodic cleanup-sessions (./identyclaw.sh cleanup-sessions / enable-session-cleanup).
   # Unwedges sticky status=running + hard-truncates oversized transcripts (--max-lines).
   IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR="${IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR:-50000}"
