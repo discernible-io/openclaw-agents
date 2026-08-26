@@ -764,9 +764,11 @@ cmd_cleanup_sessions() {
         echo "  restarting the gateway when needed so Telegram/A2A can accept new turns."
         echo "  Truncates sessions at/above IDENTYCLAW_SESSION_CLEANUP_TOKEN_FLOOR (default 50k)"
         echo "  or IDENTYCLAW_SESSION_CLEANUP_BYTE_FLOOR (default 100KB transcript)"
-        echo "  to the last IDENTYCLAW_SESSION_CLEANUP_MAX_LINES lines (default 25)."
+        echo "  to the last IDENTYCLAW_SESSION_CLEANUP_MAX_LINES lines (default 25),"
+        echo "  retrying --max-lines 10/5/3/1 when few lines are each enormous (tool results)."
         echo "  Also runs sessions cleanup --enforce and rotates oversized cache-trace.jsonl."
         echo "  Schedule: $0 enable-session-cleanup   (default every 30m)"
+        echo "  Compaction floor (survives rebuild): IDENTYCLAW_COMPACTION_RESERVE_TOKENS_FLOOR=50000"
         exit 0
         ;;
       all|agent-[a-z]) target="$arg" ;;

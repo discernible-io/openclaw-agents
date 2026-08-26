@@ -244,32 +244,78 @@ for effective, key in sorted(rows, reverse=True):
 PY
 }
 
+# Truncate one session key. Retries with fewer --max-lines when OpenClaw returns
+# compacted:false (transcript already has ≤N lines but individual lines are huge —
+# common with fat tool results). Ladder: requested → 10 → 5 → 3 → 1.
+_openclaw_compact_one_session_key() {
+  local id="$1"
+  local container="$2"
+  local key="$3"
+  local max_lines="$4"
+  local out try_lines kept did=0
+  local -a ladder=()
+  local n
+  for n in "$max_lines" 10 5 3 1; do
+    [[ "$n" =~ ^[0-9]+$ ]] || continue
+    [[ "$n" -ge 1 ]] || continue
+    if [[ ${#ladder[@]} -eq 0 || "$n" -lt "${ladder[-1]}" ]]; then
+      ladder+=("$n")
+    fi
+  done
+  for try_lines in "${ladder[@]}"; do
+    if ! out="$(podman exec "$container" node dist/index.js sessions compact "$key" \
+      --max-lines "$try_lines" --json 2>&1)"; then
+      echo "    (${id}: compact failed for ${key} --max-lines ${try_lines}: ${out})" >&2
+      return 1
+    fi
+    if echo "$out" | grep -q '"ok": false'; then
+      echo "    (${id}: compact refused for ${key}: ${out})" >&2
+      return 1
+    fi
+    # compacted:true → truncated; compacted:false + kept ≤ try_lines → need fewer lines.
+    if echo "$out" | grep -q '"compacted": true'; then
+      echo "    ok (kept last ${try_lines} lines)"
+      return 0
+    fi
+    kept="$(echo "$out" | python3 -c 'import json,sys,re
+raw=sys.stdin.read()
+m=re.search(r"\{[\s\S]*\}\s*$", raw)
+print((json.loads(m.group(0)).get("kept") if m else "") or "")' 2>/dev/null || true)"
+    if [[ -n "$kept" && "$kept" =~ ^[0-9]+$ && "$kept" -le "$try_lines" && "$try_lines" -gt 1 ]]; then
+      echo "    (no-op at --max-lines ${try_lines}, kept=${kept}; retrying lower)"
+      did=1
+      continue
+    fi
+    # Last ladder step or unexpected shape — treat as done if ok.
+    if [[ "$did" == "1" ]]; then
+      echo "    ok (best-effort --max-lines ${try_lines}; ${out})"
+    else
+      echo "    ok"
+    fi
+    return 0
+  done
+  echo "    (${id}: compact exhausted retries for ${key})" >&2
+  return 1
+}
+
 _openclaw_compact_session_keys() {
   local id="$1"
   local container="$2"
   local max_lines="$3"
   local dry_run="${4:-0}"
-  local toks key out compacted=0 failed=0
+  local toks key compacted=0 failed=0
   while IFS=$'\t' read -r toks key; do
     [[ -n "$key" ]] || continue
     if [[ "$dry_run" == "1" ]]; then
-      echo "    would compact ${key} (${toks} tokens → last ${max_lines} lines)"
+      echo "    would compact ${key} (${toks} tokens → last ${max_lines} lines, retry 10/5/3/1 if fat lines)"
       compacted=$((compacted + 1))
       continue
     fi
     echo "    compact ${key} (${toks} tokens)"
-    if ! out="$(podman exec "$container" node dist/index.js sessions compact "$key" \
-      --max-lines "$max_lines" --json 2>&1)"; then
-      echo "    (${id}: compact failed for ${key}: ${out})" >&2
-      failed=$((failed + 1))
-      continue
-    fi
-    if echo "$out" | grep -q '"ok": false'; then
-      echo "    (${id}: compact refused for ${key}: ${out})" >&2
-      failed=$((failed + 1))
-    else
-      echo "    ok"
+    if _openclaw_compact_one_session_key "$id" "$container" "$key" "$max_lines"; then
       compacted=$((compacted + 1))
+    else
+      failed=$((failed + 1))
     fi
   done
   echo "    (${id}: compact summary compacted=${compacted} failed=${failed})"
