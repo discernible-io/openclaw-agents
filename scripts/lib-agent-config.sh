@@ -1460,20 +1460,17 @@ if changed:
 PY
 }
 
-# agents.defaults.compaction — headroom + proactive transcript rotation so
-# auto-compaction can recover oversized turns (ox-alpha ~200k context).
-# OpenClaw default reserveTokensFloor is 20000; Identyclaw ships 50000+.
+# agents.defaults.compaction — proactive transcript rotation / mid-turn precheck.
+# OpenClaw 2026.7.2+ rejects reserveTokensFloor / reserveTokens / maxHistoryShare /
+# truncateAfterCompaction (strict schema). Strip those if present from older syncs.
 ensure_compaction_config() {
   local config_dir="$1"
   local container="${2:-}"
   load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "${IDENTYCLAW_COMPACTION_RESERVE_TOKENS_FLOOR:-50000}" \
     "${IDENTYCLAW_COMPACTION_KEEP_RECENT_TOKENS:-8000}" \
-    "${IDENTYCLAW_COMPACTION_MAX_HISTORY_SHARE:-0.45}" \
     "${IDENTYCLAW_COMPACTION_MAX_ACTIVE_TRANSCRIPT_BYTES:-400kb}" \
-    "${IDENTYCLAW_COMPACTION_TRUNCATE_AFTER:-1}" \
     "${IDENTYCLAW_COMPACTION_MID_TURN_PRECHECK:-1}" <<'PY'
 import json, sys
 from pathlib import Path
@@ -1487,23 +1484,11 @@ def to_int(raw, default):
         return default
     return v if v >= 0 else default
 
-def to_float(raw, default):
-    try:
-        v = float(str(raw).strip())
-    except ValueError:
-        return default
-    return v
-
-floor = to_int(sys.argv[2], 50000)
-keep_recent = to_int(sys.argv[3], 8000)
+keep_recent = to_int(sys.argv[2], 8000)
 if keep_recent < 1:
     keep_recent = 8000
-share = to_float(sys.argv[4], 0.45)
-if share < 0.1 or share > 0.9:
-    share = 0.45
-max_bytes = (sys.argv[5] or "400kb").strip() or "400kb"
-truncate_after = str(sys.argv[6]).strip().lower() in ("1", "true", "yes", "on")
-mid_turn = str(sys.argv[7]).strip().lower() in ("1", "true", "yes", "on")
+max_bytes = (sys.argv[3] or "400kb").strip() or "400kb"
+mid_turn = str(sys.argv[4]).strip().lower() in ("1", "true", "yes", "on")
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -1511,12 +1496,19 @@ changed = False
 agents = data.setdefault("agents", {})
 defaults = agents.setdefault("defaults", {})
 compaction = defaults.setdefault("compaction", {})
+# Keys rejected by OpenClaw 2026.7.2+ schema validation.
+for key in (
+    "reserveTokensFloor",
+    "reserveTokens",
+    "maxHistoryShare",
+    "truncateAfterCompaction",
+):
+    if key in compaction:
+        compaction.pop(key, None)
+        changed = True
+
 desired = {
-    "reserveTokensFloor": floor,
-    "reserveTokens": floor,
     "keepRecentTokens": keep_recent,
-    "maxHistoryShare": share,
-    "truncateAfterCompaction": truncate_after,
     "maxActiveTranscriptBytes": max_bytes,
 }
 for key, val in desired.items():
