@@ -94,7 +94,7 @@ ensure_app_layout() {
   local app env_file
   app="$(identyclaw_app_dir)"
   env_file="${app}/env.local"
-  mkdir -p "${app}"/{certs,logs/nginx,agents,exports}
+  mkdir -p "${app}"/{certs,logs/nginx,agents,exports,overlays}
   chmod 711 "${app}/certs" 2>/dev/null || true
   if [[ ! -f "$env_file" ]]; then
     cp "${IDENTYCLAW_ROOT}/env.example" "$env_file"

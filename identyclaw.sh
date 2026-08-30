@@ -6,7 +6,7 @@
 #
 # Commands:
 #   build-image          Pull base + build openclaw-agent:local
-#   init                 Create agent dirs + Migadu Himalaya config (agent-a, agent-c, agent-e)
+#   init                 Create agent dirs + Migadu Himalaya config (AGENT_IDS or agents/agent-?)
 #   set-password <id|all>  Set Migadu mailbox password (agent-{a-z} or all AGENT_IDS)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
 #   set-telegram-token <id> Store Telegram bot token in secrets/ (survives rebuilds)
@@ -153,21 +153,43 @@ init_one_agent() {
   fi
 }
 
+init_agent_from_env() {
+  local id="$1"
+  local email display_name password gateway_port ord_a ord_l
+  email="$(agent_env_value "$id" EMAIL "")"
+  [[ -n "$email" ]] || email="${id}@identyclaw.com"
+  display_name="$(agent_env_value "$id" DISPLAY_NAME "")"
+  if [[ -z "$display_name" && "$id" =~ ^agent-([a-z])$ ]]; then
+    display_name="Identyclaw Agent ${BASH_REMATCH[1]^^}"
+  fi
+  [[ -n "$display_name" ]] || display_name="$id"
+  password="$(agent_env_value "$id" PASSWORD "")"
+  gateway_port="$(agent_env_value "$id" GATEWAY_PORT "")"
+  if [[ -z "$gateway_port" ]]; then
+    ord_a=$(printf '%d' "'a")
+    ord_l="$(agent_letter_ord "$id")" || { echo "Invalid agent id: $id" >&2; return 1; }
+    gateway_port=$(( 18789 + (ord_l - ord_a) * 2 ))
+  fi
+  init_one_agent "$id" "$email" "$display_name" "$password" "$gateway_port"
+}
+
 cmd_init() {
+  local id first_id=""
   require_rootless_user
   ensure_app_layout
   load_env
-  init_one_agent agent-a "$AGENT_A_EMAIL" "$AGENT_A_DISPLAY_NAME" "${AGENT_A_PASSWORD:-}" "$AGENT_A_GATEWAY_PORT"
-  init_one_agent agent-c "$AGENT_C_EMAIL" "$AGENT_C_DISPLAY_NAME" "${AGENT_C_PASSWORD:-}" "$AGENT_C_GATEWAY_PORT"
-  init_one_agent agent-e "$AGENT_E_EMAIL" "$AGENT_E_DISPLAY_NAME" "${AGENT_E_PASSWORD:-}" "$AGENT_E_GATEWAY_PORT"
+  for id in $(configured_agent_ids); do
+    init_agent_from_env "$id"
+    [[ -z "$first_id" ]] && first_id="$id"
+  done
   echo ""
   echo "Next:"
   echo "  1. Edit $(identyclaw_env_file) if needed"
-  echo "  2. $0 set-password agent-a   # if passwords not in env.local"
+  echo "  2. $0 set-password ${first_id:-agent-a}   # if passwords not in env.local"
   echo "  3. $0 build-image"
   echo "  4. $0 start all"
   echo "  5. $0 enable-boot       # once: survive logout + reboot (sudo for linger)"
-  echo "  6. $0 onboard agent-a   # repeat for each id in AGENT_IDS"
+  echo "  6. $0 onboard ${first_id:-agent-a}   # repeat for each id in AGENT_IDS"
 }
 
 cmd_set_password() {

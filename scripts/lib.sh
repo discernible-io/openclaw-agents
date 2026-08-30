@@ -740,7 +740,6 @@ agent_card_description() {
   echo "$desc"
 }
 
-
 agent_ports() {
   local id="$1" gw br
   load_env
@@ -1146,6 +1145,20 @@ path.write_text(text, encoding="utf-8")
 PY
 }
 
+# Optional per-agent overlay under $(identyclaw_app_dir)/overlays/<id>/apply.sh (app-local).
+
+agent_app_overlay_dir() {
+  echo "$(identyclaw_app_dir)/overlays/$1"
+}
+
+apply_agent_app_overlay() {
+  local id="$1"
+  local apply_sh
+  apply_sh="$(agent_app_overlay_dir "$id")/apply.sh"
+  [[ -f "$apply_sh" ]] || return 0
+  bash "$apply_sh" "$id"
+}
+
 # Refresh mail helpers on host (when writable) and always inside a running container.
 ensure_agent_mail_tooling_refresh() {
   local id="$1"
@@ -1154,6 +1167,7 @@ ensure_agent_mail_tooling_refresh() {
     ensure_agent_email_tooling "$id" "$config_dir" 2>/dev/null || true
   fi
   ensure_concierge_inbox_reply_guidance "$id" "$config_dir"
+  apply_agent_app_overlay "$id"
   ensure_inbox_heartbeat_from_env "$id" "$config_dir"
   ensure_slc_heartbeat_from_env "$id" "$config_dir"
 }
