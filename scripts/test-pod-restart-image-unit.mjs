@@ -215,5 +215,47 @@ exit 0
   assert.equal(out.stdout, '{"peer":1}|');
 });
 
+runCase("API peer discovery cache key ignores flaky exclude token probes", () => {
+  const out = bashLib(
+    [
+      'AGENT_IDS="agent-c agent-a agent-b"',
+      'k1="$(_live_api_peers_cache_key "https://api.example" 12 8000)"',
+      'local_host_agent_token_ids() { echo "flaky-one"; }',
+      'k2="$(_live_api_peers_cache_key "https://api.example" 12 8000)"',
+      'printf \'%s\' "$k1|$k2"',
+    ].join("\n"),
+    {
+      fakePodman: `#!/usr/bin/env bash
+exit 0
+`,
+    },
+  );
+  const [k1, k2] = out.stdout.split("|");
+  assert.equal(k1, "https://api.example|12|8000|agent-a agent-b agent-c");
+  assert.equal(k2, k1);
+});
+
+runCase("API peer discovery reuses cache across agents in one restart", () => {
+  const out = bashLib(
+    [
+      'base="$(identyclaw_app_dir)/.cache/live-api-peers-test-run"',
+      'rm -f "${base}.key" "${base}.json"',
+      'AGENT_IDS="agent-a agent-b"',
+      'key="$(_live_api_peers_cache_key "https://api.example" 12 8000)"',
+      '_live_api_peers_cache_set "$key" \'{"peer":"cached"}\' "$base"',
+      'a="$( _live_api_peers_cache_get "$(_live_api_peers_cache_key "https://api.example" 12 8000)" "$base" )"',
+      'b="$( _live_api_peers_cache_get "$(_live_api_peers_cache_key "https://api.example" 12 8000)" "$base" )"',
+      'printf \'%s|%s\' "$a" "$b"',
+      'rm -f "${base}.key" "${base}.json"',
+    ].join("\n"),
+    {
+      fakePodman: `#!/usr/bin/env bash
+exit 0
+`,
+    },
+  );
+  assert.equal(out.stdout, '{"peer":"cached"}|{"peer":"cached"}');
+});
+
 tally.printSummary("Summary");
 process.exit(tally.exitCode());

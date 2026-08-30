@@ -245,12 +245,28 @@ agent_near_credentials_host_path() {
   find "$cred_dir" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -1 || true
 }
 
+# Read token_id from host cache written by probe_rodit_own_token_id (no podman/node).
+cached_rodit_own_token_id_for_agent() {
+  local id="$1"
+  local config_dir cache cached_id
+  config_dir="$(agent_home "$id")"
+  cache="$config_dir/.rodit-own-token-id"
+  [[ -f "$cache" ]] || return 1
+  read -r _ cached_id <"$cache" || return 1
+  cached_id="${cached_id//$'\n'/}"
+  cached_id="${cached_id//$'\r'/}"
+  [[ -n "$cached_id" ]] || return 1
+  is_passport_token_id "$cached_id" || return 1
+  echo "$cached_id"
+}
+
 # Passport token_ids for agents in AGENT_IDS on this host (container probe when host cannot read secrets).
 local_host_agent_token_ids() {
   local id tid out=""
   load_env
   for id in $AGENT_IDS; do
-    tid="$(agent_token_id "$id" 2>/dev/null || true)"
+    tid="$(cached_rodit_own_token_id_for_agent "$id" 2>/dev/null || true)"
+    [[ -n "$tid" ]] || tid="$(agent_token_id "$id" 2>/dev/null || true)"
     [[ -n "$tid" ]] || continue
     if [[ -z "$out" ]]; then
       out="$tid"
@@ -258,7 +274,11 @@ local_host_agent_token_ids() {
       out="$out $tid"
     fi
   done
-  echo "$out"
+  if [[ -z "$out" ]]; then
+    echo ""
+    return 0
+  fi
+  printf '%s\n' $out | LC_ALL=C sort | paste -sd' ' -
 }
 
 # True when token_id belongs to an agent in AGENT_IDS on this host.
@@ -361,14 +381,24 @@ local_cross_agent_peer_token_ids() {
 
 # First running cross-agent on this host with a resolvable ingress base (webhooks 0.1.5 path).
 
-# File cache (not bash vars): start/restart all exclude every local token_id, so the
-# live peer map is identical across AGENT_IDS — avoid N× GET /api/agents. Vars are
-# lost inside $(...) subshells; files under identyclaw_app_dir/.cache survive them.
+# File cache (not bash vars): start/restart all share one live peer map — avoid N×
+# GET /api/agents. Keyed by API base + probe settings + AGENT_IDS (not probed
+# exclude token_ids, which flake during restart). Fixed filename (not $$): subshells
+# from $(...) must read/write the same files.
 _live_api_peers_cache_base() {
   local dir
   dir="$(identyclaw_app_dir)/.cache"
   mkdir -p "$dir" 2>/dev/null || true
-  printf '%s' "${dir}/live-api-peers.$$"
+  printf '%s' "${dir}/live-api-peers"
+}
+
+# Stable cache key for API peer discovery (identical for every agent on this host).
+_live_api_peers_cache_key() {
+  local api_base="$1" concurrency="$2" timeout_ms="$3"
+  local agents
+  load_env
+  agents="$(configured_agent_ids | tr ' ' '\n' | LC_ALL=C sort | paste -sd' ' -)"
+  printf '%s|%s|%s|%s' "$api_base" "$concurrency" "$timeout_ms" "$agents"
 }
 
 _live_api_peers_cache_get() {
@@ -409,7 +439,7 @@ discover_live_api_peers_json_for_agent() {
 
   concurrency="${IDENTYCLAW_A2A_DISCOVER_CONCURRENCY:-12}"
   timeout_ms="${IDENTYCLAW_A2A_DISCOVER_TIMEOUT_MS:-8000}"
-  cache_key="${api_base}|${concurrency}|${timeout_ms}|${exclude_args[*]}"
+  cache_key="$(_live_api_peers_cache_key "$api_base" "$concurrency" "$timeout_ms")"
   local cached=""
   cached="$(_live_api_peers_cache_get "$cache_key" 2>/dev/null || true)"
   if [[ -n "$cached" ]]; then
@@ -940,8 +970,10 @@ probe_rodit_own_token_id_in_container() {
 
 agent_token_id() {
   local deploy_id="$1"
-  local config_dir probed container
+  local config_dir probed container cached
   config_dir="$(agent_home "$deploy_id")"
+  cached="$(cached_rodit_own_token_id_for_agent "$deploy_id" 2>/dev/null || true)"
+  [[ -n "$cached" ]] && { echo "$cached"; return 0; }
   probed="$(probe_rodit_own_token_id "$config_dir" 2>/dev/null || true)"
   [[ -n "$probed" ]] && { echo "$probed"; return 0; }
   container="$(agent_container "$deploy_id" 2>/dev/null || true)"
@@ -2758,8 +2790,8 @@ build_a2a_peer_map() {
   fi
 
   api_json="{}"
-  # Opt-in (IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1). First caller in this process does
-  # GET /api/agents + parallel agent-card probes; later AGENT_IDS reuse the cache.
+  # Opt-in (IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1). First caller on this host does
+  # GET /api/agents + parallel agent-card probes; later AGENT_IDS reuse the file cache.
   if a2a_discover_peers_from_api_enabled; then
     echo "    (${self_id}: API peer discovery — GET /api/agents + parallel agent-card probe)" >&2
     api_json="$(discover_live_api_peers_json_for_agent "$self_id")"
