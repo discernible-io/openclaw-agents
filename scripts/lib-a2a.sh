@@ -413,6 +413,7 @@ _live_api_peers_cache_set() {
   local cache_key="$1"
   local json="$2"
   local base="${3:-$(_live_api_peers_cache_base)}"
+  mkdir -p "$(dirname "$base")" 2>/dev/null || true
   printf '%s' "$cache_key" >"${base}.key"
   printf '%s' "$json" >"${base}.json"
 }

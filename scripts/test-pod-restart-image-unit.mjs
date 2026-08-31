@@ -218,11 +218,10 @@ exit 0
 runCase("API peer discovery cache key ignores flaky exclude token probes", () => {
   const out = bashLib(
     [
-      'AGENT_IDS="agent-c agent-a agent-b"',
       'k1="$(_live_api_peers_cache_key "https://api.example" 12 8000)"',
       'local_host_agent_token_ids() { echo "flaky-one"; }',
       'k2="$(_live_api_peers_cache_key "https://api.example" 12 8000)"',
-      'printf \'%s\' "$k1|$k2"',
+      'printf \'%s\\n%s\' "$k1" "$k2"',
     ].join("\n"),
     {
       fakePodman: `#!/usr/bin/env bash
@@ -230,8 +229,8 @@ exit 0
 `,
     },
   );
-  const [k1, k2] = out.stdout.split("|");
-  assert.equal(k1, "https://api.example|12|8000|agent-a agent-b agent-c");
+  const [k1, k2] = out.stdout.split("\n");
+  assert.equal(k1, "https://api.example|12|8000|agent-a agent-c agent-e");
   assert.equal(k2, k1);
 });
 
