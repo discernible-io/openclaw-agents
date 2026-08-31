@@ -107,4 +107,11 @@ if [ -f /home/node/.openclaw/exec-approvals.json ]; then
     || rm -f /home/node/.openclaw/exec-approvals.json || true
 fi
 
+# OpenClaw 2026.8+ rejects channel transcripts that start with /new reset boundaries
+# before a v3 session header exists. Repair persisted stores before gateway start.
+if [ -f /opt/identyclaw/repair-openclaw-session-headers.py ]; then
+  python3 /opt/identyclaw/repair-openclaw-session-headers.py /home/node/.openclaw \
+    || echo "[identyclaw] session-header repair skipped" >&2
+fi
+
 exec tini -s -- "$@"

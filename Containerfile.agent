@@ -60,13 +60,16 @@ COPY scripts/lib-openclaw-model-routing.py /opt/identyclaw/lib-openclaw-model-ro
 COPY scripts/patch-openclaw-model-routing.py /opt/identyclaw/patch-openclaw-model-routing.py
 COPY scripts/lib-openclaw-cache-config.mjs /opt/identyclaw/lib-openclaw-cache-config.mjs
 COPY scripts/patch-openclaw-cache-config.mjs /opt/identyclaw/patch-openclaw-cache-config.mjs
+COPY scripts/repair-openclaw-session-headers.py /opt/identyclaw/repair-openclaw-session-headers.py
 RUN chmod 755 /opt/identyclaw/entrypoint.sh \
       /opt/identyclaw/patch-openclaw-tool-result-images.mjs \
       /opt/identyclaw/patch-identyclaw-request-body.mjs \
       /opt/identyclaw/patch-openclaw-model-routing.py \
       /opt/identyclaw/patch-openclaw-cache-config.mjs \
+      /opt/identyclaw/repair-openclaw-session-headers.py \
  && chmod 644 /opt/identyclaw/lib-openclaw-model-routing.py \
-      /opt/identyclaw/lib-openclaw-cache-config.mjs
+      /opt/identyclaw/lib-openclaw-cache-config.mjs \
+      /opt/identyclaw/repair-openclaw-session-headers.py
 
 USER node
 ENTRYPOINT ["/opt/identyclaw/entrypoint.sh"]

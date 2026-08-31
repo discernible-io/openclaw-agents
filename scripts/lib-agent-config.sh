@@ -2605,16 +2605,22 @@ factory_reset_agent() {
     ' _ "$config_dir" || true
   fi
 
-  # Sqlite must be cleared while gateway is down.
+  # Sqlite must be cleared while gateway is down (shared state + per-agent session transcripts).
   if [[ -w "$config_dir/state" ]] 2>/dev/null; then
     rm -f "$config_dir/state/openclaw.sqlite" \
       "$config_dir/state/openclaw.sqlite-shm" \
-      "$config_dir/state/openclaw.sqlite-wal" 2>/dev/null || true
+      "$config_dir/state/openclaw.sqlite-wal" \
+      "$config_dir/agents/main/agent/openclaw-agent.sqlite" \
+      "$config_dir/agents/main/agent/openclaw-agent.sqlite-shm" \
+      "$config_dir/agents/main/agent/openclaw-agent.sqlite-wal" 2>/dev/null || true
   else
     podman unshare rm -f \
       "$config_dir/state/openclaw.sqlite" \
       "$config_dir/state/openclaw.sqlite-shm" \
-      "$config_dir/state/openclaw.sqlite-wal" 2>/dev/null || true
+      "$config_dir/state/openclaw.sqlite-wal" \
+      "$config_dir/agents/main/agent/openclaw-agent.sqlite" \
+      "$config_dir/agents/main/agent/openclaw-agent.sqlite-shm" \
+      "$config_dir/agents/main/agent/openclaw-agent.sqlite-wal" 2>/dev/null || true
   fi
 
   # Scrub discernible hosts from fleet env so start does not re-inject them.
