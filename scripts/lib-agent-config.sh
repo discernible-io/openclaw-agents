@@ -1301,14 +1301,20 @@ dreaming_frequency = (sys.argv[3] or "0 3 * * *").strip() or "0 3 * * *"
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
 
-memory = data.setdefault("memory", {})
-# Builtin SQLite engine only. QMD is a breaking removal: drop retired keys so
-# leftover memory.backend=qmd cannot spawn a missing binary after image rebuild.
-if memory.get("backend") != "builtin":
-    memory["backend"] = "builtin"
+memory = data.get("memory")
+if not isinstance(memory, dict):
+    memory = {}
+    data["memory"] = memory
+# OpenClaw 2026.8.1: memory.backend is retired — builtin SQLite is the only engine.
+# Drop legacy keys so bootstrap cannot brick the gateway after upgrade.
+if "backend" in memory:
+    del memory["backend"]
     changed = True
 if "qmd" in memory:
     del memory["qmd"]
+    changed = True
+if not memory:
+    data.pop("memory", None)
     changed = True
 
 # OpenClaw 2026.7.2+ / 2026.8.1: memory.search lives under memory; agents.defaults.memorySearch is legacy.
