@@ -536,6 +536,30 @@ PY
   printf '%s\n' "$out"
 }
 
+# OpenClaw 2026.8+ rejects transcripts that lack a v3 session header (common after /new).
+repair_openclaw_session_headers() {
+  local id="$1"
+  local container script
+  container="$(agent_container "$id")"
+  script="${IDENTYCLAW_ROOT:-}/scripts/repair-openclaw-session-headers.py"
+  [[ -f "$script" ]] || return 0
+
+  if agent_container_running "$id"; then
+    podman cp "$script" "${container}:/tmp/repair-openclaw-session-headers.py" >/dev/null 2>&1 \
+      && podman exec "$container" python3 /tmp/repair-openclaw-session-headers.py \
+      || echo "    (${id}: session-header repair failed)" >&2
+    return 0
+  fi
+
+  local config_dir
+  config_dir="$(agent_home "$id")"
+  podman run --rm --entrypoint python3 \
+    -v "${config_dir}:/home/node/.openclaw:rw" \
+    -v "${script}:/tmp/repair.py:ro" \
+    "${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-agent:local}" /tmp/repair.py \
+    2>/dev/null || echo "    (${id}: session-header repair failed)" >&2
+}
+
 # Periodic / ops cleanup: truncate ALL oversized sessions (telegram, A2A/direct, cron, tui),
 # unwedge sticky runs that freeze channels, optionally enforce session-store maintenance,
 # and rotate huge cache-trace logs.
@@ -556,6 +580,8 @@ cleanup_openclaw_sessions() {
     echo "==> ${id}: container not running — skip" >&2
     return 1
   }
+
+  repair_openclaw_session_headers "$id" || true
 
   unwedge_out="$(_unwedge_stuck_openclaw_sessions "$id" "$container" "$dry_run" || true)"
   printf '%s\n' "$unwedge_out"
