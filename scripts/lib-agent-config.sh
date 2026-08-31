@@ -1311,20 +1311,28 @@ if "qmd" in memory:
     del memory["qmd"]
     changed = True
 
-# OpenClaw 2026.7.1 rejects memory.search (gateway: "memory: Invalid input").
-# OpenClaw 2026.7.2+ accepts memory.search and rejects agents.defaults.memorySearch.
-# Keep config valid for the image we ship (2026.7.1-2): never write memory.search;
-# drop legacy memorySearch / memory.search so restart cannot brick the gateway.
+# OpenClaw 2026.7.2+ / 2026.8.1: memory.search lives under memory; agents.defaults.memorySearch is legacy.
 agents = data.setdefault("agents", {})
 defaults = agents.setdefault("defaults", {})
 if "memorySearch" in defaults:
     del defaults["memorySearch"]
     changed = True
-if "search" in memory:
-    del memory["search"]
-    changed = True
 
-# Strip keys rejected by OpenClaw 2026.7.2+ config schema (harmless on 2026.7.1).
+# OpenClaw 2026.8.1 rejects bindings[*].match.peer.kind "dm" — canonical value is "direct".
+bindings = data.get("bindings")
+if isinstance(bindings, list):
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        match = binding.get("match")
+        if not isinstance(match, dict):
+            continue
+        peer = match.get("peer")
+        if isinstance(peer, dict) and peer.get("kind") == "dm":
+            peer["kind"] = "direct"
+            changed = True
+
+# Strip keys rejected by OpenClaw 2026.7.2+ config schema.
 meta = data.get("meta")
 if isinstance(meta, dict) and "lastTouchedAt" in meta:
     del meta["lastTouchedAt"]

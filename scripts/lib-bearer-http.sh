@@ -205,7 +205,7 @@ install_bearer_http_plugin() {
   local config_dir="$1"
   local force="${2:-0}"
   local id="${3:-}"
-  local container="" plugin_spec desired_ver installed_ver install_args=()
+  local container="" plugin_spec desired_ver installed_ver install_args=(--accept-capabilities)
   local host_stage container_stage
 
   load_env

@@ -7,7 +7,7 @@ BUNDLED="${IDENTYCLAW_PLUGIN_SEED:-/opt/identyclaw/plugin-seed}/npm"
 TARGET="/home/node/.openclaw/npm"
 DISCORD_PKG="${TARGET}/node_modules/@openclaw/discord/package.json"
 GATEWAY_VER="$(node -e "process.stdout.write(require('/app/package.json').version)")"
-# Correction gateways (2026.7.1-2) ship Discord 2026.7.1 when npm has no matching tag.
+# Gateway version from /app/package.json; bundled Discord must match (correction suffix stripped).
 DISCORD_LINE_VER="$(node -e "const g=process.argv[1]; const m=String(g).match(/^(\\d+\\.\\d+\\.\\d+)-\\d+$/); process.stdout.write(m?m[1]:g)" -- "$GATEWAY_VER")"
 
 needs_seed=0

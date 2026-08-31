@@ -45,7 +45,7 @@ process.exit(discordCompatible(discordVersion(), gw) ? 0 : 1);
     discord=$(node -e "const g=process.argv[1]; const m=String(g).match(/^(\\d+\\.\\d+\\.\\d+)-\\d+$/); process.stdout.write(m?m[1]:g)" -- "$gw")
     rm -rf /home/node/.openclaw/npm/node_modules/@openclaw/discord
     rm -rf /home/node/.openclaw/npm/projects/openclaw-discord-*
-    OPENCLAW_STATE_DIR=/home/node/.openclaw node /app/openclaw.mjs plugins install "@openclaw/discord@${discord}" --pin
+    OPENCLAW_STATE_DIR=/home/node/.openclaw node /app/openclaw.mjs plugins install "@openclaw/discord@${discord}" --pin --accept-capabilities
   ' >&2
   return 1
 }

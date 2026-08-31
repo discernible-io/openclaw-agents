@@ -3208,7 +3208,7 @@ install_identyclaw_webhooks_plugin() {
 
   echo "    (installing IdentyClaw webhooks plugin from ${plugin_spec}…)" >&2
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
-  local install_args=()
+  local install_args=(--accept-capabilities)
   if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
     install_args+=(--force)
   fi
@@ -3309,7 +3309,7 @@ install_a2a_plugin() {
   echo "    (installing A2A plugin from ${plugin_spec}…)" >&2
   strip_a2a_dynamic_peers_config_for_install "$config_dir" "$container"
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
-  local install_args=()
+  local install_args=(--accept-capabilities)
   if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) ]]; then
     install_args+=(--force)
   fi
@@ -3475,7 +3475,7 @@ install_identyclaw_plugin() {
 
   echo "    (installing IdentyClaw plugin from ${plugin_spec}…)" >&2
   openclaw_agent_exec "$config_dir" "$container" plugins registry --refresh >&2 || true
-  local install_args=()
+  local install_args=(--accept-capabilities)
   if [[ "$force" == "1" || ( -n "$desired_ver" && "$installed_ver" != "$desired_ver" ) || "$plugin_spec" == git:* ]]; then
     install_args+=(--force)
   fi
