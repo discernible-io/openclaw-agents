@@ -145,6 +145,7 @@ start_agent_in_pod() {
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
+  agent_gateway_healthcheck_args "$gw_port"
 
   [[ -f "$dir/.env" ]] || { echo "Missing ${dir}/.env — run identyclaw.sh init ${id}" >&2; exit 1; }
   prepare_agent_state_for_gateway_start "$id" pod
@@ -154,6 +155,7 @@ start_agent_in_pod() {
   # himalaya mounts ~/.config read-only; near-cli-rs must write config elsewhere
   mkdir -p "$dir/xdg-config"
   ensure_idcp_wallet_tooling "$id" "$dir" || true
+  ensure_openclaw_doctor_fix "$id"
 
   podman run -d \
     --pod "$POD_NAME" \
@@ -162,6 +164,7 @@ start_agent_in_pod() {
     --replace \
     --shm-size=2g \
     --restart unless-stopped \
+    "${AGENT_GATEWAY_HEALTHCHECK_ARGS[@]}" \
     -e HOME=/home/node \
     -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \

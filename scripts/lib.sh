@@ -571,14 +571,33 @@ agent_is_local() {
   return 1
 }
 
-# podman ps can miss a running container briefly; inspect is the fallback (see require_agent_running).
+# True only when the container is listed/inspected as running AND exec works.
+# Ghosts (podman State=running but PID gone) fail here so start/restart recreate them.
 
-# podman ps can miss a running container briefly; inspect is the fallback (see require_agent_running).
+# True only when the container is listed/inspected as running AND exec works.
+# Ghosts (podman State=running but PID gone) fail here so start/restart recreate them.
 _agent_container_name_running() {
   local container="$1"
   [[ -n "$container" ]] || return 1
-  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" && return 0
-  podman container inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+    podman exec "$container" true 2>/dev/null && return 0
+    return 1
+  fi
+  if podman container inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
+    podman exec "$container" true 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# Listed in podman ps but exec fails (dead PID / broken namespace).
+
+# Listed in podman ps but exec fails (dead PID / broken namespace).
+_agent_container_name_ghost() {
+  local container="$1"
+  [[ -n "$container" ]] || return 1
+  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || return 1
+  podman exec "$container" true 2>/dev/null && return 1
+  return 0
 }
 
 

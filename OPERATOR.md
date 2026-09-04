@@ -235,12 +235,16 @@ git pull   # picks up template pin + bootstrap migrations
 If a gateway crash-loops after upgrade, run doctor against the agent state (same mounts as `./identyclaw.sh start`):
 
 ```bash
+./identyclaw.sh doctor agent-a          # stop → openclaw doctor --fix on volume → restart
+# or manually:
 podman run --rm \
   -v ~/openclaw-agents-app/agents/agent-a:/home/node/.openclaw:rw \
   localhost/openclaw-agent:local \
   node /app/openclaw.mjs doctor --fix
 ./identyclaw.sh restart agent-a
 ```
+
+`start` / `restart` / pod deploy already run `doctor --fix` while the gateway is stopped (writes into the agent volume, so it survives image rebuilds). Containers also use a `/health` check with `--health-on-failure restart`. The session-cleanup timer heals ghost containers and recurring `SessionCanonicalKeyMigrationRequiredError` (set `IDENTYCLAW_SKIP_DOCTOR=1` only to bypass).
 
 OpenClaw 2.0 requires **`--accept-capabilities`** when installing bundled or ClawHub plugins (Discord at image build; IdentyClaw plugins via `upgrade-plugins`). This template passes that flag automatically.
 
@@ -1125,6 +1129,7 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh enable-mail-responder [interval]` | Install user systemd timer running `respond-mail` (default 5min) |
 | `./identyclaw.sh cleanup-sessions [id\|all] [--dry-run]` | Unwedge sticky runs + truncate oversized sessions + store/cache maintenance |
 | `./identyclaw.sh doctor-fix [id\|all]` | Offline session-canonical repair (`SessionCanonicalKeyMigrationRequiredError` / frozen Telegram); also runs on every container start via entrypoint |
+| `./identyclaw.sh doctor [id\|all]` | Stop → `openclaw doctor --fix` on volume → restart (also runs on start/restart/deploy) |
 | `./identyclaw.sh enable-session-cleanup [interval\|OnCalendar]` | User systemd timer for `cleanup-sessions` (default every `1h`) |
 | `./identyclaw.sh factory-reset [id\|all] [--yes]` | Wipe sessions, memory, skills, sqlite; restore stock workspace (keeps secrets/Passport/tokens) |
 | `./identyclaw.sh enable-slc-heartbeat <id>` | Purge SLC leftovers (docs, heartbeat, crons, discernible API hosts) |

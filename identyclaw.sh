@@ -35,6 +35,7 @@
 #   enable-calendar-check <id> [interval]  Enable calendar/reminder heartbeat (default 30m)
 #   enable-slc-heartbeat <id>  Purge SLC workspace docs / heartbeat / crons / discernible API hosts
 #   factory-reset <id|all> [--yes]  Wipe memory, sessions, skills, sqlite — keep secrets; re-bootstrap
+#   doctor [id|all]      Stop gateway, run openclaw doctor --fix on volume state, restart (survives rebuild)
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
 #   doctor-fix [id|all]     Stop-safe session-canonical repair (Telegram freeze / SessionCanonicalKeyMigration)
 #   cleanup-sessions [id|all] [--dry-run]  Unwedge sticky runs + truncate oversized sessions + store/cache maintenance
@@ -78,7 +79,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,71p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -753,6 +754,44 @@ cmd_factory_reset() {
     return 0
   fi
   factory_reset_agent "$target" "$yes"
+}
+
+# Stop gateway, run openclaw doctor --fix on the agent volume, restart.
+# Same repair start/restart/deploy already apply; this is the manual operator path.
+cmd_doctor() {
+  local target="${1:-all}"
+  local id failed=()
+  require_podman
+  load_env
+
+  _doctor_one() {
+    local agent_id="$1"
+    echo "==> doctor ${agent_id}"
+    if [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]]; then
+      # recreate_pod_agent_container runs ensure_openclaw_doctor_fix while stopped.
+      start_pod_agent "$agent_id" restart || return 1
+    else
+      cmd_stop "$agent_id" || true
+      ensure_openclaw_doctor_fix "$agent_id" || true
+      cmd_start "$agent_id" || return 1
+    fi
+  }
+
+  if [[ "$target" == "all" ]]; then
+    for id in $AGENT_IDS; do
+      _doctor_one "$id" || failed+=("$id")
+    done
+    if ((${#failed[@]})); then
+      echo "doctor failed for: ${failed[*]}" >&2
+      return 1
+    fi
+    return 0
+  fi
+  is_valid_agent_id "$target" || {
+    echo "Usage: $0 doctor [agent-id|all]" >&2
+    return 1
+  }
+  _doctor_one "$target"
 }
 
 cmd_fix_session_images() {
@@ -1572,6 +1611,7 @@ main() {
     enable-calendar-check) cmd_enable_calendar_check "$@" ;;
     enable-slc-heartbeat) cmd_enable_slc_heartbeat "$@" ;;
     factory-reset) cmd_factory_reset "$@" ;;
+    doctor) cmd_doctor "$@" ;;
     fix-session-images) cmd_fix_session_images "$@" ;;
     doctor-fix) cmd_doctor_fix "$@" ;;
     cleanup-sessions) cmd_cleanup_sessions "$@" ;;

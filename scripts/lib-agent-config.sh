@@ -613,6 +613,33 @@ cleanup_openclaw_sessions() {
   store_cleanup="${IDENTYCLAW_SESSION_CLEANUP_STORE:-1}"
   cache_mb="${IDENTYCLAW_SESSION_CLEANUP_CACHE_TRACE_MB:-200}"
 
+  # Ghost / SessionCanonicalKey blocks Telegram until doctor --fix + recreate.
+  # Only scan logs since this container start so a prior heal does not loop forever.
+  if [[ "$dry_run" != "1" ]] && [[ "${IDENTYCLAW_SESSION_CLEANUP_HEAL_RUNTIME:-1}" == "1" ]]; then
+    local need_heal=0 started_at
+    if _agent_container_name_ghost "$container"; then
+      need_heal=1
+    elif agent_container_running "$id"; then
+      started_at="$(podman inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
+      if [[ -n "$started_at" ]] \
+        && podman logs --since "$started_at" "$container" 2>/dev/null \
+          | grep -q 'SessionCanonicalKeyMigrationRequiredError'; then
+        need_heal=1
+      fi
+    fi
+    if [[ "$need_heal" == "1" ]]; then
+      echo "==> ${id}: runtime heal (ghost container and/or SessionCanonicalKey) — restart with doctor --fix"
+      if [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]]; then
+        start_pod_agent "$id" restart || {
+          echo "    (${id}: heal restart failed)" >&2
+          return 1
+        }
+      else
+        echo "    (${id}: set IDENTYCLAW_DEPLOY_MODE=pod or run: ./identyclaw.sh restart ${id})" >&2
+      fi
+    fi
+  fi
+
   agent_container_running "$id" || {
     echo "==> ${id}: container not running — skip" >&2
     return 1

@@ -196,6 +196,28 @@ runCase("recreate_pod_agent_container calls resolve_openclaw_run_image", () => {
   assert.equal(body.includes("No OpenClaw image configured"), false);
 });
 
+runCase("recreate_pod_agent_container runs doctor --fix and health-on-failure", () => {
+  const src = readFileSync(join(repoRoot, "scripts/lib-deploy.sh"), "utf8");
+  const start = src.indexOf("recreate_pod_agent_container()");
+  const end = src.indexOf("start_pod_agent()");
+  assert.ok(start >= 0 && end > start, "recreate_pod_agent_container body not found");
+  const body = src.slice(start, end);
+  assert.equal(body.includes("ensure_openclaw_doctor_fix"), true);
+  assert.equal(body.includes("AGENT_GATEWAY_HEALTHCHECK_ARGS"), true);
+  assert.equal(src.includes("--health-on-failure restart"), true);
+  assert.equal(src.includes("doctor --fix --yes --non-interactive"), true);
+});
+
+runCase("running check rejects ghost containers", () => {
+  const src = readFileSync(join(repoRoot, "scripts/lib.sh"), "utf8");
+  assert.equal(src.includes("_agent_container_name_ghost()"), true);
+  const start = src.indexOf("_agent_container_name_running()");
+  const end = src.indexOf("agent_container_running()");
+  assert.ok(start >= 0 && end > start);
+  const body = src.slice(start, end);
+  assert.equal(body.includes('podman exec "$container" true'), true);
+});
+
 runCase("API peer discovery cache survives command substitution subshells", () => {
   const out = bashLib(
     [

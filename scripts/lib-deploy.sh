@@ -462,7 +462,7 @@ restore_host_access_for_agents() {
 # Host restore (0:0) and container access (1000:1000) conflict in pod userns — skip restore for exec-only commands.
 identyclaw_skips_host_restore() {
   case "${1:-}" in
-    chat|ask|logs|pairing|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|install-bearer-http|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|fix-session-images|doctor-fix|cleanup-sessions|enable-session-cleanup|retire-exec-approvals|set-telegram-token|set-discord-token|set-password|enable-slc-heartbeat|factory-reset|""|-h|--help|help) return 0 ;;
+    chat|ask|logs|pairing|test-mail|test-mail-hola|respond-mail|enable-mail-responder|respond-a2a-webhook-smoke|enable-a2a-webhook-smoke-responder|respond-a2a-hola-smoke|enable-a2a-hola-smoke-responder|test-a2a|test-webhook|test-webhook-p2p|send-rodit-webhook|upgrade-plugins|install-bearer-http|sync-a2a-peers|discover-a2a-peers|build-image|start|restart|near-activate|stop|status|restore-host-access|fix-session-images|doctor-fix|cleanup-sessions|enable-session-cleanup|retire-exec-approvals|set-telegram-token|set-discord-token|set-password|enable-slc-heartbeat|factory-reset|doctor|""|-h|--help|help) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -518,6 +518,98 @@ wait_for_running_agent_container() {
   return 1
 }
 
+# Fill AGENT_GATEWAY_HEALTHCHECK_ARGS so dead gateways restart after rebuilds.
+
+# Fill AGENT_GATEWAY_HEALTHCHECK_ARGS so dead gateways restart after rebuilds.
+agent_gateway_healthcheck_args() {
+  local gw_port="${1:?}"
+  AGENT_GATEWAY_HEALTHCHECK_ARGS=(
+    --health-cmd "curl -sf --max-time 4 http://127.0.0.1:${gw_port}/health >/dev/null"
+    --health-interval 30s
+    --health-timeout 5s
+    --health-retries 3
+    --health-start-period 90s
+    --health-on-failure restart
+  )
+}
+
+# Run openclaw doctor --fix against agent state while the gateway is stopped.
+# Rewrites volume SQLite (survives image rebuild / container recreate). Skip with IDENTYCLAW_SKIP_DOCTOR=1.
+
+# Run openclaw doctor --fix against agent state while the gateway is stopped.
+# Rewrites volume SQLite (survives image rebuild / container recreate). Skip with IDENTYCLAW_SKIP_DOCTOR=1.
+ensure_openclaw_doctor_fix() {
+  local id="${1:?}"
+  local dir container image pod_name z name rc=0
+  load_env
+  [[ "${IDENTYCLAW_SKIP_DOCTOR:-0}" == "1" ]] && return 0
+  dir="$(agent_home "$id")"
+  container="$(agent_container "$id")"
+  [[ -d "$dir" ]] || return 0
+
+  if _agent_container_name_running "$container"; then
+    echo "    (${id}: doctor skipped — gateway still running; stop first)" >&2
+    return 0
+  fi
+
+  image="$(resolve_openclaw_run_image "$container" 2>/dev/null || true)"
+  [[ -n "$image" ]] || image="$(openclaw_agent_image)"
+  [[ -n "$image" ]] || {
+    echo "    (${id}: doctor skipped — no OpenClaw image)" >&2
+    return 0
+  }
+  z="$(selinux_mount_suffix)"
+  pod_name="${POD_NAME:-identyclaw-agents-pod}"
+  name="openclaw-${id}-doctor"
+  podman rm -f "$name" 2>/dev/null || true
+
+  echo "    (${id}: openclaw doctor --fix before gateway start)" >&2
+  if [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] && podman pod exists "$pod_name" 2>/dev/null; then
+    if [[ -w "$dir" ]]; then
+      podman run --rm \
+        --pod "$pod_name" \
+        --name "$name" \
+        --userns=keep-id \
+        -e HOME=/home/node \
+        -e OPENCLAW_NO_RESPAWN=1 \
+        -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
+        -v "${dir}:/home/node/.openclaw:rw${z}" \
+        -v "${dir}/workspace:/home/node/.openclaw/workspace:rw${z}" \
+        "$image" \
+        node /app/openclaw.mjs doctor --fix --yes --non-interactive || rc=$?
+    else
+      podman run --rm \
+        --pod "$pod_name" \
+        --name "$name" \
+        -e HOME=/home/node \
+        -e OPENCLAW_NO_RESPAWN=1 \
+        -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
+        -v "${dir}:/home/node/.openclaw:rw${z}" \
+        -v "${dir}/workspace:/home/node/.openclaw/workspace:rw${z}" \
+        "$image" \
+        node /app/openclaw.mjs doctor --fix --yes --non-interactive || rc=$?
+    fi
+  else
+    if [[ ! -w "$dir" ]]; then
+      echo "    (${id}: doctor skipped — ${dir} not host-writable)" >&2
+      return 0
+    fi
+    podman run --rm --userns=keep-id \
+      --name "$name" \
+      -e HOME=/home/node \
+      -e OPENCLAW_NO_RESPAWN=1 \
+      -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
+      -v "${dir}:/home/node/.openclaw:rw${z}" \
+      -v "${dir}/workspace:/home/node/.openclaw/workspace:rw${z}" \
+      "$image" \
+      node /app/openclaw.mjs doctor --fix --yes --non-interactive || rc=$?
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "    (${id}: doctor --fix exited ${rc} — continuing start)" >&2
+  fi
+  return 0
+}
+
 # Recreate a pod agent container so --env-file picks up .env changes (podman restart does not).
 # Pod userns leaves agent dirs owned by the container uid; restore host ownership before
 # reading --env-file (same pattern as recreate_pod_agent_gateway).
@@ -537,6 +629,7 @@ recreate_pod_agent_container() {
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
+  agent_gateway_healthcheck_args "$gw_port"
 
   image="$(resolve_openclaw_run_image "$container")" || {
     echo "No OpenClaw agent image available to recreate ${container}." >&2
@@ -556,6 +649,7 @@ recreate_pod_agent_container() {
   sync_identyclaw_env "$dir" ""
   ensure_idcp_wallet_tooling "$id" "$dir" || true
   mkdir -p "$dir/xdg-config"
+  ensure_openclaw_doctor_fix "$id"
 
   echo "    (${id}: recreating with image ${image})" >&2
   podman run -d \
@@ -565,6 +659,7 @@ recreate_pod_agent_container() {
     --replace \
     --shm-size=2g \
     --restart unless-stopped \
+    "${AGENT_GATEWAY_HEALTHCHECK_ARGS[@]}" \
     -e HOME=/home/node \
     -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \
@@ -587,7 +682,13 @@ start_pod_agent() {
   container="$(agent_container "$id")"
   dir="$(agent_home "$id")"
 
-  if podman ps --format '{{.Names}}' | grep -qx "$container"; then
+  # Ghost containers look "Up" in podman ps but cannot exec — force recreate.
+  if _agent_container_name_ghost "$container"; then
+    echo "==> ${id}: ghost container detected (listed running but exec failed) — recreating"
+    mode=restart
+  fi
+
+  if _agent_container_name_running "$container"; then
     if [[ "$mode" == "start" ]]; then
       ensure_agent_state_for_container_exec "$id"
       ensure_agent_mail_tooling_refresh "$id" "$dir"
@@ -775,6 +876,7 @@ recreate_pod_agent_gateway() {
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
+  agent_gateway_healthcheck_args "$gw_port"
   prepare_agent_state_for_gateway_start "$id" pod
   podman rm -f "$container" 2>/dev/null || true
   restore_pod_path_for_host "$dir"
@@ -789,6 +891,7 @@ recreate_pod_agent_gateway() {
   fi
   mkdir -p "$dir/xdg-config"
   ensure_idcp_wallet_tooling "$id" "$dir" || true
+  ensure_openclaw_doctor_fix "$id"
   podman run -d \
     --pod "$pod_name" \
     --name "$container" \
@@ -796,6 +899,7 @@ recreate_pod_agent_gateway() {
     --replace \
     --shm-size=2g \
     --restart unless-stopped \
+    "${AGENT_GATEWAY_HEALTHCHECK_ARGS[@]}" \
     -e HOME=/home/node \
     -e XDG_CONFIG_HOME=/home/node/.openclaw/xdg-config \
     -e OPENCLAW_NO_RESPAWN=1 \
