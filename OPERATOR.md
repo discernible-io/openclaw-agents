@@ -225,6 +225,13 @@ git pull   # picks up template pin + bootstrap migrations
 ./identyclaw.sh test-a2a agent-a     # smoke A2A + plugin load
 ```
 
+**Session-canonical repair (Telegram freeze):** OpenClaw can fail closed with `SessionCanonicalKeyMigrationRequiredError` on non-canonical session rows — channel handlers spool forever while nginx still returns 200. The agent image entrypoint runs `repair-openclaw-session-canonical.sh` (`openclaw doctor --fix`) on every start (state is bind-mounted, so rebuild alone is not enough without this). After `build-image`, restarts/reboots re-apply it. Manual offline repair:
+
+```bash
+./identyclaw.sh doctor-fix agent-d   # or: doctor-fix all
+# Skip on start: IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1
+```
+
 If a gateway crash-loops after upgrade, run doctor against the agent state (same mounts as `./identyclaw.sh start`):
 
 ```bash
@@ -1117,6 +1124,7 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 | `./identyclaw.sh respond-mail [id\|all]` | Poll INBOX, verify inbound HOLA probes, reply (cron/timer entry point) |
 | `./identyclaw.sh enable-mail-responder [interval]` | Install user systemd timer running `respond-mail` (default 5min) |
 | `./identyclaw.sh cleanup-sessions [id\|all] [--dry-run]` | Unwedge sticky runs + truncate oversized sessions + store/cache maintenance |
+| `./identyclaw.sh doctor-fix [id\|all]` | Offline session-canonical repair (`SessionCanonicalKeyMigrationRequiredError` / frozen Telegram); also runs on every container start via entrypoint |
 | `./identyclaw.sh enable-session-cleanup [interval\|OnCalendar]` | User systemd timer for `cleanup-sessions` (default every `1h`) |
 | `./identyclaw.sh factory-reset [id\|all] [--yes]` | Wipe sessions, memory, skills, sqlite; restore stock workspace (keeps secrets/Passport/tokens) |
 | `./identyclaw.sh enable-slc-heartbeat <id>` | Purge SLC leftovers (docs, heartbeat, crons, discernible API hosts) |

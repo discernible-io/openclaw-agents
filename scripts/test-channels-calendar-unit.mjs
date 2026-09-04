@@ -346,6 +346,29 @@ runCase("container-entrypoint re-applies OpenRouter cache config after model rou
   assert.equal(image.includes("/opt/identyclaw/patch-openclaw-cache-config.mjs"), true);
 });
 
+runCase("container-entrypoint runs session-canonical doctor before the gateway starts", () => {
+  const src = readFileSync(join(repoRoot, "scripts/container-entrypoint.sh"), "utf8");
+  const image = readFileSync(join(repoRoot, "Containerfile.agent"), "utf8");
+  const script = readFileSync(
+    join(repoRoot, "scripts/repair-openclaw-session-canonical.sh"),
+    "utf8",
+  );
+  assert.equal(src.includes("repair-openclaw-session-canonical.sh"), true);
+  assert.equal(script.includes("doctor --fix"), true);
+  assert.equal(script.includes("SessionCanonicalKeyMigration"), true);
+  assert.ok(
+    src.indexOf("repair-openclaw-session-canonical.sh") < src.indexOf('exec tini -s -- "$@"'),
+    "entrypoint must canonicalize sessions before exec tini",
+  );
+  assert.ok(
+    src.indexOf("repair-openclaw-session-canonical.sh") <
+      src.lastIndexOf("patch-openclaw-model-routing.py"),
+    "model-routing must re-apply after session-canonical doctor",
+  );
+  assert.equal(image.includes("scripts/repair-openclaw-session-canonical.sh"), true);
+  assert.equal(image.includes("/opt/identyclaw/repair-openclaw-session-canonical.sh"), true);
+});
+
 runCase("ensure_exec_allowlist retires leftover JSON inside the container even when the host cannot see it", () => {
   const src = readFileSync(join(repoRoot, "scripts/lib-agent-config.sh"), "utf8");
   const start = src.indexOf("ensure_exec_allowlist_harmless_bins()");

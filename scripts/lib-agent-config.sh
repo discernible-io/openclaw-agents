@@ -560,6 +560,43 @@ repair_openclaw_session_headers() {
     2>/dev/null || echo "    (${id}: session-header repair failed)" >&2
 }
 
+# SessionCanonicalKeyMigrationRequiredError freezes Telegram until doctor --fix.
+# Entrypoint runs this on every start; host CLI for offline repair / old images.
+repair_openclaw_session_canonical() {
+  local id="$1"
+  local container script config_dir image
+  container="$(agent_container "$id")"
+  script="${IDENTYCLAW_ROOT:-}/scripts/repair-openclaw-session-canonical.sh"
+  config_dir="$(agent_home "$id")"
+  image="${OPENCLAW_LOCAL_IMAGE:-localhost/openclaw-agent:local}"
+  [[ -f "$script" ]] || return 0
+  load_env
+
+  if agent_container_running "$id"; then
+    echo "    (${id}: gateway running — stop it first, or rely on entrypoint on next start)" >&2
+    return 1
+  fi
+
+  echo "==> ${id}: session-canonical doctor --fix"
+  # Prefer baked image script after build-image; fall back to host bind-mount.
+  if podman run --rm --entrypoint sh \
+    -v "${config_dir}:/home/node/.openclaw:rw" \
+    "$image" -c 'test -x /opt/identyclaw/repair-openclaw-session-canonical.sh' 2>/dev/null; then
+    podman run --rm --user 1000:1000 \
+      -v "${config_dir}:/home/node/.openclaw:rw" \
+      --entrypoint /opt/identyclaw/repair-openclaw-session-canonical.sh \
+      "$image" /home/node/.openclaw \
+      || echo "    (${id}: session-canonical doctor failed)" >&2
+  else
+    podman run --rm --user 1000:1000 \
+      -v "${config_dir}:/home/node/.openclaw:rw" \
+      -v "${script}:/opt/identyclaw/repair-openclaw-session-canonical.sh:ro" \
+      --entrypoint /opt/identyclaw/repair-openclaw-session-canonical.sh \
+      "$image" /home/node/.openclaw \
+      || echo "    (${id}: session-canonical doctor failed)" >&2
+  fi
+}
+
 # Periodic / ops cleanup: truncate ALL oversized sessions (telegram, A2A/direct, cron, tui),
 # unwedge sticky runs that freeze channels, optionally enforce session-store maintenance,
 # and rotate huge cache-trace logs.

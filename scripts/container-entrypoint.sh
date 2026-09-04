@@ -114,4 +114,39 @@ if [ -f /opt/identyclaw/repair-openclaw-session-headers.py ]; then
     || echo "[identyclaw] session-header repair skipped" >&2
 fi
 
+# Non-canonical session keys fail closed (SessionCanonicalKeyMigrationRequiredError)
+# and freeze Telegram/Discord until `openclaw doctor --fix`. Bind-mounted state
+# survives image rebuild — re-run on every start while the gateway is down.
+# Skip with IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1.
+if [ -x /opt/identyclaw/repair-openclaw-session-canonical.sh ]; then
+  /opt/identyclaw/repair-openclaw-session-canonical.sh /home/node/.openclaw || true
+  # Doctor may rewrite openclaw.json (catalog contextWindow, stale plugins).
+  # Re-apply host-independent routing/cache patches so rebuilds stay consistent.
+  if [ -f /opt/identyclaw/patch-openclaw-model-routing.py ] \
+    && [ -f /home/node/.openclaw/openclaw.json ]; then
+    python3 /opt/identyclaw/patch-openclaw-model-routing.py \
+      /home/node/.openclaw/openclaw.json \
+      || echo "[identyclaw] model-routing re-patch skipped" >&2
+  fi
+  if [ -f /opt/identyclaw/patch-openclaw-cache-config.mjs ] \
+    && [ -f /home/node/.openclaw/openclaw.json ]; then
+    _or=0
+    if node -e '
+      const fs = require("fs");
+      let d = {};
+      try { d = JSON.parse(fs.readFileSync("/home/node/.openclaw/openclaw.json", "utf8")); } catch {}
+      const p = (((d.agents || {}).defaults || {}).model || {}).primary || "";
+      process.exit(String(p).startsWith("openrouter/") ? 0 : 1);
+    ' 2>/dev/null; then
+      _or=1
+    fi
+    node /opt/identyclaw/patch-openclaw-cache-config.mjs \
+      /home/node/.openclaw/openclaw.json \
+      --session-id "${OPENCLAW_OPENROUTER_SESSION_ID:-identyclaw}" \
+      --cache-trace "${OPENCLAW_CACHE_TRACE:-1}" \
+      --openrouter "$_or" \
+      || echo "[identyclaw] cache-config re-patch skipped" >&2
+  fi
+fi
+
 exec tini -s -- "$@"

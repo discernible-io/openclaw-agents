@@ -36,6 +36,7 @@
 #   enable-slc-heartbeat <id>  Purge SLC workspace docs / heartbeat / crons / discernible API hosts
 #   factory-reset <id|all> [--yes]  Wipe memory, sessions, skills, sqlite — keep secrets; re-bootstrap
 #   fix-session-images [id|all]  Patch OpenClaw image-placeholder bug + compact long sessions
+#   doctor-fix [id|all]     Stop-safe session-canonical repair (Telegram freeze / SessionCanonicalKeyMigration)
 #   cleanup-sessions [id|all] [--dry-run]  Unwedge sticky runs + truncate oversized sessions + store/cache maintenance
 #   enable-session-cleanup [interval|OnCalendar]  Install user systemd timer for cleanup-sessions (default 30m)
 #   respond-a2a-hola-smoke [id|all]  Deterministic inbound A2A HOLA probe email sender (smoke tests)
@@ -897,6 +898,38 @@ cmd_retire_exec_approvals() {
   retire_legacy_exec_approvals_one "$target"
 }
 
+# Offline SessionCanonicalKeyMigration repair (entrypoint also runs this on every start).
+cmd_doctor_fix() {
+  local target="${1:-all}"
+  local id
+  require_podman
+  load_env
+  case "$target" in
+    all)
+      for id in $AGENT_IDS; do
+        if agent_container_running "$id"; then
+          echo "==> ${id}: stopping for session-canonical doctor"
+          cmd_stop "$id" || true
+        fi
+        repair_openclaw_session_canonical "$id" || true
+        cmd_restart "$id" || true
+      done
+      ;;
+    agent-[a-z])
+      if agent_container_running "$target"; then
+        echo "==> ${target}: stopping for session-canonical doctor"
+        cmd_stop "$target" || true
+      fi
+      repair_openclaw_session_canonical "$target" || true
+      cmd_restart "$target" || true
+      ;;
+    *)
+      echo "Usage: $0 doctor-fix [agent-id|all]" >&2
+      return 1
+      ;;
+  esac
+}
+
 # Run deterministic inbound A2A webhook smoke handler once (constitution peer → local webhook).
 respond_a2a_webhook_smoke_one() {
   local id="$1"
@@ -1540,6 +1573,7 @@ main() {
     enable-slc-heartbeat) cmd_enable_slc_heartbeat "$@" ;;
     factory-reset) cmd_factory_reset "$@" ;;
     fix-session-images) cmd_fix_session_images "$@" ;;
+    doctor-fix) cmd_doctor_fix "$@" ;;
     cleanup-sessions) cmd_cleanup_sessions "$@" ;;
     enable-session-cleanup) cmd_enable_session_cleanup "$@" ;;
     respond-a2a-webhook-smoke) cmd_respond_a2a_webhook_smoke "$@" ;;
