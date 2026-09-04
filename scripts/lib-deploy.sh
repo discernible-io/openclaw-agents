@@ -564,36 +564,10 @@ ensure_openclaw_doctor_fix() {
   podman rm -f "$name" 2>/dev/null || true
 
   echo "    (${id}: openclaw doctor --fix before gateway start)" >&2
-  if [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] && podman pod exists "$pod_name" 2>/dev/null; then
-    if [[ -w "$dir" ]]; then
-      podman run --rm \
-        --pod "$pod_name" \
-        --name "$name" \
-        --userns=keep-id \
-        -e HOME=/home/node \
-        -e OPENCLAW_NO_RESPAWN=1 \
-        -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
-        -v "${dir}:/home/node/.openclaw:rw${z}" \
-        -v "${dir}/workspace:/home/node/.openclaw/workspace:rw${z}" \
-        "$image" \
-        node /app/openclaw.mjs doctor --fix --yes --non-interactive || rc=$?
-    else
-      podman run --rm \
-        --pod "$pod_name" \
-        --name "$name" \
-        -e HOME=/home/node \
-        -e OPENCLAW_NO_RESPAWN=1 \
-        -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
-        -v "${dir}:/home/node/.openclaw:rw${z}" \
-        -v "${dir}/workspace:/home/node/.openclaw/workspace:rw${z}" \
-        "$image" \
-        node /app/openclaw.mjs doctor --fix --yes --non-interactive || rc=$?
-    fi
-  else
-    if [[ ! -w "$dir" ]]; then
-      echo "    (${id}: doctor skipped — ${dir} not host-writable)" >&2
-      return 0
-    fi
+  # --userns=keep-id cannot join a pod with an infra container. After
+  # restore_pod_path_for_host the tree is host-owned → keep-id without --pod.
+  # If still container-owned, join the pod as the image uid (no keep-id).
+  if [[ -w "$dir" ]]; then
     podman run --rm --userns=keep-id \
       --name "$name" \
       -e HOME=/home/node \
@@ -603,6 +577,20 @@ ensure_openclaw_doctor_fix() {
       -v "${dir}/workspace:/home/node/.openclaw/workspace:rw${z}" \
       "$image" \
       node /app/openclaw.mjs doctor --fix --yes --non-interactive || rc=$?
+  elif [[ "${IDENTYCLAW_DEPLOY_MODE:-}" == "pod" ]] && podman pod exists "$pod_name" 2>/dev/null; then
+    podman run --rm \
+      --pod "$pod_name" \
+      --name "$name" \
+      -e HOME=/home/node \
+      -e OPENCLAW_NO_RESPAWN=1 \
+      -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
+      -v "${dir}:/home/node/.openclaw:rw${z}" \
+      -v "${dir}/workspace:/home/node/.openclaw/workspace:rw${z}" \
+      "$image" \
+      node /app/openclaw.mjs doctor --fix --yes --non-interactive || rc=$?
+  else
+    echo "    (${id}: doctor skipped — ${dir} not host-writable)" >&2
+    return 0
   fi
   if [[ "$rc" -ne 0 ]]; then
     echo "    (${id}: doctor --fix exited ${rc} — continuing start)" >&2
