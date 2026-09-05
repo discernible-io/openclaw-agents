@@ -1283,3 +1283,5 @@ source "${IDENTYCLAW_ROOT}/scripts/lib-agent-config.sh"
 source "${IDENTYCLAW_ROOT}/scripts/lib-test.sh"
 # shellcheck source=lib-bearer-http.sh
 source "${IDENTYCLAW_ROOT}/scripts/lib-bearer-http.sh"
+# shellcheck source=lib-idcp.sh
+source "${IDENTYCLAW_ROOT}/scripts/lib-idcp.sh"

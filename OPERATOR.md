@@ -163,8 +163,10 @@ Run as your normal user (not `root`):
 ```bash
 cd ~/identyclaw-agents
 chmod +x identyclaw.sh
-./identyclaw.sh init          # creates ../openclaw-agents-app/ and env.local from env.example
+./identyclaw.sh init          # creates ../openclaw-agents-app/, env.local, Passport enroll per AGENT_IDS
 # Edit ../openclaw-agents-app/env.local — set AGENT_IDS, emails, ports; passwords optional
+# Resume a paused Passport mint: ./identyclaw.sh idcp-setup agent-a
+# Skip Passport during init: SKIP_IDCP_SETUP=1 ./identyclaw.sh init
 ./identyclaw.sh build-image
 ./identyclaw.sh start all     # starts every id in AGENT_IDS
 ./identyclaw.sh status
@@ -549,7 +551,7 @@ Each agent uses **three** published integrations (installed on `./identyclaw.sh 
 
 Bootstrap writes `workspace/IDENTYCLAW.md` with operator guidance. Passport credentials go in `secrets/near-credentials/*.json` per agent (synced to `IDENTYCLAW_*` env vars). The active signing account is recorded in `secrets/near-credentials/.active`.
 
-**Enrollment (Passport per agent):** follow [IdentyClaw Passport](./README.md#identyclaw-passport-discernible) — install this repo, create a NEAR implicit account, fund/swap NEAR via [HOT Wallet](https://hot-labs.org/wallet/) (or an exchange), mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then `near-activate` / restart and confirm with `identyclaw_get_my_identity`. For federated peers (e.g. [api.lastcradle.io](https://api.lastcradle.io)), see step 6 in that section — no vendor API keys. Official steps: [discernible.io Get Started](https://www.discernible.io/#get-started). Longer narrative: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Skip minting only when peers stay inside one closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0).
+**Enrollment (Passport per agent):** `./identyclaw.sh init` runs the IdentyClaw path automatically (same pattern as Hermes `setup` → `idcp-setup`): install host `idcp`, enroll a NEAR implicit account, pause for mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then `ensure_session` / `me`. Resume with `./identyclaw.sh idcp-setup <id>`. Skip during init with `SKIP_IDCP_SETUP=1`. Manual path: create a NEAR implicit account, fund/swap NEAR via [HOT Wallet](https://hot-labs.org/wallet/) (or an exchange), mint at [purchase.identyclaw.com](https://purchase.identyclaw.com), then `near-activate` / restart and confirm with `identyclaw_get_my_identity`. For federated peers (e.g. [api.lastcradle.io](https://api.lastcradle.io)), see step 6 in [IdentyClaw Passport](./README.md#identyclaw-passport-discernible) — no vendor API keys. Official steps: [discernible.io Get Started](https://www.discernible.io/#get-started). Longer narrative: [OpenClaw + Passport onboarding](https://dev.to/discernible-io/onboard-openclaw-agents-with-identyclaw-passport-a2a-webhooks-and-multi-tenant-collaboration-3i4k). Skip minting only when peers stay inside one closed trust boundary — see [Passport vs static secrets](https://dev.to/discernible-io/identyclaw-passport-vs-static-secrets-when-cryptographic-agent-identity-beats-api-keys-pm0).
 
 **NEAR wallet / Passport rotation:** after `build-image` (near-cli-rs) and bootstrap, agents get `workspace/scripts/idcp-wallet.sh`, `idcp-rotate-passport.sh`, and `idcp-activate-account.sh` plus the `idcp-wallet` skill. Rotate transfers the Passport on-chain and re-points `.active` / `.env` / plugin config; the agent then asks for `./identyclaw.sh restart <id>` (or operators run `./identyclaw.sh near-activate <id>`). Prefer new implicit accounts; do not reuse retired wallets.
 

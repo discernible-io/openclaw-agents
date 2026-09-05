@@ -92,11 +92,17 @@ Full operator reference: [`OPERATOR.md`](./OPERATOR.md).
 git clone https://github.com/discernible-io/openclaw-agents.git ~/identyclaw-agents
 cd ~/identyclaw-agents
 chmod +x identyclaw.sh
-./identyclaw.sh init          # creates ../openclaw-agents-app/ and env.local
+./identyclaw.sh init          # creates ../openclaw-agents-app/, env.local, then Passport enroll
 # Edit ../openclaw-agents-app/env.local — set AGENT_IDS (e.g. agent-a), emails, ports
 ./identyclaw.sh build-image
 ./identyclaw.sh start all
 ```
+
+`init` installs the host `idcp` helper, enrolls a NEAR implicit account per agent in
+`AGENT_IDS`, pauses for mint at [purchase.identyclaw.com](https://purchase.identyclaw.com),
+then activates the home session (`ensure_session` / `me`). Resume a paused mint with
+`./identyclaw.sh idcp-setup <id>` (or `idcp-setup all`). Skip Passport during init with
+`SKIP_IDCP_SETUP=1`.
 
 Runtime state lives in `../openclaw-agents-app/` (override with
 `IDENTYCLAW_APP_DIR`). LLM keys and Migadu passwords can wait until after
@@ -104,10 +110,18 @@ Passport enrollment if you only need identity/A2A smoke tests.
 
 ### 2. Create a NEAR implicit account
 
-Create credentials **before** purchasing a Passport. Keys stay on disk under
-the agent’s app state — **never paste private keys into chat**.
+`./identyclaw.sh init` (or `idcp-setup`) already creates credentials under the agent’s
+app state. Keys stay on disk — **never paste private keys into chat**.
 
-**Option A — inside the running agent** (near-cli-rs is in the image):
+If you skipped Passport during init, or need another account:
+
+**Option A — host idcp (same path as init):**
+
+```bash
+./identyclaw.sh idcp-setup agent-a
+```
+
+**Option B — inside the running agent** (near-cli-rs is in the image):
 
 ```bash
 podman exec -u node openclaw-agent-a \
@@ -115,7 +129,7 @@ podman exec -u node openclaw-agent-a \
 ./identyclaw.sh near-activate agent-a <implicit_account_id>
 ```
 
-**Option B — host [gennearaccount](https://github.com/discernible-io/gennearaccount):**
+**Option C — host [gennearaccount](https://github.com/discernible-io/gennearaccount):**
 
 ```bash
 mkdir -p ~/openclaw-agents-app/agents/agent-a/secrets/near-credentials
@@ -155,13 +169,18 @@ FAQ: [purchase.identyclaw.com/faq](https://purchase.identyclaw.com/faq).
 
 ### 5. Activate on OpenClaw (home session)
 
-This logs into **IdentyClaw home** (`https://api.identyclaw.com`) — identity,
-HOLA, discovery. It does **not** log you into other APIs.
+If you completed `./identyclaw.sh init` / `idcp-setup` through the mint pause, the
+home session is already active (`idcp ensure_session` + `me`). Otherwise:
 
 ```bash
-./identyclaw.sh near-activate agent-a <implicit_account_id>   # if not already active
+./identyclaw.sh idcp-setup agent-a                    # enroll → purchase → session
+# or, if credentials already exist:
+./identyclaw.sh near-activate agent-a <implicit_account_id>
 ./identyclaw.sh restart agent-a
 ```
+
+This logs into **IdentyClaw home** (`https://api.identyclaw.com`) — identity,
+HOLA, discovery. It does **not** log you into other APIs.
 
 Confirm Passport binding via Control UI / `./identyclaw.sh chat agent-a`, or the
 `identyclaw_get_my_identity` tool. The plugin signs the peer’s login challenge
@@ -310,7 +329,9 @@ exposing a Gateway remotely.
 
 | Command | Description |
 |---------|-------------|
-| `./identyclaw.sh init` | Create sibling app dir + `env.local` |
+| `./identyclaw.sh init` | Create sibling app dir + `env.local` + Passport enroll |
+| `./identyclaw.sh idcp-setup [id\|all]` | Passport only: enroll → purchase → session |
+| `./identyclaw.sh idcp <id> <cmd…>` | Low-level Passport ops (`enroll`, `ensure_session`, `me`, …) |
 | `./identyclaw.sh build-image` | Build `openclaw-agent:local` |
 | `./identyclaw.sh start all` | Start every agent in `AGENT_IDS` |
 | `./identyclaw.sh stop all` / `restart all` | Stop / restart |

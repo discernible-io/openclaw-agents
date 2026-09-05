@@ -6,7 +6,7 @@
 #
 # Commands:
 #   build-image          Pull base + build openclaw-agent:local
-#   init                 Create agent dirs + Migadu Himalaya config (AGENT_IDS or agents/agent-?)
+#   init                 Create agent dirs + Migadu config + IdentyClaw Passport enroll (AGENT_IDS)
 #   set-password <id|all>  Set Migadu mailbox password (agent-{a-z} or all AGENT_IDS)
 #   set-discord-token <id>  Store Discord bot token in secrets/ (survives rebuilds)
 #   set-telegram-token <id> Store Telegram bot token in secrets/ (survives rebuilds)
@@ -64,6 +64,9 @@
 #   sync-a2a-peers [id|all]  Backfill env.local from discovered peers (optional; URLs normally from API)
 #   discover-a2a-peers [id|all]  Proactively discover live peers via GET /api/agents and refresh outbound.agents
 #   near-activate <id> [account_id]  Set active NEAR creds (.active + .env + plugin) then restart
+#   idcp-setup [id|all]  IdentyClaw Passport: enroll → purchase guide → ensure_session → me
+#   idcp-install         Install host idcp helper deps (npm) into ./idcp
+#   idcp <id> <cmd…>     Passport ops (enroll, ensure_session, me, create_hola, …)
 #   pairing <id> list [channel]          List pending pairing requests (default: telegram)
 #   pairing <id> approve <channel> <code>  Approve a DM pairing code
 #   token <id>           Print gateway token for Control UI
@@ -79,7 +82,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/lib.sh"
 
 usage() {
-  sed -n '2,71p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,74p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -184,6 +187,31 @@ cmd_init() {
     init_agent_from_env "$id"
     [[ -z "$first_id" ]] && first_id="$id"
   done
+
+  # IdentyClaw Passport path (same pattern as hermes.sh setup → idcp-setup).
+  # Skip with SKIP_IDCP_SETUP=1 when you only want dirs/env.local.
+  if [[ "${SKIP_IDCP_SETUP:-0}" != "1" ]]; then
+    _idcp_install_core || {
+      echo "idcp install failed — fix npm/node, then: $0 idcp-setup ${first_id:-agent-a}" >&2
+      exit 1
+    }
+    _idcp_prepare_host_write "$(configured_agent_ids)"
+    local idcp_failed=()
+    for id in $(configured_agent_ids); do
+      if ! idcp_setup_one_agent "$id"; then
+        idcp_failed+=("$id")
+      fi
+    done
+    if [[ ${#idcp_failed[@]} -gt 0 ]]; then
+      echo ""
+      echo "Passport setup incomplete for: ${idcp_failed[*]}" >&2
+      echo "Resume after mint: $0 idcp-setup <id>" >&2
+    fi
+  else
+    echo ""
+    echo "(SKIP_IDCP_SETUP=1 — Passport enroll skipped; run: $0 idcp-setup ${first_id:-agent-a})"
+  fi
+
   echo ""
   echo "Next:"
   echo "  1. Edit $(identyclaw_env_file) if needed"
@@ -192,6 +220,66 @@ cmd_init() {
   echo "  4. $0 start all"
   echo "  5. $0 enable-boot       # once: survive logout + reboot (sudo for linger)"
   echo "  6. $0 onboard ${first_id:-agent-a}   # repeat for each id in AGENT_IDS"
+  echo "  # Resume paused Passport mint: $0 idcp-setup ${first_id:-agent-a}"
+}
+
+# Install → enroll → purchase guide → ensure_session → me (per agent).
+cmd_idcp_setup() {
+  local target="${1:-all}"
+  local id
+  require_rootless_user
+  require_podman
+  ensure_app_layout
+  load_env
+  _idcp_install_core || exit 1
+  case "$target" in
+    all)
+      local failed=()
+      _idcp_prepare_host_write "$(configured_agent_ids)"
+      for id in $(configured_agent_ids); do
+        idcp_setup_one_agent "$id" || failed+=("$id")
+      done
+      if [[ ${#failed[@]} -gt 0 ]]; then
+        echo "Passport setup incomplete for: ${failed[*]}" >&2
+        echo "Resume: $0 idcp-setup <id>" >&2
+        return 1
+      fi
+      ;;
+    agent-[a-z])
+      _idcp_prepare_host_write "$target"
+      idcp_setup_one_agent "$target" || return 1
+      ;;
+    *)
+      echo "Usage: $0 idcp-setup [agent-id|all]" >&2
+      exit 1
+      ;;
+  esac
+  echo ""
+  echo "Passport setup done. Start agents with: $0 start all"
+}
+
+cmd_idcp_install() {
+  require_rootless_user
+  load_env
+  _idcp_install_core || exit 1
+  echo "Next: $0 idcp-setup [agent-id|all]   # enroll → purchase → ensure_session"
+}
+
+cmd_idcp() {
+  local id="${1:?Usage: $0 idcp <agent-id> <enroll|ensure_session|me|…>}"
+  shift
+  require_rootless_user
+  require_podman
+  load_env
+  [[ -f "${IDENTYCLAW_ROOT}/idcp/node_modules/tweetnacl/package.json" ]] \
+    || _idcp_install_core || exit 1
+  # enroll / ensure_session write secrets — need host ownership.
+  case "${1:-}" in
+    enroll|ensure_session)
+      _idcp_prepare_host_write "$id"
+      ;;
+  esac
+  _idcp_host "$id" "$@"
 }
 
 cmd_set_password() {
@@ -1575,6 +1663,9 @@ main() {
   case "$cmd" in
     build-image) cmd_build_image "$@" ;;
     init) cmd_init "$@" ;;
+    idcp-setup) cmd_idcp_setup "$@" ;;
+    idcp-install) cmd_idcp_install "$@" ;;
+    idcp) cmd_idcp "$@" ;;
     set-password) cmd_set_password "$@" ;;
     set-discord-token) cmd_set_discord_token "$@" ;;
     set-telegram-token) cmd_set_telegram_token "$@" ;;
