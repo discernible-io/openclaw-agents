@@ -97,10 +97,12 @@ changed = False
 
 guilds = discord.setdefault("guilds", {})
 guild = guilds.setdefault(guild_id, {})
-if guild.get("requireMention") is not True:
+# Defaults only when unset — do not force-enable mention gating (breaks when Discord
+# mention metadata is missing under limited Message Content Intent).
+if "requireMention" not in guild:
     guild["requireMention"] = True
     changed = True
-if guild.get("ignoreOtherMentions") is not True:
+if "ignoreOtherMentions" not in guild:
     guild["ignoreOtherMentions"] = True
     changed = True
 users = guild.setdefault("users", [])
@@ -112,10 +114,10 @@ ch = channels.setdefault(channel_id, {})
 if ch.get("enabled") is not True:
     ch["enabled"] = True
     changed = True
-if ch.get("requireMention") is not True:
+if "requireMention" not in ch:
     ch["requireMention"] = True
     changed = True
-if ch.get("ignoreOtherMentions") is not True:
+if "ignoreOtherMentions" not in ch:
     ch["ignoreOtherMentions"] = True
     changed = True
 
