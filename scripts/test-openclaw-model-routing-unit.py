@@ -213,9 +213,12 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertNotIn("free", entries)
         self.assertTrue(entries["openrouter"]["enabled"])
         self.assertTrue(entries["google"]["enabled"])
-        zai = data["models"]["providers"]["z-ai"]
-        self.assertEqual(zai["baseUrl"], "https://openrouter.ai/api/v1")
-        self.assertEqual(zai["api"], "openai-completions")
+        self.assertNotIn("z-ai", data["models"]["providers"])
+        self.assertNotIn("free", data["models"]["providers"])
+        catalog_ids = [
+            row["id"] for row in data["models"]["providers"]["openrouter"]["models"]
+        ]
+        self.assertIn("z-ai/glm-5.2", catalog_ids)
         self.assertEqual(
             data["agents"]["defaults"]["model"]["primary"],
             "openrouter/z-ai/glm-5.2",

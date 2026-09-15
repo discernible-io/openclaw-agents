@@ -259,9 +259,11 @@ def apply_openclaw_model_routing(
             }
             catalog.append(entry)
             # Nested OpenRouter ids reparse to vendor providers (openai/… → openai).
-            # Alias those vendors onto OpenRouter so auth/baseUrl stay correct.
+            # Alias bundled native vendors onto OpenRouter so auth/baseUrl stay
+            # correct. Do not alias external ids (z-ai, free, stealth) — OpenClaw
+            # then demands @openclaw/zai-provider (etc.) and refuses ready.
             vendor = cid.split("/", 1)[0].strip().lower()
-            if vendor and vendor != "openrouter":
+            if vendor in NATIVE_VENDOR_PROVIDERS:
                 vendor_models.setdefault(vendor, []).append(dict(entry))
         openrouter["models"] = catalog
         plugins.setdefault("openrouter", {})["enabled"] = True
@@ -298,6 +300,20 @@ def apply_openclaw_model_routing(
                 continue
             if vendor in plugins and plugins[vendor].get("enabled") is False:
                 plugins[vendor]["enabled"] = True
+        # Remove leftover OpenRouter aliases for vendors not in this chain
+        # (z-ai/free/stealth/deepseek from prior primaries).
+        for pid in list(providers.keys()):
+            if pid == "openrouter" or pid in vendor_models:
+                continue
+            slot = providers.get(pid)
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("baseUrl") != "https://openrouter.ai/api/v1":
+                continue
+            del providers[pid]
+            entry = plugins.get(pid)
+            if isinstance(entry, dict) and set(entry.keys()) <= {"enabled"}:
+                del plugins[pid]
         # Remove ghost disable-only entries for vendors we never aliased this run
         # (avoids "plugin not found" warnings from earlier patches).
         for pid in (
@@ -313,6 +329,7 @@ def apply_openclaw_model_routing(
             "nvidia",
             "z-ai",
             "free",
+            "stealth",
         ):
             if pid in plugins and set(plugins[pid].keys()) <= {"enabled"}:
                 del plugins[pid]
