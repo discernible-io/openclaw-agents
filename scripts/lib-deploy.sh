@@ -682,6 +682,9 @@ recreate_pod_agent_container() {
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
   fi
+  if [[ "${IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR:-0}" == "1" ]]; then
+    tls_env+=(-e IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1)
+  fi
   agent_gateway_healthcheck_args "$gw_port"
 
   image="$(resolve_openclaw_run_image "$container")" || {
@@ -928,6 +931,9 @@ recreate_pod_agent_gateway() {
   pod_name="${POD_NAME:-identyclaw-agents-pod}"
   if a2a_tls_skip_verify_enabled; then
     tls_env=(-e NODE_TLS_REJECT_UNAUTHORIZED=0)
+  fi
+  if [[ "${IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR:-0}" == "1" ]]; then
+    tls_env+=(-e IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1)
   fi
   agent_gateway_healthcheck_args "$gw_port"
   prepare_agent_state_for_gateway_start "$id" pod
