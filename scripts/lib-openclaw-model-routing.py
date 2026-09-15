@@ -284,9 +284,18 @@ def apply_openclaw_model_routing(
             for row in rows:
                 by_id[str(row["id"])] = row
             alias["models"] = list(by_id.values())
-            plugins.setdefault(vendor, {})["enabled"] = True
-        # Drop leftover disable flags on vendors we now alias.
+            # Bundled native plugins (openai/google/…) can be enabled and pointed
+            # at OpenRouter. External ids such as z-ai/glm-5.2 or openrouter/free
+            # must not create plugins.entries — OpenClaw then demands
+            # @openclaw/zai-provider (etc.) and refuses ready.
+            if vendor in NATIVE_VENDOR_PROVIDERS:
+                plugins.setdefault(vendor, {})["enabled"] = True
+            elif vendor in plugins and set(plugins[vendor].keys()) <= {"enabled"}:
+                del plugins[vendor]
+        # Drop leftover disable flags on native vendors we now alias.
         for vendor in vendor_models:
+            if vendor not in NATIVE_VENDOR_PROVIDERS:
+                continue
             if vendor in plugins and plugins[vendor].get("enabled") is False:
                 plugins[vendor]["enabled"] = True
         # Remove ghost disable-only entries for vendors we never aliased this run
@@ -302,6 +311,8 @@ def apply_openclaw_model_routing(
             "together",
             "huggingface",
             "nvidia",
+            "z-ai",
+            "free",
         ):
             if pid in plugins and set(plugins[pid].keys()) <= {"enabled"}:
                 del plugins[pid]

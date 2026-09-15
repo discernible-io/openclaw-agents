@@ -37,7 +37,12 @@ _agent_openclaw_model_routing_patch() {
     return 0
   fi
   if agent_config_use_container "$config_dir" "$container"; then
-    # Prefer image-baked scripts (Containerfile.agent → /opt/identyclaw/).
+    # Overlay checkout scripts onto the image path so GLM/z-ai (and similar)
+    # routing fixes apply without an image rebuild. Fall back to /tmp.
+    if podman exec "$container" test -d /opt/identyclaw 2>/dev/null; then
+      podman cp "$lib_py" "${container}:/opt/identyclaw/lib-openclaw-model-routing.py" >/dev/null || true
+      podman cp "$patch_py" "${container}:/opt/identyclaw/patch-openclaw-model-routing.py" >/dev/null || true
+    fi
     if podman exec "$container" test -f /opt/identyclaw/patch-openclaw-model-routing.py 2>/dev/null; then
       out="$(podman exec "$container" python3 /opt/identyclaw/patch-openclaw-model-routing.py \
         /home/node/.openclaw/openclaw.json \

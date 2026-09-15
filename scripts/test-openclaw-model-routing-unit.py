@@ -191,6 +191,36 @@ class ModelRoutingTests(unittest.TestCase):
                 rows["agent:main:cron:keep"]["model"], "anthropic/claude-sonnet-5"
             )
 
+    def test_glm52_does_not_enable_missing_zai_plugin(self):
+        data = {
+            "plugins": {
+                "entries": {
+                    "openrouter": {"enabled": True},
+                    "free": {"enabled": True},
+                    "z-ai": {"enabled": True},
+                }
+            },
+            "models": {"providers": {}},
+        }
+        LIB.apply_openclaw_model_routing(
+            data,
+            primary="openrouter/z-ai/glm-5.2",
+            fallback_1="openrouter/google/gemini-2.5-flash",
+            fallback_2="openrouter/qwen/qwen3-coder",
+        )
+        entries = data["plugins"]["entries"]
+        self.assertNotIn("z-ai", entries)
+        self.assertNotIn("free", entries)
+        self.assertTrue(entries["openrouter"]["enabled"])
+        self.assertTrue(entries["google"]["enabled"])
+        zai = data["models"]["providers"]["z-ai"]
+        self.assertEqual(zai["baseUrl"], "https://openrouter.ai/api/v1")
+        self.assertEqual(zai["api"], "openai-completions")
+        self.assertEqual(
+            data["agents"]["defaults"]["model"]["primary"],
+            "openrouter/z-ai/glm-5.2",
+        )
+
     def test_read_chain_from_existing_config(self):
         data = {
             "agents": {
