@@ -346,6 +346,17 @@ runCase("container-entrypoint re-applies OpenRouter cache config after model rou
   assert.equal(image.includes("/opt/identyclaw/patch-openclaw-cache-config.mjs"), true);
 });
 
+runCase("prune_stale_slc_agent_crons removes disabled slc-tick jobs and leftover sessions", () => {
+  const src = readFileSync(join(repoRoot, "scripts/lib-workspace.sh"), "utf8");
+  const start = src.indexOf("prune_stale_slc_agent_crons()");
+  const end = src.indexOf("_scrub_agent_env_discernible_slc()");
+  assert.ok(start >= 0 && end > start, "prune_stale_slc_agent_crons body not found");
+  const body = src.slice(start, end);
+  assert.equal(body.includes("cron list --all --json"), true);
+  assert.equal(body.includes("sessions delete"), true);
+  assert.equal(body.includes("(?:^|[\\s_\\-])slc"), true);
+});
+
 runCase("container-entrypoint runs session-canonical doctor before the gateway starts", () => {
   const src = readFileSync(join(repoRoot, "scripts/container-entrypoint.sh"), "utf8");
   const image = readFileSync(join(repoRoot, "Containerfile.agent"), "utf8");

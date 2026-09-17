@@ -2062,13 +2062,47 @@ _write_slc_workspace_docs_in_container() {
   _purge_stale_slc_local_docs_in_container "$1"
 }
 
-# Drop agent-created SLC isolated crons. Keeps heartbeat:main / memory-core / non-SLC jobs.
+# Drop agent-created SLC isolated crons (including disabled jobs). OpenClaw's
+# default `cron list` hides disabled rows, so leftover slc-tick jobs survive
+# with SESSION_CANONICAL_KEY_MIGRATION_REQUIRED on their :run: session aliases.
+# Keeps heartbeat:main / memory-core / non-SLC jobs.
 prune_stale_slc_agent_crons() {
   local id="$1"
-  local container
+  local container job_id skey
   container="$(agent_container "$id")"
   podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container" || return 0
-  podman exec "$container" node dist/index.js cron list --json 2>/dev/null | python3 -c '
+  while read -r job_id; do
+    [[ -n "$job_id" ]] || continue
+    echo "==> ${id}: removing overlapping SLC cron ${job_id}"
+    podman exec "$container" node dist/index.js cron rm "$job_id" --json >/dev/null 2>&1 || true
+    while read -r skey; do
+      [[ -n "$skey" ]] || continue
+      echo "==> ${id}: removing leftover SLC session ${skey}"
+      podman exec "$container" node dist/index.js sessions delete "$skey" --yes --json >/dev/null 2>&1 || true
+    done < <(
+      podman exec "$container" node dist/index.js sessions --json 2>/dev/null | python3 -c '
+import json, re, sys
+job_id = sys.argv[1]
+raw = sys.stdin.read()
+m = re.search(r"\{[\s\S]*\}\s*$", raw) or re.search(r"\[[\s\S]*\]\s*$", raw)
+if not m:
+    raise SystemExit(0)
+data = json.loads(m.group(0))
+sessions = data if isinstance(data, list) else (
+    data.get("sessions") or data.get("items") or []
+)
+prefix = "agent:main:cron:" + job_id
+for s in sessions:
+    if isinstance(s, dict):
+        key = s.get("key") or s.get("sessionKey") or ""
+    else:
+        key = str(s)
+    if key == prefix or key.startswith(prefix + ":"):
+        print(key)
+' "$job_id" 2>/dev/null
+    )
+  done < <(
+    podman exec "$container" node dist/index.js cron list --all --json 2>/dev/null | python3 -c '
 import json, re, sys
 raw = sys.stdin.read()
 m = re.search(r"\{[\s\S]*\}\s*$", raw) or re.search(r"\[[\s\S]*\]\s*$", raw)
@@ -2091,19 +2125,17 @@ keep = re.compile(r"^(?:heartbeat(?:-main|:main)?|memory-core)", re.I)
 for j in jobs:
     jid = j.get("id") or j.get("jobId") or ""
     name = str(j.get("name") or "")
-    decl = str(j.get("declaration") or "")
+    display = str(j.get("displayName") or "")
+    decl = str(j.get("declaration") or j.get("declarationKey") or "")
     if not jid:
         continue
-    if keep.search(name) or keep.search(decl):
+    if keep.search(name) or keep.search(display) or keep.search(decl):
         continue
-    blob = f"{name} {decl}"
+    blob = f"{name} {display} {decl}"
     if pat.search(blob):
         print(jid)
-' 2>/dev/null | while read -r job_id; do
-    [[ -n "$job_id" ]] || continue
-    echo "==> ${id}: removing overlapping SLC cron ${job_id}"
-    podman exec "$container" node dist/index.js cron rm "$job_id" --json >/dev/null 2>&1 || true
-  done
+' 2>/dev/null
+  )
 }
 
 # Scrub retired discernible SLC hosts from agent .env (IDENTYCLAW_API_ENDPOINTS).
