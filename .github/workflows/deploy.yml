@@ -67,9 +67,9 @@ jobs:
           file: ./Containerfile.agent
           push: true
           build-args: |
-            OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.9.1-slim
-            OPENCLAW_GATEWAY_VERSION=2026.9.1
-            OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.9.1
+            OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.9.5-slim
+            OPENCLAW_GATEWAY_VERSION=2026.9.5
+            OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.9.5
             HIMALAYA_VERSION=v1.2.0
             HIMALAYA_ARCH=x86_64-linux
             NEAR_CLI_RS_VERSION=v0.29.0
