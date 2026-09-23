@@ -4,7 +4,8 @@ FROM docker.io/nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6
 ARG NODE_ENV=main
 ARG INGRESS_PORT=8443
 
-RUN apk add --no-cache openssl \
+RUN apk update && apk upgrade --no-cache \
+ && apk add --no-cache openssl 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0' \
  && rm /etc/nginx/conf.d/default.conf \
  && mkdir -p /app/certs /etc/nginx/inc
 
