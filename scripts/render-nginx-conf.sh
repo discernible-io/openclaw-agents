@@ -83,7 +83,7 @@ UPSTREAM
     [[ -n "$ingress_port" ]] || ingress_port="$tier_port"
     upstream_name="openclaw_${id//-/_}"
     cat <<SERVER
-    # ${id} — A2A + webhooks @ ${host}:${ingress_port}
+    # ${id} — A2A + webhooks + Telegram @ ${host}:${ingress_port}
     # Telegram /telegram-webhook uses the Gateway port (legacyWebhook: false).
     server {
         listen ${ingress_port} ssl;

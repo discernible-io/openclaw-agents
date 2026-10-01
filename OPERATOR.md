@@ -584,9 +584,9 @@ IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1   # dynamic outbound + inbound JWT learn
 Pin and install plugins (defaults in `env.example`):
 
 ```bash
-IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.14
-IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.9.2
-IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.12
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.15
+IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.9.4
+IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.14
 ```
 
 Each agent's own public base can come from Passport `metadata.webhook_url` when `IDENTYCLAW_RODIT_SELF_CONFIGURE=1` (default).
@@ -736,7 +736,7 @@ Rotating one credential does not automatically revoke the others. See trust-boun
 | **X / Twitter** | `set-twitter` or `set-twitter-cookies` | bird-twitter skill (session cookies, not paid API) |
 | **Instagram** | `./identyclaw.sh set-instagram agent-a` | Browser-based; reCAPTCHA may require manual login |
 
-Create a Telegram bot with [@BotFather](https://t.me/BotFather), then `set-telegram-token` and `restart`. In pod mode nginx proxies `/telegram-webhook` to a **per-agent webhook listener** (gateway port + 2), not the Control UI port.
+Create a Telegram bot with [@BotFather](https://t.me/BotFather), then `set-telegram-token` and `restart`. In pod mode nginx proxies `/telegram-webhook` to the **gateway HTTP port** (Gateway-owned webhook; `legacyWebhook: false`).
 
 ### Calendar and reminders
 

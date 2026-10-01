@@ -162,7 +162,7 @@ runCase("ensure_telegram_ready disables channel when token is missing", () => {
   }
 });
 
-runCase("ensure_telegram_webhook sets unique listener in pod mode", () => {
+runCase("ensure_telegram_webhook sets Gateway-owned webhook in pod mode", () => {
   const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
   const dir = join(app, "agents", "agent-a");
   try {
@@ -187,8 +187,9 @@ runCase("ensure_telegram_webhook sets unique listener in pod mode", () => {
       "https://agent-a.identyclaw.com:8443/telegram-webhook",
     );
     assert.equal(cfg.channels.telegram.webhookPath, "/telegram-webhook");
-    assert.equal(cfg.channels.telegram.webhookHost, "127.0.0.1");
-    assert.equal(cfg.channels.telegram.webhookPort, 18791);
+    assert.equal(cfg.channels.telegram.legacyWebhook, false);
+    assert.equal(cfg.channels.telegram.webhookHost, undefined);
+    assert.equal(cfg.channels.telegram.webhookPort, undefined);
     assert.equal(typeof cfg.channels.telegram.webhookSecret, "string");
     assert.ok(cfg.channels.telegram.webhookSecret.length >= 16);
   } finally {
@@ -208,6 +209,7 @@ runCase("ensure_telegram_webhook uses long polling in standalone", () => {
     const cfg = JSON.parse(readFileSync(join(dir, "openclaw.json"), "utf8"));
     assert.equal(cfg.channels.telegram.webhookUrl, undefined);
     assert.equal(cfg.channels.telegram.webhookPort, undefined);
+    assert.equal(cfg.channels.telegram.legacyWebhook, undefined);
   } finally {
     rmSync(app, { recursive: true, force: true });
   }
@@ -271,7 +273,7 @@ runCase("write_calendar_tooling installs skill, helper, and CALENDAR.md", () => 
   }
 });
 
-runCase("rendered nginx proxies Telegram to the per-agent webhook listener", () => {
+runCase("rendered nginx proxies Telegram to the gateway upstream", () => {
   const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
   try {
     writeFileSync(
@@ -290,11 +292,10 @@ runCase("rendered nginx proxies Telegram to the per-agent webhook listener", () 
       REPO_ROOT: repoRoot,
     });
     const conf = readFileSync(join(app, "nginx", "nginx.conf"), "utf8");
-    assert.equal(conf.includes("upstream openclaw_agent_l_telegram"), true);
-    assert.equal(conf.includes("127.0.0.1:18813"), true);
-    assert.equal(conf.includes("proxy_pass http://openclaw_agent_l_telegram;"), true);
+    assert.equal(conf.includes("upstream openclaw_agent_l_telegram"), false);
+    assert.equal(conf.includes("127.0.0.1:18813"), false);
     const telegramBlock = conf.split("location = /telegram-webhook")[1]?.split("location ")[0] || "";
-    assert.equal(telegramBlock.includes("proxy_pass http://openclaw_agent_l;"), false);
+    assert.equal(telegramBlock.includes("proxy_pass http://openclaw_agent_l;"), true);
   } finally {
     rmSync(app, { recursive: true, force: true });
   }
