@@ -208,6 +208,25 @@ runCase("recreate_pod_agent_container runs doctor --fix and health-on-failure", 
   assert.equal(src.includes("doctor --fix --yes --non-interactive"), true);
 });
 
+runCase("openclaw_agent_exec skips session-canonical doctor on ephemeral CLI runs", () => {
+  const src = readFileSync(join(repoRoot, "scripts/lib-deploy.sh"), "utf8");
+  const start = src.indexOf("openclaw_agent_exec()");
+  const end = src.indexOf("prepare_pod_nginx_host_files()");
+  assert.ok(start >= 0 && end > start, "openclaw_agent_exec body not found");
+  const body = src.slice(start, end);
+  assert.equal(body.includes("IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1"), true);
+  assert.ok(
+    body.includes("upgrade-plugins") || body.includes("Ephemeral CLI"),
+    "comment should explain why CLI one-shots skip doctor",
+  );
+  // Live gateway exec path must not force-skip (gateway already running; no entrypoint).
+  assert.equal(body.includes("podman exec"), true);
+  assert.ok(
+    body.indexOf("podman exec") < body.indexOf("IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1"),
+    "skip env applies only to ephemeral podman run, after the live-container exec branch",
+  );
+});
+
 runCase("running check rejects ghost containers", () => {
   const src = readFileSync(join(repoRoot, "scripts/lib.sh"), "utf8");
   assert.equal(src.includes("_agent_container_name_ghost()"), true);

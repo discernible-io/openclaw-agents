@@ -116,9 +116,23 @@ fi
 
 # Non-canonical session keys fail closed (SessionCanonicalKeyMigrationRequiredError)
 # and freeze Telegram/Discord until `openclaw doctor --fix`. Bind-mounted state
-# survives image rebuild — re-run on every start while the gateway is down.
-# Skip with IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1.
-if [ -x /opt/identyclaw/repair-openclaw-session-canonical.sh ]; then
+# survives image rebuild — re-run before gateway start while the gateway is down.
+# Skip with IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1, or automatically when argv
+# is not a gateway launch (ephemeral `plugins install` / CLI one-shots).
+_run_session_canonical_doctor=1
+if [ "${IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR:-0}" = "1" ]; then
+  _run_session_canonical_doctor=0
+else
+  case " $* " in
+    *" gateway "*) ;;
+    *)
+      _run_session_canonical_doctor=0
+      echo "[identyclaw] session-canonical doctor skipped (non-gateway command)" >&2
+      ;;
+  esac
+fi
+if [ "$_run_session_canonical_doctor" = "1" ] \
+  && [ -x /opt/identyclaw/repair-openclaw-session-canonical.sh ]; then
   /opt/identyclaw/repair-openclaw-session-canonical.sh /home/node/.openclaw || true
   # Doctor may rewrite openclaw.json (catalog contextWindow, stale plugins).
   # Re-apply host-independent routing/cache patches so rebuilds stay consistent.

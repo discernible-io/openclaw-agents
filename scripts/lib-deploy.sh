@@ -998,9 +998,14 @@ openclaw_agent_exec() {
     return 1
   fi
 
+  # Ephemeral CLI one-shots (plugins install, skills, registry refresh, …) must not
+  # pay full `openclaw doctor --fix` via the image entrypoint — that repair belongs
+  # on gateway start (ensure_openclaw_doctor_fix / entrypoint when argv is gateway).
+  # Without this, upgrade-plugins runs doctor once per plugin per agent.
   podman run --rm --userns=keep-id \
     -e HOME=/home/node \
     -e OPENCLAW_STATE_DIR=/home/node/.openclaw \
+    -e IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR=1 \
     -v "${config_dir}:/home/node/.openclaw:rw${z}" \
     "$image" \
     node /app/openclaw.mjs "$@"

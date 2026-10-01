@@ -382,6 +382,18 @@ runCase("container-entrypoint runs session-canonical doctor before the gateway s
   assert.equal(image.includes("/opt/identyclaw/repair-openclaw-session-canonical.sh"), true);
 });
 
+runCase("container-entrypoint skips session-canonical doctor for non-gateway CLI one-shots", () => {
+  const src = readFileSync(join(repoRoot, "scripts/container-entrypoint.sh"), "utf8");
+  assert.equal(src.includes('*" gateway "*'), true);
+  assert.equal(src.includes("non-gateway command"), true);
+  assert.equal(src.includes("IDENTYCLAW_SKIP_SESSION_CANONICAL_DOCTOR"), true);
+  assert.ok(
+    src.indexOf("_run_session_canonical_doctor") <
+      src.indexOf("repair-openclaw-session-canonical.sh"),
+    "gateway/CLI gate must wrap session-canonical doctor",
+  );
+});
+
 runCase("ensure_exec_allowlist retires leftover JSON inside the container even when the host cannot see it", () => {
   const src = readFileSync(join(repoRoot, "scripts/lib-agent-config.sh"), "utf8");
   const start = src.indexOf("ensure_exec_allowlist_harmless_bins()");
