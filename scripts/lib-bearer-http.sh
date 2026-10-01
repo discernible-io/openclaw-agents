@@ -2,9 +2,9 @@
 # Fleet install + config for @identyclaw/openclaw-identyclaw-httpbearer-plugin
 # (guest bearer storage + http_request).
 #
-# Default source until ClawHub publish:
-#   git:github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin
-# Then switch BEARER_HTTP_CLAWHUB_PLUGIN to clawhub:@identyclaw/...@x.y.z
+# Default source (ClawHub publish):
+#   clawhub:@identyclaw/openclaw-identyclaw-httpbearer-plugin@0.1.1
+# Dev fallback: git:github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin
 # Raw https://…git specs are normalized to git: (OpenClaw rejects bare URLs).
 
 bearer_http_plugin_id() {
@@ -12,8 +12,8 @@ bearer_http_plugin_id() {
 }
 
 bearer_http_default_git_url() {
-  # OpenClaw rejects raw https:// plugin specs ("URLs are not allowed").
-  echo "git:github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin"
+  # ClawHub fleet pin; git: remains available as an explicit override.
+  echo "clawhub:@identyclaw/openclaw-identyclaw-httpbearer-plugin@0.1.1"
 }
 
 # Normalize https://github.com/owner/repo(.git) → git:github.com/owner/repo
@@ -35,7 +35,7 @@ bearer_http_normalize_spec() {
 # Resolution order:
 #   1. BEARER_HTTP_PLUGIN_PATH (local checkout)
 #   2. BEARER_HTTP_CLAWHUB_PLUGIN (clawhub: / git: / https://…git)
-#   3. GitHub default (until ClawHub is the fleet pin)
+#   3. ClawHub default (see bearer_http_default_git_url)
 bearer_http_plugin_spec() {
   load_env
   if [[ -n "${BEARER_HTTP_PLUGIN_PATH:-}" ]]; then

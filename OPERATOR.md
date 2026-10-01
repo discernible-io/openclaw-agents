@@ -39,7 +39,7 @@ This repository is an **operations toolkit** for running OpenClaw agents with a 
 | **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.9.7-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, federated API sessions, generic `identyclaw_request` |
-| **A2A** | **identyclaw-a2a** @0.4.15 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
+| **A2A** | **identyclaw-a2a** @0.4.16 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
 | **Webhooks** | **identyclaw-webhooks** @0.1.14 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); optional `GET /api/agents` seeding (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` or `./identyclaw.sh discover-a2a-peers`) |
 | **Channels** | Discord (`@openclaw/discord`, bundled); Telegram (OpenClaw core channel). Tokens via `set-discord-token` / `set-telegram-token`. Optional Instagram, X/Twitter (bird-twitter) via ClawHub |
@@ -214,7 +214,7 @@ See [Accessing agents (CLI and browser)](#accessing-agents-cli-and-browser) for 
 
 ## Upgrading to OpenClaw 2026.9.7
 
-This template pins `ghcr.io/openclaw/openclaw:2026.9.7-slim` and IdentyClaw ClawHub pins in `env.local` (`identyclaw-tools` @1.9.2, `a2a` @0.4.14, `webhooks` @0.1.12). Init/setup/enrollment, Telegram, and Himalaya/email wiring are unchanged. Stay on the **2026.9.x** calendar line (do not switch to `2026.7.x` / `2026.8.x` extended-stable). Prefer **2026.9.7** over **2026.9.6** when coming from **2026.9.5** (upstream fixed 9.5→9.6 update/rollback regressions in 9.7).
+This template pins `ghcr.io/openclaw/openclaw:2026.9.7-slim` and IdentyClaw ClawHub pins in `env.local` (`identyclaw-tools` @1.9.4, `a2a` @0.4.16, `webhooks` @0.1.14, `bearer-http` @0.1.1). Init/setup/enrollment, Telegram, and Himalaya/email wiring are unchanged. Stay on the **2026.9.x** calendar line (do not switch to `2026.7.x` / `2026.8.x` extended-stable). Prefer **2026.9.7** over **2026.9.6** when coming from **2026.9.5** (upstream fixed 9.5→9.6 update/rollback regressions in 9.7).
 
 **Before upgrading existing agents**, back up each agent’s SQLite state (OpenClaw migrates schema on first start; 2026.9.6+ may require agent schema **23** / shared-state **18** — older builds refuse converted stores):
 
@@ -584,16 +584,17 @@ IDENTYCLAW_A2A_DYNAMIC_PEERS_FROM_JWT=1   # dynamic outbound + inbound JWT learn
 Pin and install plugins (defaults in `env.example`):
 
 ```bash
-IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.15
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.16
 IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.9.4
 IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.14
+BEARER_HTTP_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-httpbearer-plugin@0.1.1
 ```
 
 Each agent's own public base can come from Passport `metadata.webhook_url` when `IDENTYCLAW_RODIT_SELF_CONFIGURE=1` (default).
 
 ```bash
 # After near-credentials + A2A_PEER_AGENTS token_ids + dynamic flag:
-./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.15+ (config API migration + agent-card / task history)
+./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.16+ (config API migration + agent-card / task history)
 ./identyclaw.sh restart all
 ./identyclaw.sh test-a2a              # resolves peer URL via API; token_id from A2A_PEER_AGENTS
 ./identyclaw.sh test                  # full suite (see ../docs/docs/test-constitution.md)

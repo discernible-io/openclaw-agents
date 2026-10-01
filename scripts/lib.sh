@@ -194,10 +194,10 @@ load_env() {
   # Dev/self-signed peer TLS: rodit-auth-be uses Node fetch (not undici tlsSkipVerify alone).
   # Set A2A_TLS_SKIP_VERIFY=0 on main tier with CA-signed peer ingress.
   A2A_TLS_SKIP_VERIFY="${A2A_TLS_SKIP_VERIFY:-1}"
-IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.15}"
+IDENTYCLAW_CLAWHUB_A2A_PLUGIN="${IDENTYCLAW_CLAWHUB_A2A_PLUGIN:-clawhub:@identyclaw/openclaw-a2a-plugin@0.4.16}"
   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN="${IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.14}"
-  # Guest bearer HTTP — GitHub until ClawHub publish; no Passport required.
-  BEARER_HTTP_CLAWHUB_PLUGIN="${BEARER_HTTP_CLAWHUB_PLUGIN:-git:github.com/discernible-io/openclaw-identyclaw-httpbearer-plugin}"
+  # Guest bearer HTTP — ClawHub publish; no Passport required.
+  BEARER_HTTP_CLAWHUB_PLUGIN="${BEARER_HTTP_CLAWHUB_PLUGIN:-clawhub:@identyclaw/openclaw-identyclaw-httpbearer-plugin@0.1.1}"
   BEARER_HTTP_ALLOWED_HOSTNAMES="${BEARER_HTTP_ALLOWED_HOSTNAMES:-api.lastcradle.io}"
   IDENTYCLAW_NETWORK="${IDENTYCLAW_NETWORK:-identyclaw-net}"
   IDENTYCLAW_API_BASE_URL="${IDENTYCLAW_API_BASE_URL:-}"
