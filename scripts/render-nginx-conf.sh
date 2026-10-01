@@ -66,16 +66,10 @@ HEADER
       continue
     }
     gw_port="$(agent_internal_gateway_port "$id")"
-    tg_port="$(agent_telegram_webhook_port "$id")"
     upstream_name="openclaw_${id//-/_}"
-    telegram_upstream="${upstream_name}_telegram"
     cat <<UPSTREAM
     upstream ${upstream_name} {
         server 127.0.0.1:${gw_port};
-    }
-
-    upstream ${telegram_upstream} {
-        server 127.0.0.1:${tg_port};
     }
 
 UPSTREAM
@@ -88,9 +82,8 @@ UPSTREAM
     ingress_port="$(agent_ingress_port "$id")"
     [[ -n "$ingress_port" ]] || ingress_port="$tier_port"
     upstream_name="openclaw_${id//-/_}"
-    telegram_upstream="${upstream_name}_telegram"
     cat <<SERVER
-    # ${id} — A2A + webhooks @ ${host}:${ingress_port}
+    # ${id} — A2A + webhooks + Telegram @ ${host}:${ingress_port}
     server {
         listen ${ingress_port} ssl;
         http2 on;
@@ -136,7 +129,7 @@ UPSTREAM
             limit_req zone=openclaw_ingress burst=240 nodelay;
             limit_req zone=openclaw_public burst=120 nodelay;
             include /etc/nginx/inc/openclaw-proxy.inc;
-            proxy_pass http://${telegram_upstream};
+            proxy_pass http://${upstream_name};
         }
 
         location ^~ /api/ {

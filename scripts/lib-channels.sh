@@ -1145,14 +1145,15 @@ PY
 }
 
 
-# Pod mode: advertise HTTPS /telegram-webhook and bind a unique local listener.
+# Pod mode: advertise HTTPS /telegram-webhook on the Gateway HTTP port
+# (legacyWebhook: false — no separate 8787 / gateway+2 listener).
 # Standalone: long-poll (no public Telegram-compatible port).
 
 ensure_telegram_webhook() {
   local id="$1"
   local config_dir="$2"
   local container="${3:-}"
-  local token="" webhook_url="" webhook_port="" secret
+  local token="" webhook_url="" secret
   [[ -n "$container" ]] || container="$(agent_container "$id")"
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
   if [[ -r "$config_dir/secrets/TELEGRAM_BOT_TOKEN" ]]; then
@@ -1166,16 +1167,15 @@ ensure_telegram_webhook() {
     local base
     base="$(agent_ingress_base_url "$id")"
     [[ -n "$base" ]] && webhook_url="${base%/}/telegram-webhook"
-    webhook_port="$(agent_telegram_webhook_port "$id")"
   fi
   secret="$(ensure_telegram_webhook_secret "$config_dir" "$container")" || return 1
   _agent_openclaw_json_python "$config_dir" "$container" \
-    "${IDENTYCLAW_DEPLOY_MODE:-standalone}" "$webhook_url" "$webhook_port" "$secret" <<'PY'
+    "${IDENTYCLAW_DEPLOY_MODE:-standalone}" "$webhook_url" "$secret" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-mode, webhook_url, webhook_port, secret = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+mode, webhook_url, secret = sys.argv[2], sys.argv[3], sys.argv[4]
 data = json.loads(path.read_text(encoding="utf-8"))
 tg = data.setdefault("channels", {}).setdefault("telegram", {})
 changed = False
@@ -1196,10 +1196,19 @@ if mode == "pod" and webhook_url.startswith("http"):
     set_key("webhookUrl", webhook_url)
     set_key("webhookSecret", secret)
     set_key("webhookPath", "/telegram-webhook")
-    set_key("webhookHost", "127.0.0.1")
-    set_key("webhookPort", int(webhook_port))
+    set_key("legacyWebhook", False)
+    # Doctor may have migrated old binds into legacyWebhook; drop top-level hosts.
+    for key in ("webhookHost", "webhookPort"):
+        del_key(key)
 else:
-    for key in ("webhookUrl", "webhookSecret", "webhookPath", "webhookHost", "webhookPort"):
+    for key in (
+        "webhookUrl",
+        "webhookSecret",
+        "webhookPath",
+        "webhookHost",
+        "webhookPort",
+        "legacyWebhook",
+    ):
         del_key(key)
 
 if changed:
