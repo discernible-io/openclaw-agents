@@ -66,11 +66,11 @@ ensure_discord_plugin_compat_and_restart() {
   ensure_discord_plugin_compat "$id" || restart_agent_gateway_if_running "$id"
 }
 
-# Telegram webhook listener is a separate OpenClaw bind (default 8787). In a pod all
-# agents share the network namespace, so each agent uses gateway-port + 2.
+# Historical helper: OpenClaw 2026.9.6+ serves Telegram on the Gateway port.
+# Kept for any external callers; prefer agent_internal_gateway_port.
 agent_telegram_webhook_port() {
   local id="$1"
-  echo $(( $(agent_internal_gateway_port "$id") + 2 ))
+  agent_internal_gateway_port "$id"
 }
 
 # Pod agents chown state to the container uid; token may live in openclaw.json or .env.

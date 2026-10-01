@@ -36,7 +36,7 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 | Area | What this repo provides |
 | --- | --- |
 | **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (main / development tiers) |
-| **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.9.5-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
+| **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.9.7-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, federated API sessions, generic `identyclaw_request` |
 | **A2A** | **identyclaw-a2a** @0.4.14 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
@@ -198,30 +198,30 @@ When Migadu passwords are ready, configure **each agent in `AGENT_IDS`**:
 # repeat set-password / set-api-key / onboard for each agent in AGENT_IDS
 ```
 
-**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.9.5**, and bundled plugins (Discord) are in the image:
+**Recommended before first onboard:** rebuild the image once so `/openclaw.mjs`, OpenClaw **2026.9.7**, and bundled plugins (Discord) are in the image:
 
 ```bash
 ./identyclaw.sh build-image
 ./identyclaw.sh restart all
 ```
 
-The local image pins `ghcr.io/openclaw/openclaw:2026.9.5-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.9.5` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
+The local image pins `ghcr.io/openclaw/openclaw:2026.9.7-slim` (see `env.example`) and pre-installs `@openclaw/discord@2026.9.7` at build time. On each container start, the entrypoint copies that plugin tree into the agent’s mounted `~/.openclaw/npm` if Discord is not already present — agents do not need to run `openclaw plugins install` or `npm i -g openclaw` at runtime.
 
 - **Pod mode** (per agent): `https://<AGENT_*_PUBLIC_HOST>:<ingress-port>/` — token: `./identyclaw.sh token <agent-id>`
 - **Standalone dev** (default ports from `env.local`): agent-a → `http://127.0.0.1:18789/`, agent-c → `http://127.0.0.1:18793/`, agent-e → `http://127.0.0.1:18797/`
 
 See [Accessing agents (CLI and browser)](#accessing-agents-cli-and-browser) for terminal chat and remote laptop access.
 
-## Upgrading to OpenClaw 2026.9.5
+## Upgrading to OpenClaw 2026.9.7
 
-This template pins `ghcr.io/openclaw/openclaw:2026.9.5-slim` and IdentyClaw ClawHub pins in `env.local` (`identyclaw-tools` @1.9.2, `a2a` @0.4.14, `webhooks` @0.1.12). Init/setup/enrollment, Telegram, and Himalaya/email wiring are unchanged. Stay on the **2026.9.x** calendar line (do not switch to `2026.7.x` extended-stable).
+This template pins `ghcr.io/openclaw/openclaw:2026.9.7-slim` and IdentyClaw ClawHub pins in `env.local` (`identyclaw-tools` @1.9.2, `a2a` @0.4.14, `webhooks` @0.1.12). Init/setup/enrollment, Telegram, and Himalaya/email wiring are unchanged. Stay on the **2026.9.x** calendar line (do not switch to `2026.7.x` / `2026.8.x` extended-stable). Prefer **2026.9.7** over **2026.9.6** when coming from **2026.9.5** (upstream fixed 9.5→9.6 update/rollback regressions in 9.7).
 
-**Before upgrading existing agents**, back up each agent’s SQLite state (OpenClaw migrates schema on first start; 2026.9.5 may require schema 21):
+**Before upgrading existing agents**, back up each agent’s SQLite state (OpenClaw migrates schema on first start; 2026.9.6+ may require agent schema **23** / shared-state **18** — older builds refuse converted stores):
 
 ```bash
 for id in agent-a agent-c agent-e; do
   cp ~/openclaw-agents-app/agents/$id/state/openclaw.sqlite \
-     ~/openclaw-agents-app/agents/$id/state/openclaw.sqlite.pre-2026.9.5.bak
+     ~/openclaw-agents-app/agents/$id/state/openclaw.sqlite.pre-2026.9.7.bak
 done
 ```
 
@@ -231,9 +231,9 @@ done
 cd ~/identyclaw-agents
 git pull   # picks up template pin + bootstrap migrations
 # Edit ~/openclaw-agents-app/env.local:
-#   OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.9.5-slim
-#   OPENCLAW_GATEWAY_VERSION=2026.9.5
-#   OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.9.5
+#   OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.9.7-slim
+#   OPENCLAW_GATEWAY_VERSION=2026.9.7
+#   OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.9.7
 #   IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.14
 #   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.12
 #   IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.9.2
@@ -1113,7 +1113,7 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 
 | Command | Description |
 |---------|-------------|
-| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.9.5 + Himalaya + near-cli-rs + Discord plugin layer |
+| `./identyclaw.sh build-image` | Pull GHCR OpenClaw 2026.9.7 + Himalaya + near-cli-rs + Discord plugin layer |
 | `./identyclaw.sh near-activate <id> [account]` | Set active NEAR creds (`.active` + `.env` + plugin) then restart |
 | `./identyclaw.sh init` | Create sibling `../openclaw-agents-app/` + `env.local` if missing (never overwrites) |
 | `./identyclaw.sh nuke [--yes]` | Delete `-app` and re-seed from templates (overwrites; type basename or `--yes`) |
