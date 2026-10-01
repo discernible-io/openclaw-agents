@@ -62,7 +62,7 @@ function writeMinimalOpenclaw(dir) {
 
 process.stdout.write("Telegram / Discord / calendar (unit)\n\n");
 
-runCase("agent_telegram_webhook_port is gateway + 2 in pod mode", () => {
+runCase("agent_telegram_webhook_port aliases the gateway port", () => {
   const app = mkdtempSync(join(tmpdir(), "openclaw-agents-app-"));
   try {
     writeFileSync(
@@ -77,8 +77,9 @@ runCase("agent_telegram_webhook_port is gateway + 2 in pod mode", () => {
       IDENTYCLAW_APP_DIR: app,
       IDENTYCLAW_DEPLOY_MODE: "pod",
     });
-    assert.equal(a, "18791");
-    assert.equal(l, "18813");
+    // OpenClaw 2026.9.6+: Telegram is Gateway-owned (legacyWebhook: false).
+    assert.equal(a, "18789");
+    assert.equal(l, "18811");
   } finally {
     rmSync(app, { recursive: true, force: true });
   }

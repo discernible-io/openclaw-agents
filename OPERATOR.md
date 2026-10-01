@@ -4,7 +4,7 @@ Deep ops for this Podman deployment template. Product pitch, Passport enrollment
 
 ## Overview
 
-This repository is an **operations toolkit** for running OpenClaw agents on **main** or **development** tiers. Each agent gets its own Podman container, config directory, workspace, and secrets. The repo itself is **code-only** (safe to clone publicly); runtime state lives in a sibling app directory.
+This repository is an **operations toolkit** for running OpenClaw agents with a single source of truth on **`main`**. Each agent gets its own Podman container, config directory, workspace, and secrets. The repo itself is **code-only** (safe to clone publicly); runtime state lives in a sibling app directory.
 
 **Typical use cases:**
 
@@ -35,12 +35,12 @@ This repository is an **operations toolkit** for running OpenClaw agents on **ma
 
 | Area | What this repo provides |
 | --- | --- |
-| **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (main / development tiers) |
+| **Runtime** | Isolated OpenClaw gateways in Podman (rootless by default); standalone loopback dev or nginx TLS **pod** ingress (deployed from `main`) |
 | **Image** | Local `openclaw-agent:local` (`Containerfile.agent`) from GHCR OpenClaw **2026.9.7-slim**, Himalaya **v1.2.0**, [near-cli-rs](https://github.com/near/near-cli-rs) **v0.29.0**, Chromium for browser skills, Discord plugin pinned to the gateway version |
 | **Email** | Migadu IMAP/SMTP via **himalaya** skill; inbox list/read/delete helpers; reciprocal email HOLA; optional LLM **inbox heartbeat** (concierge replies) |
 | **Identity** | **identyclaw** skill + **identyclaw-tools** plugin — HOLA verify/create, Passport lookup, DID, federated API sessions, generic `identyclaw_request` |
-| **A2A** | **identyclaw-a2a** @0.4.14 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
-| **Webhooks** | **identyclaw-webhooks** @0.1.12 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
+| **A2A** | **identyclaw-a2a** @0.4.15 — Agent Card discovery, P2P JWT auth, messaging, files, tasks, artifacts |
+| **Webhooks** | **identyclaw-webhooks** @0.1.14 — RODiT-signed `POST /hooks/*` ingress + outbound `send_rodit_webhook` |
 | **Peer discovery** | Passport `token_id` → gateway URL via API `GET /full` `metadata.webhook_url` (on-chain fallback); optional `GET /api/agents` seeding (`IDENTYCLAW_A2A_DISCOVER_PEERS_FROM_API=1` or `./identyclaw.sh discover-a2a-peers`) |
 | **Channels** | Discord (`@openclaw/discord`, bundled); Telegram (OpenClaw core channel). Tokens via `set-discord-token` / `set-telegram-token`. Optional Instagram, X/Twitter (bird-twitter) via ClawHub |
 | **Calendar** | Local `calendar-reminders` skill + `scripts/calendar.sh` (workspace JSON). Precise alerts use OpenClaw **automations** (`cron`); heartbeat sweeps upcoming events |
@@ -593,7 +593,7 @@ Each agent's own public base can come from Passport `metadata.webhook_url` when 
 
 ```bash
 # After near-credentials + A2A_PEER_AGENTS token_ids + dynamic flag:
-./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.14+ (config API migration + agent-card / task history)
+./identyclaw.sh upgrade-plugins all   # ensure a2a 0.4.15+ (config API migration + agent-card / task history)
 ./identyclaw.sh restart all
 ./identyclaw.sh test-a2a              # resolves peer URL via API; token_id from A2A_PEER_AGENTS
 ./identyclaw.sh test                  # full suite (see ../docs/docs/test-constitution.md)
@@ -1183,24 +1183,23 @@ If a gateway still tries to spawn `qmd`, `env.local` or `openclaw.json` still ha
 
 Main-tier HTTPS ingress exists primarily for **A2A** (`POST /a2a`, agent-card discovery), **OpenClaw webhooks** (`POST /hooks/wake`, `/hooks/agent`, custom `/hooks/<name>`), and **Telegram** (`POST /telegram-webhook`). Public port **8443** is a Telegram Bot API webhook port (also allowed: 80, 443, 8443). Control UI over the same hostname is optional for operators. Pattern matches [`clienttest-idc`](../clienttest-idc) (nginx TLS sidecar → HTTP upstream), with per-agent subdomains instead of one `webhook.*` host.
 
-| Branch | Primary health host | Agent hosts |
-|--------|---------------------|-------------|
-| `development` | `agent-a.dev.identyclaw.com:8443` | `agent-c.dev.identyclaw.com`, `agent-e.dev.identyclaw.com` |
-| `main` | `agent-a.identyclaw.com:8443` | `agent-c.identyclaw.com`, `agent-e.identyclaw.com` |
+| Host | Primary health host | Agent hosts |
+|------|---------------------|-------------|
+| production (`main`) | `agent-a.identyclaw.com:8443` | `agent-c.identyclaw.com`, `agent-e.identyclaw.com` |
 
-Deploy layout: **nginx sidecar** on **8443** (all tiers) — TLS, subdomain → gateway upstream — plus one OpenClaw container per id in `AGENT_IDS` (pod-local ports from `AGENT_*_GATEWAY_PORT`, default 18789 / 18793 / 18797). A single-agent host sets `AGENT_IDS=agent-a` and nginx routes only that subdomain. A2A/webhook URL tables are in local `security-compliance-improvements.md`; see [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
+Deploy layout: **nginx sidecar** on **8443** — TLS, subdomain → gateway upstream — plus one OpenClaw container per id in `AGENT_IDS` (pod-local ports from `AGENT_*_GATEWAY_PORT`, default 18789 / 18793 / 18797). A single-agent host sets `AGENT_IDS=agent-a` and nginx routes only that subdomain. A2A/webhook URL tables are in local `security-compliance-improvements.md`; see [`clienttest-idc`](../clienttest-idc) for the single-host webhook reference implementation.
 
-### Webhook URLs (main tier)
+### Webhook URLs
 
 Each agent has its own HTTPS base. External senders must hit the **correct subdomain** and include a **RODiT origin signature** (`x-signature` + `x-timestamp`):
 
-| Agent (main) | Webhook wake | Webhook agent |
-|--------------|--------------|---------------|
+| Agent | Webhook wake | Webhook agent |
+|-------|--------------|---------------|
 | agent-a | `https://agent-a.identyclaw.com:8443/hooks/wake` | `…/hooks/agent` |
 | agent-c | `https://agent-c.identyclaw.com:8443/hooks/wake` | `…/hooks/agent` |
 | agent-e | `https://agent-e.identyclaw.com:8443/hooks/wake` | `…/hooks/agent` |
 
-Use `agent-*.dev.identyclaw.com` on the development branch. Register the base URL in RODiT token metadata `webhook_url` (same field pattern as a single-host webhook service on `https://webhook.example.com:8443`).
+Register the base URL in RODiT token metadata `webhook_url` (same field pattern as a single-host webhook service on `https://webhook.example.com:8443`).
 
 ```bash
 ./identyclaw.sh webhook-url agent-a
@@ -1221,7 +1220,7 @@ chmod 711 ../openclaw-agents-app/certs
 # Or: ./identyclaw.sh init && ./identyclaw.sh setup
 cp ~/identyclaw-agents/env.example ~/openclaw-agents-app/env.local
 chmod 600 ~/openclaw-agents-app/env.local
-# Set IDENTYCLAW_DEPLOY_MODE=pod, IDENTYCLAW_INGRESS_PORT, and AGENT_*_PUBLIC_HOST for your branch
+# Set IDENTYCLAW_DEPLOY_MODE=pod, IDENTYCLAW_INGRESS_PORT, and AGENT_*_PUBLIC_HOST
 
 # TLS — self-signed bootstrap (same pattern as clienttest-idc):
 ./identyclaw.sh generate-certs
@@ -1243,12 +1242,12 @@ Workflows:
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) | Push to `main` / `development` | Build image, deploy pod to SSH hosts, health probe |
-| [`.github/workflows/test-unit.yml`](.github/workflows/test-unit.yml) | PR + push to `main` / `development` | `node scripts/test-unit-all.mjs` (no Podman) |
+| [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) | Push to `main` | Build image, deploy pod to the SSH host, health probe |
+| [`.github/workflows/test-unit.yml`](.github/workflows/test-unit.yml) | PR + push to `main` | `node scripts/test-unit-all.mjs` (no Podman) |
 
-Required repository secrets (same names as other IdentyClaw `-idc` repos): `SSH_HOST_MAIN`, `SSH_USER_MAIN`, `SSH_PRIVATE_KEY_MAIN`, `SSH_KNOWN_HOSTS_MAIN`, and the `*_DEVELOPMENT` variants, plus `GHCR_PULL_TOKEN`.
+Required repository secrets (same names as other IdentyClaw `-idc` repos): `SSH_HOST_MAIN`, `SSH_USER_MAIN`, `SSH_PRIVATE_KEY_MAIN`, `SSH_KNOWN_HOSTS_MAIN`, plus `GHCR_PULL_TOKEN`.
 
-Push to `main` or `development` to build and deploy. Images are tagged `<commit-sha>-main` or `<commit-sha>-development` so development and main tiers do not overwrite each other on GHCR. Health check probes `https://<DOMAIN>:8443/health` — advisory; may fail from the runner while the pod is healthy on the host).
+Push to `main` to build and deploy. Images are tagged `<commit-sha>-main` on GHCR. Health check probes `https://<DOMAIN>:8443/health` — advisory; may fail from the runner while the pod is healthy on the host).
 
 ### Local deploy (same layout as CI)
 

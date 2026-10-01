@@ -2,7 +2,7 @@ name: Deploy identyclaw-agents
 
 on:
   push:
-    branches: [ main, development ]
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -12,14 +12,13 @@ on:
 
 env:
   DEPLOY_SHA: ${{ github.event.inputs.commit_sha || github.sha }}
-  DEPLOY_TIER: ${{ github.ref == 'refs/heads/main' && 'main' || 'development' }}
-  SSH_HOST: ${{ github.ref == 'refs/heads/main' && secrets.SSH_HOST_MAIN || secrets.SSH_HOST_DEVELOPMENT }}
-  SSH_USER: ${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}
-  SSH_PRIVATE_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SSH_PRIVATE_KEY_MAIN || secrets.SSH_PRIVATE_KEY_DEVELOPMENT }}
-  SSH_KNOWN_HOSTS: ${{ github.ref == 'refs/heads/main' && secrets.SSH_KNOWN_HOSTS_MAIN || secrets.SSH_KNOWN_HOSTS_DEVELOPMENT }}
-  APP_DIR: /home/${{ github.ref == 'refs/heads/main' && secrets.SSH_USER_MAIN || secrets.SSH_USER_DEVELOPMENT }}/openclaw-agents-app
+  DEPLOY_TIER: main
+  SSH_HOST: ${{ secrets.SSH_HOST_MAIN }}
+  SSH_USER: ${{ secrets.SSH_USER_MAIN }}
+  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY_MAIN }}
+  SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS_MAIN }}
+  APP_DIR: /home/${{ secrets.SSH_USER_MAIN }}/openclaw-agents-app
   # Primary health-check host — must match nginx server_name for agent-a.
-  # Development tier uses main config until dev-specific hosts/ports are provisioned.
   DOMAIN: agent-a.identyclaw.com
   APP_PORT: '8443'
   NGINX_BUILD_ENV: main
