@@ -234,10 +234,11 @@ git pull   # picks up template pin + bootstrap migrations
 #   OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.9.7-slim
 #   OPENCLAW_GATEWAY_VERSION=2026.9.7
 #   OPENCLAW_BUNDLED_PLUGINS=@openclaw/discord@2026.9.7
-#   IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.14
-#   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.12
-#   IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.9.2
-#   IDENTYCLAW_CLAWHUB_SKILL_VERSION=1.9.2
+#   IDENTYCLAW_CLAWHUB_A2A_PLUGIN=clawhub:@identyclaw/openclaw-a2a-plugin@0.4.16
+#   IDENTYCLAW_CLAWHUB_WEBHOOKS_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-webhooks-plugin@0.1.14
+#   IDENTYCLAW_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-plugin@1.9.4
+#   IDENTYCLAW_CLAWHUB_SKILL_VERSION=1.9.4
+#   BEARER_HTTP_CLAWHUB_PLUGIN=clawhub:@identyclaw/openclaw-identyclaw-httpbearer-plugin@0.1.1
 ./identyclaw.sh build-image
 ./identyclaw.sh restart all          # bootstrap migrates openclaw.json (bindings peer.kind, memory keys)
 ./identyclaw.sh upgrade-plugins all  # refresh identyclaw-tools, a2a, webhooks, bearer-http + skill
