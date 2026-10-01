@@ -365,3 +365,13 @@ exposing a Gateway remotely.
 
 Full command table, A2A/webhook auth boundaries, agent examples, CI/CD ingress,
 and troubleshooting: [`OPERATOR.md`](./OPERATOR.md).
+
+<!-- discernible-io:product-links -->
+## Links
+
+Maintained by [Discernible](https://www.discernible.io/).
+
+- **Product:** [discernible.io](https://www.discernible.io/)
+- **Get a Passport:** [purchase.identyclaw.com](https://purchase.identyclaw.com) (buy once — no subscription)
+- **Verify HOLA:** [verify.identyclaw.com](https://verify.identyclaw.com)
+<!-- /discernible-io:product-links -->
