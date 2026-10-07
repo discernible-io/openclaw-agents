@@ -1383,15 +1383,39 @@ ensure_memory_config() {
   local container="${2:-}"
   load_env
   agent_openclaw_json_exists "$config_dir" "$container" || return 0
+  # Embeddings: default openai-compatible → OpenRouter when OPENROUTER_API_KEY is present.
+  # Set IDENTYCLAW_MEMORY_SEARCH_PROVIDER=none for deliberate FTS-only, or empty to leave
+  # an existing memory.search block untouched (except legacy key cleanup).
+  local search_provider="${IDENTYCLAW_MEMORY_SEARCH_PROVIDER-}"
+  if [[ -z "${search_provider}" && -n "${OPENROUTER_API_KEY:-}" ]]; then
+    search_provider="openai-compatible"
+  fi
+  local search_model="${IDENTYCLAW_MEMORY_SEARCH_MODEL:-openai/text-embedding-3-small}"
+  local search_base="${IDENTYCLAW_MEMORY_SEARCH_BASE_URL:-https://openrouter.ai/api/v1}"
+  local search_key_env="${IDENTYCLAW_MEMORY_SEARCH_API_KEY_ENV:-OPENROUTER_API_KEY}"
+  local search_extra="${IDENTYCLAW_MEMORY_SEARCH_EXTRA_PATHS:-knowledge}"
+  local search_fallback="${IDENTYCLAW_MEMORY_SEARCH_FALLBACK:-none}"
   _agent_openclaw_json_python "$config_dir" "$container" \
     "${IDENTYCLAW_DREAMING_ENABLED:-1}" \
-    "${IDENTYCLAW_DREAMING_FREQUENCY:-0 3 * * *}" <<'PY'
+    "${IDENTYCLAW_DREAMING_FREQUENCY:-0 3 * * *}" \
+    "$search_provider" \
+    "$search_model" \
+    "$search_base" \
+    "$search_key_env" \
+    "$search_extra" \
+    "$search_fallback" <<'PY'
 import json, sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 dreaming_enabled = sys.argv[2] == "1"
 dreaming_frequency = (sys.argv[3] or "0 3 * * *").strip() or "0 3 * * *"
+search_provider = (sys.argv[4] or "").strip()
+search_model = (sys.argv[5] or "").strip() or "openai/text-embedding-3-small"
+search_base = (sys.argv[6] or "").strip().rstrip("/") or "https://openrouter.ai/api/v1"
+search_key_env = (sys.argv[7] or "").strip() or "OPENROUTER_API_KEY"
+search_extra_csv = (sys.argv[8] or "").strip()
+search_fallback = (sys.argv[9] or "").strip() or "none"
 
 data = json.loads(path.read_text(encoding="utf-8"))
 changed = False
@@ -1408,6 +1432,40 @@ if "backend" in memory:
 if "qmd" in memory:
     del memory["qmd"]
     changed = True
+
+# Vector / FTS search — OpenClaw defaults to provider "openai" (often unavailable on
+# slim images). Prefer openai-compatible → OpenRouter and index workspace/knowledge/.
+if search_provider:
+    search = memory.get("search")
+    if not isinstance(search, dict):
+        search = {}
+        memory["search"] = search
+        changed = True
+    desired = {
+        "enabled": True,
+        "provider": search_provider,
+        "model": search_model,
+        "fallback": search_fallback,
+        "sources": ["memory"],
+    }
+    if search_provider not in ("none", "local", "ollama", "lmstudio", "github-copilot", "bedrock"):
+        desired["remote"] = {
+            "baseUrl": search_base if search_base.endswith("/") else search_base + "/",
+            "apiKey": "${%s}" % search_key_env,
+        }
+    extra_paths = [p.strip() for p in search_extra_csv.split(",") if p.strip()]
+    if extra_paths:
+        desired["extraPaths"] = extra_paths
+    for key, val in desired.items():
+        if search.get(key) != val:
+            search[key] = val
+            changed = True
+    # Drop stale remote when switching to a non-remote provider.
+    if search_provider in ("none", "local", "ollama", "lmstudio", "github-copilot", "bedrock"):
+        if "remote" in search:
+            del search["remote"]
+            changed = True
+
 if not memory:
     data.pop("memory", None)
     changed = True
