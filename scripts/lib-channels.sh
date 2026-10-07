@@ -1020,8 +1020,10 @@ if not tg.get("enabled"):
 if tg.get("tokenFile") != "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN":
     tg["tokenFile"] = "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN"
     changed = True
-if not tg.get("dmPolicy"):
-    tg["dmPolicy"] = "pairing"
+# Public contact: anyone can DM (OpenClaw requires allowFrom=["*"] with open).
+if tg.get("dmPolicy") != "open" or tg.get("allowFrom") != ["*"]:
+    tg["dmPolicy"] = "open"
+    tg["allowFrom"] = ["*"]
     changed = True
 if changed:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -1136,8 +1138,10 @@ elif has_token:
     if tg.get("tokenFile") != "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN":
         tg["tokenFile"] = "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN"
         changed = True
-    if not tg.get("dmPolicy"):
-        tg["dmPolicy"] = "pairing"
+    # Keep DMs open for public contact (OpenClaw requires allowFrom=["*"]).
+    if tg.get("dmPolicy") != "open" or tg.get("allowFrom") != ["*"]:
+        tg["dmPolicy"] = "open"
+        tg["allowFrom"] = ["*"]
         changed = True
 
 if changed:

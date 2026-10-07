@@ -104,7 +104,8 @@ runCase("write_telegram_token enables channel via tokenFile (not botToken in jso
       "/home/node/.openclaw/secrets/TELEGRAM_BOT_TOKEN",
     );
     assert.equal(JSON.stringify(cfg).includes("123456:TEST-TOKEN"), false);
-    assert.equal(cfg.channels.telegram.dmPolicy, "pairing");
+    assert.equal(cfg.channels.telegram.dmPolicy, "open");
+    assert.deepEqual(cfg.channels.telegram.allowFrom, ["*"]);
   } finally {
     rmSync(app, { recursive: true, force: true });
   }

@@ -733,7 +733,7 @@ Rotating one credential does not automatically revoke the others. See trust-boun
 
 | Channel | Setup | Notes |
 | --- | --- | --- |
-| **Telegram** | `./identyclaw.sh set-telegram-token agent-a` | Token in `secrets/TELEGRAM_BOT_TOKEN` (env `TELEGRAM_BOT_TOKEN`; not stored in `openclaw.json`). **Standalone:** long polling. **Pod:** webhook `POST https://<AGENT_*_PUBLIC_HOST>:8443/telegram-webhook` (Telegram only allows 80/88/443/8443). DM pairing by default; approvers sync from `commands.ownerAllowFrom` |
+| **Telegram** | `./identyclaw.sh set-telegram-token agent-a` | Token in `secrets/TELEGRAM_BOT_TOKEN` (env `TELEGRAM_BOT_TOKEN`; not stored in `openclaw.json`). **Standalone:** long polling. **Pod:** webhook `POST https://<AGENT_*_PUBLIC_HOST>:8443/telegram-webhook` (Telegram only allows 80/88/443/8443). DM policy `open` + `allowFrom: ["*"]` by default (anyone can DM); approvers sync from `commands.ownerAllowFrom` |
 | **Discord** | `./identyclaw.sh set-discord-token agent-a` | Bundled plugin; guild channel bootstrap on start. Optional `AGENT_*_DISCORD_BOT_TOKEN` in `env.local` |
 | **X / Twitter** | `set-twitter` or `set-twitter-cookies` | bird-twitter skill (session cookies, not paid API) |
 | **Instagram** | `./identyclaw.sh set-instagram agent-a` | Browser-based; reCAPTCHA may require manual login |
