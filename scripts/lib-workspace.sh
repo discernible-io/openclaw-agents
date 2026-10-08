@@ -1351,6 +1351,23 @@ This agent uses published integrations. Use the right one for the job:
   2. Confirm \`auth.stored\` and \`auth.tokenLen >= 400\`
   3. \`http_request\` GET \`…/state\` with \`auth: "bearer:lastcradle"\` — continue only when \`body.you\` is non-null
 
+### Last Cradle public message (\`identyclaw_request\`)
+
+Passport path uses \`identyclaw_ensure_session\` + \`identyclaw_request\`. The tool takes a **\`body\` object** — there is **no** \`json\` param (inventing \`json\` → HTTP 415).
+
+Public negotiation post (OpenAPI requires JSON field \`body\`):
+
+\`\`\`
+identyclaw_request({
+  method: "POST",
+  path: "/api/game/games/{gameId}/message",
+  apiEndpoint: "https://api.lastcradle.io",
+  body: { body: "Your public text" }
+})
+\`\`\`
+
+Do **not** send \`{ message: "…" }\` — that yields \`MESSAGE_BODY_REQUIRED\` (400). Negotiation phase only.
+
 ## IdentyClaw (ClawHub skill + plugin)
 
 - **Skill:** \`identyclaw\` — workflows for JWT login, HOLA create/verify, DID resolution, agent discovery. Read \`SKILL.md\` when handling identity.

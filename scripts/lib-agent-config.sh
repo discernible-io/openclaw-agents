@@ -1010,6 +1010,15 @@ DANGEROUS_TOOLS = {
 
 channels = data.get("channels", {})
 tbs = tools.setdefault("toolsBySender", {})
+# Web / browser search must never be on public channels — otherwise off-topic
+# asks fail as "tool error" instead of a scope refusal (Telegram DM path).
+PUBLIC_CHANNEL_DENY = {
+    "web_search",
+    "web_fetch",
+    "x_search",
+    "browser",
+    "group:web",
+}
 for channel_name, sender_key in (
     ("telegram", "channel:telegram:*"),
     ("discord", "channel:discord:*"),
@@ -1018,16 +1027,23 @@ for channel_name, sender_key in (
     if not isinstance(ch, dict) or not ch.get("enabled"):
         continue
     entry = tbs.setdefault(sender_key, {})
-    allow = list(entry.get("allow") or PUBLIC_CHANNEL_TOOLS)
+    # Empty {} used to leave allow unset → inherited tools.allow ["*"] (bug).
+    # Always persist an explicit allow list for enabled public channels.
+    current = list(entry.get("allow") or [])
+    seed = current if current else list(PUBLIC_CHANNEL_TOOLS)
     merged = []
     seen = set()
-    for tool in allow + PUBLIC_CHANNEL_TOOLS:
-        if tool in DANGEROUS_TOOLS or tool in seen:
+    for tool in seed + PUBLIC_CHANNEL_TOOLS:
+        if tool in DANGEROUS_TOOLS or tool in PUBLIC_CHANNEL_DENY or tool in seen:
             continue
         merged.append(tool)
         seen.add(tool)
-    if merged != allow:
+    if entry.get("allow") != merged:
         entry["allow"] = merged
+        changed = True
+    # Drop stale deny keys if present; allowlist is the enforcement surface.
+    if "deny" in entry:
+        del entry["deny"]
         changed = True
 
 owners = (data.get("commands", {}) or {}).get("ownerAllowFrom") or []
