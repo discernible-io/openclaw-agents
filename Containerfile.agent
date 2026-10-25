@@ -3,14 +3,14 @@
 # Args: --build-arg OPENCLAW_BASE_IMAGE=... --build-arg HIMALAYA_ARCH=x86_64-linux
 #       --build-arg NEAR_CLI_RS_VERSION=v0.29.0 --build-arg NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.9.7-slim
-ARG OPENCLAW_GATEWAY_VERSION=2026.9.7
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.9.34-slim
+ARG OPENCLAW_GATEWAY_VERSION=2026.9.34
 ARG HIMALAYA_VERSION=v1.2.0
 ARG HIMALAYA_ARCH=x86_64-linux
 ARG NEAR_CLI_RS_VERSION=v0.29.0
 ARG NEAR_CLI_RS_TARGET=x86_64-unknown-linux-gnu
 # Space-separated npm specs installed into the image (seeded into agent homes at start).
-ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.9.7"
+ARG OPENCLAW_BUNDLED_PLUGINS="@openclaw/discord@2026.9.34"
 
 FROM ${OPENCLAW_BASE_IMAGE}
 
@@ -23,9 +23,16 @@ ARG OPENCLAW_GATEWAY_VERSION
 ARG OPENCLAW_BUNDLED_PLUGINS
 
 USER root
+# CVE-2026-111497: base image is OpenClaw 2026.9.34 (Node ≥24.22.1). Debian
+# libbrotli1 is pinned to the bookworm security update, which is not in the
+# Node image's default package set.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl sudo chromium jq \
+      ca-certificates curl sudo chromium jq libbrotli1 \
+ && brotli_ver="$(dpkg-query -W -f '${Version}' libbrotli1)" \
+ && dpkg --compare-versions "$brotli_ver" ge '1.0.9-2+deb12u1' \
+ && echo "libbrotli1 ${brotli_ver}" \
+ && node -e 'const [M,m,p]=process.versions.node.split(".").map(Number); const ok=(M===24&&(m>22||(m===22&&p>=1)))||(M===26&&(m>12||(m===12&&p>=1)))||M>26; if(!ok){console.error("vulnerable node",process.version); process.exit(1)}' \
  && curl -fsSL -o /tmp/himalaya.tgz \
       "https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/himalaya.${HIMALAYA_ARCH}.tgz" \
  && tar -xzf /tmp/himalaya.tgz -C /usr/local/bin \
