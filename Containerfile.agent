@@ -30,7 +30,7 @@ ARG NODE_VERSION=24.22.1
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl sudo chromium jq xz-utils libbrotli1 \
- && brotli_ver="$(dpkg-query -W -f '$${Version}' libbrotli1)" \
+ && brotli_ver="$(dpkg-query -W -f '${Version}' libbrotli1)" \
  && dpkg --compare-versions "$brotli_ver" ge '1.0.9-2+deb12u1' \
  && echo "libbrotli1 ${brotli_ver}" \
  && machine="$(uname -m)" \
