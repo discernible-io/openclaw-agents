@@ -41,7 +41,7 @@ RUN apt-get update \
  && echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c - \
  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
  && rm -f /tmp/node.tar.xz \
- && node -e 'const [maj,min,pat]=process.versions.brotli.split(".").map(Number); if (!(maj>1 || (maj===1 && min>2) || (maj===1 && min===2 && pat>=1))) { console.error(process.version, process.versions.brotli); process.exit(1); }' \
+ && node -e 'const [M,m,p]=process.versions.node.split(".").map(Number); const ok=(M===24&&(m>22||(m===22&&p>=1)))||(M===26&&(m>12||(m===12&&p>=1)))||M>26; if(!ok){console.error("vulnerable node",process.version,process.versions.brotli); process.exit(1)}' \
  && curl -fsSL -o /tmp/himalaya.tgz \
       "https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/himalaya.${HIMALAYA_ARCH}.tgz" \
  && tar -xzf /tmp/himalaya.tgz -C /usr/local/bin \
