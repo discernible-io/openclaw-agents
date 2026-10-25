@@ -23,9 +23,24 @@ ARG OPENCLAW_GATEWAY_VERSION
 ARG OPENCLAW_BUNDLED_PLUGINS
 
 USER root
+# CVE-2026-111497: bookworm-security libbrotli, and Node.js 24.22.1. The
+# 2026.9.7-slim base ships Node 24.21.0, whose embedded Brotli decoder is
+# 1.2.0. Replacing the binary is required; apt does not upgrade that copy.
+ARG NODE_VERSION=24.22.1
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl sudo chromium jq \
+      ca-certificates curl sudo chromium jq xz-utils \
+      'libbrotli1>=1.0.9-2+deb12u1' \
+ && dpkg --compare-versions "$(dpkg-query -W -f '$${Version}' libbrotli1)" ge '1.0.9-2+deb12u1' \
+ && machine="$(uname -m)" \
+ && if [ "$machine" = x86_64 ]; then node_arch=linux-x64; node_sha=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6; \
+    elif [ "$machine" = aarch64 ]; then node_arch=linux-arm64; node_sha=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e; \
+    else echo "unsupported architecture: $machine" >&2; exit 1; fi \
+ && curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${node_arch}.tar.xz" \
+ && echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c - \
+ && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+ && rm -f /tmp/node.tar.xz \
+ && node -e 'const [maj,min,pat]=process.versions.brotli.split(".").map(Number); if (!(maj>1 || (maj===1 && min>2) || (maj===1 && min===2 && pat>=1))) { console.error(process.version, process.versions.brotli); process.exit(1); }' \
  && curl -fsSL -o /tmp/himalaya.tgz \
       "https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/himalaya.${HIMALAYA_ARCH}.tgz" \
  && tar -xzf /tmp/himalaya.tgz -C /usr/local/bin \
