@@ -29,9 +29,10 @@ USER root
 ARG NODE_VERSION=24.22.1
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl sudo chromium jq xz-utils \
-      'libbrotli1>=1.0.9-2+deb12u1' \
- && dpkg --compare-versions "$(dpkg-query -W -f '$${Version}' libbrotli1)" ge '1.0.9-2+deb12u1' \
+      ca-certificates curl sudo chromium jq xz-utils libbrotli1 \
+ && brotli_ver="$(dpkg-query -W -f '$${Version}' libbrotli1)" \
+ && dpkg --compare-versions "$brotli_ver" ge '1.0.9-2+deb12u1' \
+ && echo "libbrotli1 ${brotli_ver}" \
  && machine="$(uname -m)" \
  && if [ "$machine" = x86_64 ]; then node_arch=linux-x64; node_sha=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6; \
     elif [ "$machine" = aarch64 ]; then node_arch=linux-arm64; node_sha=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e; \
