@@ -1,5 +1,5 @@
 # Pinned base (tag + manifest-list digest). Bump both when upgrading nginx.
-FROM docker.io/nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
+FROM docker.io/nginx:1.31.9-alpine@sha256:0713660ff64e819a478be0d69ae314e52d21623c93672edd9f381a6e66fd95ff
 
 ARG NODE_ENV=main
 ARG INGRESS_PORT=8443
